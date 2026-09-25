@@ -165,18 +165,34 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
       token_idx += num_round_tokens;
       current_channel_tail_idx += num_round_tokens;
 
-      __syncthreads();
-      // AMD: the payload writes are non-temporal; this explicit system fence
-      // flushes them to HBM before the tail publish (see Dispatch.cu).
-#ifdef __HIP_PLATFORM_AMD__
-      memory_fence();
+      // Retire this wave's payload before the publisher's fence below: AMD's
+      // __syncthreads() does not wait for outstanding stores. The waves of one
+      // rank run the same rounds, so they meet at every barrier.
+#if defined(__GFX9__)
+      asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
+#elif defined(__HIP_PLATFORM_AMD__)
+      __builtin_amdgcn_fence(__ATOMIC_RELEASE, "agent"); // stores use vscnt
 #endif
+      __syncthreads();
       if (lane_id == 0 && send_warp_id_in_rank == 0) {
-        // Release-store the tail to pair with the receiver's acquire-load on
-        // both platforms; a relaxed handshake races on stale payload across
-        // xGMI (see Dispatch.cu).
+#ifdef __HIP_PLATFORM_AMD__
+        // Release-only system fence: writes back L2 (no invalidate, unlike
+        // memory_fence()) so the payload is visible before the tail publish.
+        // The writeback is cache-wide, so one thread suffices once every wave
+        // has passed its s_waitcnt above.
+        __builtin_amdgcn_fence(__ATOMIC_RELEASE, "");
+#endif
+        // Publish the tail to pair with the receiver's acquire-load; without
+        // release ordering the receiver can read stale payload across xGMI.
+#ifdef __HIP_PLATFORM_AMD__
+        // Relaxed: the release fence above already orders the payload
+        // (fence-to-atomic sync); a release store would repeat the writeback.
+        st_relaxed_sys_global(
+            channel_tail_idx.buffer(), current_channel_tail_idx);
+#else
         st_release_sys_global(
             channel_tail_idx.buffer(), current_channel_tail_idx);
+#endif
       }
     }
   } else {
@@ -239,11 +255,14 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
         }
         if (min_head != INT_MAX && min_head > last_head) {
           last_head = min_head;
-          // Release-store the head (slot-free signal) to pair with the sender's
-          // acquire-load of the head: the receiver's payload reads must be
-          // globally complete before the sender may reuse (overwrite) the slot.
-          // A relaxed store gives no such ordering on AMD/xGMI → WAR hazard.
+          // The head (slot-free signal) only guards write-after-read: reducers
+          // advance warp_channel_head_idx after consuming their loads, and a
+          // release here would order only this lane's own accesses.
+#ifdef __HIP_PLATFORM_AMD__
+          st_relaxed_sys_global(channel_head_idx_ptr, last_head);
+#else
           st_release_sys_global(channel_head_idx_ptr, last_head);
+#endif
         }
       }
     } else {
@@ -322,19 +341,17 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
         }
         syncwarp();
 
-        // Broadcast each lane's expected_head to its corresponding rank
-        // index, then collect (rank, slot) pairs.
-        int num_topk_ranks = 0;
-        int topk_ranks[kNumRanks];
-        int slot_indices[kNumRanks];
+        // Broadcast each lane's expected_head to its rank index. Keep these
+        // per rank (compile-time index after unroll), not compacted: a runtime
+        // index into the Buffer arrays spills them to scratch.
+        bool rank_valid[kNumRanks];
+        int rank_slot[kNumRanks];
 #pragma unroll
         for (int i = 0; i < kNumRanks; ++i) {
-          int expected_head_i = shfl_sync_compat(expected_head, i);
-          if (expected_head_i >= 0) {
-            slot_indices[num_topk_ranks] =
-                expected_head_i % num_recv_buffer_tokens;
-            topk_ranks[num_topk_ranks++] = i;
-          }
+          const int expected_head_i = shfl_sync_compat(expected_head, i);
+          rank_valid[i] = expected_head_i >= 0;
+          rank_slot[i] =
+              rank_valid[i] ? expected_head_i % num_recv_buffer_tokens : 0;
         }
 
         // Reduce hidden vector across topk source ranks.
@@ -347,12 +364,15 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
               ? bias_1_int4[token_idx * hidden_int4 + i]
               : make_int4(0, 0, 0, 0);
 
+          // Issue all loads before consuming any; rank_valid[] is wave-uniform.
           int4 recv_value_int4[kNumRanks];
 #pragma unroll
-          for (int j = 0; j < num_topk_ranks; ++j) {
-            recv_value_int4[j] = ld_nc_global(
-                channel_x_buffers[topk_ranks[j]].buffer() +
-                slot_indices[j] * hidden_int4 + i);
+          for (int j = 0; j < kNumRanks; ++j) {
+            if (rank_valid[j]) {
+              recv_value_int4[j] = ld_nc_global(
+                  channel_x_buffers[j].buffer() + rank_slot[j] * hidden_int4 +
+                  i);
+            }
           }
 
           float values[kDtypePerInt4];
@@ -367,12 +387,14 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
           }
 
 #pragma unroll
-          for (int j = 0; j < num_topk_ranks; ++j) {
-            const DType* recv_dtypes =
-                reinterpret_cast<const DType*>(&recv_value_int4[j]);
+          for (int j = 0; j < kNumRanks; ++j) {
+            if (rank_valid[j]) {
+              const DType* recv_dtypes =
+                  reinterpret_cast<const DType*>(&recv_value_int4[j]);
 #pragma unroll
-            for (int k = 0; k < kDtypePerInt4; ++k) {
-              values[k] += static_cast<float>(recv_dtypes[k]);
+              for (int k = 0; k < kDtypePerInt4; ++k) {
+                values[k] += static_cast<float>(recv_dtypes[k]);
+              }
             }
           }
 
@@ -388,10 +410,12 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
         if (lane_id < num_topk) {
           float value = 0;
 #pragma unroll
-          for (int i = 0; i < num_topk_ranks; ++i) {
-            value += ld_nc_global(
-                channel_topk_weights_buffers[topk_ranks[i]].buffer() +
-                slot_indices[i] * num_topk + lane_id);
+          for (int i = 0; i < kNumRanks; ++i) {
+            if (rank_valid[i]) {
+              value += ld_nc_global(
+                  channel_topk_weights_buffers[i].buffer() +
+                  rank_slot[i] * num_topk + lane_id);
+            }
           }
           recv_topk_weights[token_idx * num_topk + lane_id] = value;
         }

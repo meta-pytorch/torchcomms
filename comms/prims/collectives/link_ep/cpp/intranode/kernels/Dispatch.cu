@@ -258,6 +258,13 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_dispatch_kernel(
       }
 
       // All sender warps for this dst_rank converge before publishing tail.
+      // Retire this wave's payload before the tail publish below: AMD's
+      // __syncthreads() does not wait for outstanding stores.
+#if defined(__GFX9__)
+      asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
+#elif defined(__HIP_PLATFORM_AMD__)
+      __builtin_amdgcn_fence(__ATOMIC_RELEASE, "agent"); // stores use vscnt
+#endif
       __syncthreads();
       // Payload is written with nontemporal stores (st_nt_global) that stream
       // past L2 toward the peer, so no separate per-chunk system fence is
@@ -437,12 +444,16 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_dispatch_kernel(
 
       if (recv_warp_id_in_rank == num_recv_warps_per_rank - 1 &&
           recv_lane_id == 0) {
-        // Release-store the head (slot-free signal) so the sender's
-        // acquire-load of the head observes that this receiver finished reading
-        // the slot before reusing it (WAR ordering across xGMI). Relaxed gives
-        // no such guarantee on AMD.
+        // The head (slot-free signal) only guards write-after-read: every ring
+        // load returned before the barrier above (its value is already stored
+        // to recv_x), and a release here would order only this wave's accesses.
+#ifdef __HIP_PLATFORM_AMD__
+        st_relaxed_sys_global(
+            channel_head_idx.buffer(), cached_channel_head_idx);
+#else
         st_release_sys_global(
             channel_head_idx.buffer(), cached_channel_head_idx);
+#endif
       }
 
       num_tokens_to_recv -= num_recv_tokens;
