@@ -3322,15 +3322,15 @@ cvars:
 
  - name        : MCCL_ALGO
    type        : string
-   default     : "allreduce:ring"
+   default     : "allreduce:ring:simple"
    description : |-
      MCCL-native algorithm override: [<collective>:]<algorithm>[:<protocol>].
-     MCCL-native algorithm override: [<collective>:]<algorithm>[:<protocol>].
-     "none" keeps the collective's existing selection, and is required for
-     MCCL_TUNER_ALLREDUCE_ENABLE to take effect; bare tree/ring/direct are
-     AllReduce aliases. The protocol token (simple, ll) is AllReduce-only and
-     defaults to simple. Pinning :ll bypasses the LL size threshold but still
-     requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0, which is what arms the LL path.
+     An empty stored value selects allreduce:ring:simple. "none" keeps the
+     collective's existing selection and is required for
+     MCCL_TUNER_ALLREDUCE_ENABLE to take effect; bare tree/ring/direct/nvlmm
+     are AllReduce aliases. The protocol token (simple, ll) is AllReduce-only
+     and defaults to simple. Pinning :ll bypasses the LL size threshold but
+     still requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0, which arms the LL path.
 
  - name        : MCCL_TUNER_ALLREDUCE_ENABLE
    type        : bool
@@ -3343,7 +3343,7 @@ cvars:
 
        MCCL_TUNER_ALLREDUCE_ENABLE=1 MCCL_ALGO=none
 
-     MCCL_ALGO defaults to a value naming AllReduce, and an MCCL_ALGO naming a
+     MCCL_ALGO defaults to allreduce:ring:simple, and an MCCL_ALGO naming a
      collective always outranks the tuner for it, so setting this alone leaves
      the tuner unreachable. MCCL_ALGO=none is what yields the selection to it.
 
@@ -3425,7 +3425,7 @@ cvars:
       >0  use LL strictly below this many bytes (16384 is the measured crossover
           on GB300).
 
-     Tree only today; ring and direct always use Simple.
+     Tree and Ring support LL; other algorithms use Simple.
 
  - name        : MCCL_ALLREDUCE_IB_VIRTUAL_STRIPES
    type        : int
