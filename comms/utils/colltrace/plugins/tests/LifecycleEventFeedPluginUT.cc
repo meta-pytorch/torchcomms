@@ -157,6 +157,44 @@ TEST(LifecycleEventFeedPluginTest, PreservesBurstUntilDrained) {
       std::vector<LifecycleEventRecord>(kBurstSize, expected));
 }
 
+TEST(LifecycleEventFeedPluginTest, DiscardsOldestOnceTheCapIsReached) {
+  constexpr std::size_t kCap = 4;
+  constexpr std::size_t kOverflow = 3;
+  LifecycleEventFeedPlugin plugin{
+      LifecycleEventFeedConfig{.commId = 1, .maxUnreadEvents = kCap}};
+
+  for (uint64_t collId = 0; collId < kCap + kOverflow; ++collId) {
+    auto event = makeEvent(collId);
+    event.collRecord->getTimingInfo().setCollStartTs(
+        std::chrono::system_clock::now());
+    EXPECT_TRUE(plugin.afterCollKernelStart(event).hasValue());
+  }
+
+  EXPECT_EQ(plugin.getDroppedLifecycleEventCount(), kOverflow);
+  std::vector<uint64_t> survivingCollIds;
+  for (const auto& event : plugin.drainUnreadLifecycleEvents()) {
+    survivingCollIds.push_back(event.collId);
+  }
+  // The newest kCap: the overflow took the oldest.
+  EXPECT_EQ(survivingCollIds, (std::vector<uint64_t>{3, 4, 5, 6}));
+}
+
+TEST(LifecycleEventFeedPluginTest, KeepsEveryEventWhenTheCapIsDisabled) {
+  constexpr std::size_t kBurstSize = 512;
+  LifecycleEventFeedPlugin plugin{
+      LifecycleEventFeedConfig{.commId = 1, .maxUnreadEvents = 0}};
+  auto event = makeEvent(2);
+  event.collRecord->getTimingInfo().setCollStartTs(
+      std::chrono::system_clock::now());
+
+  for (std::size_t i = 0; i < kBurstSize; ++i) {
+    EXPECT_TRUE(plugin.afterCollKernelStart(event).hasValue());
+  }
+
+  EXPECT_EQ(plugin.getDroppedLifecycleEventCount(), 0);
+  EXPECT_EQ(plugin.drainUnreadLifecycleEvents().size(), kBurstSize);
+}
+
 TEST(LifecycleEventFeedPluginTest, UsesCurrentTimeForUnsetTimestamps) {
   LifecycleEventFeedPlugin plugin;
   auto event = makeEvent(2);
