@@ -1,6 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 find_package(CUDA REQUIRED)
+# Match Buck's default: FP8 is opt-in, and without NCCL_ENABLE_FP8 these
+# generated translation units contain no kernel instantiations.
+option(CTRAN_ENABLE_FP8 "Compile FP8 CTRAN kernel instantiations" OFF)
 
 file(GLOB_RECURSE CTRAN_SOURCES
     "*.cc"
@@ -22,6 +25,12 @@ execute_process(
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
 file(GLOB CTRAN_GENSRC_FILES "${CMAKE_CURRENT_BINARY_DIR}/gensrc/*.cu")
+if(NOT CTRAN_ENABLE_FP8)
+    list(FILTER CTRAN_GENSRC_FILES EXCLUDE REGEX ".*__nv_fp8_.*")
+endif()
+list(LENGTH CTRAN_GENSRC_FILES CTRAN_GENSRC_COUNT)
+message(STATUS
+    "CTRAN generated CUDA sources: ${CTRAN_GENSRC_COUNT} (FP8=${CTRAN_ENABLE_FP8})")
 
 add_library(ctran OBJECT
   ${CTRAN_GENSRC_FILES}
@@ -35,6 +44,9 @@ target_compile_definitions(ctran PUBLIC
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
     SPDLOG_FMT_EXTERNAL
 )
+if(CTRAN_ENABLE_FP8)
+    target_compile_definitions(ctran PRIVATE NCCL_ENABLE_FP8)
+endif()
 
 target_compile_options(ctran PRIVATE
     -fPIC
