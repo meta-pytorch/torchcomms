@@ -4,11 +4,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
 
+#include "comms/observatory/colltrace/LifecycleFeedRegistry.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/colltrace/CollMetadata.h"
@@ -502,6 +504,29 @@ TEST_F(CollTraceInitConfigTest, PullsIdsAndEventsAcrossLifecycleFeeds) {
 
   EXPECT_EQ(ncclx::colltrace::drainUnreadLifecycleEvents(events), ncclSuccess);
   EXPECT_TRUE(events.empty());
+}
+
+// The ops a feed registers with are what the registry routes through, and a
+// field left unset there fails the same way as an id nobody captured: an empty
+// answer, no diagnostic. Assert the wiring rather than an answer.
+TEST_F(CollTraceInitConfigTest, RegistersAFeedThatCanBeAskedAboutCaptures) {
+  EnvRAII colltraceGuard(NCCL_COLLTRACE, std::vector<std::string>{"lifecycle"});
+  ASSERT_EQ(newCollTraceDestroy(comm_), ncclSuccess);
+  ASSERT_EQ(newCollTraceInit(comm_), ncclSuccess);
+
+  uint64_t commId{0};
+  ASSERT_EQ(ncclx::colltrace::getCollTraceCommId(comm_, commId), ncclSuccess);
+  ASSERT_NE(commId, 0);
+
+  // Found by the id its events carry: that id is all a consumer holding an
+  // event knows about where the event came from.
+  const auto feeds = snapshotLifecycleFeeds();
+  const auto feed = std::find_if(
+      feeds.begin(), feeds.end(), [commId](const LifecycleFeedSource& source) {
+        return source.ops->commId == commId;
+      });
+  ASSERT_NE(feed, feeds.end());
+  EXPECT_NE(feed->ops->describeCaptured, nullptr);
 }
 
 TEST_P(CollTraceInitConfigTest, ConfigCombinations) {

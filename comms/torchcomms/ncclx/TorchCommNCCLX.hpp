@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "comms/observatory/colltrace/LifecycleFeedTypes.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
@@ -103,6 +104,13 @@ class TorchCommNCCLX : public TorchCommBackend,
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
   int64_t getCommPtr() const;
+
+  // Colltrace's per-comm questions, answered as methods so a caller holds a
+  // comm rather than a pointer. Empty when this comm is not traced.
+  std::optional<uint64_t> getLifecycleCommId() const;
+  std::optional<uint64_t> getLatestLifecycleCollectiveId() const;
+  std::optional<meta::comms::colltrace::CapturedCollDescription>
+  describeCapturedCollective(uint64_t commId, uint64_t capturedCollId) const;
   void setConfig(const std::unordered_map<std::string, std::string>& hints);
 
   // Point-to-Point Operations
