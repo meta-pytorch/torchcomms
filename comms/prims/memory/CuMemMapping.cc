@@ -119,7 +119,9 @@ void CuMemMapping::cleanup() noexcept {
   }
 
   if (mapped_) {
-    pfn_cuMemUnmap(devicePtr_, size_);
+    if (pfn_cuMemUnmap(devicePtr_, size_) != CUDA_SUCCESS) {
+      return;
+    }
     mapped_ = false;
   }
   pfn_cuMemAddressFree(devicePtr_, size_);
