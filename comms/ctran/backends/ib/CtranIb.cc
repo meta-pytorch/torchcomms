@@ -7,6 +7,7 @@
 #include <fmt/core.h>
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
+#include <unistd.h>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -871,6 +872,12 @@ commResult_t CtranIb::regMem(
   const auto dmaBufSupport = s->getDevToDmaBufSupport(cudaDev);
 
   bool useDmaBuf = dmaBufSupport && NCCL_CTRAN_IB_DMABUF_ENABLE;
+  const size_t pageSize = getpagesize();
+  const auto bufAddr = reinterpret_cast<uintptr_t>(buf);
+  const size_t dmaBufOffset = bufAddr % pageSize;
+  const auto dmaBufBase = reinterpret_cast<const void*>(bufAddr - dmaBufOffset);
+  const size_t dmaBufLen =
+      ((len + dmaBufOffset + pageSize - 1) / pageSize) * pageSize;
 
   CTRAN_LOG_TRACE(
       ALLOC,
@@ -891,9 +898,10 @@ commResult_t CtranIb::regMem(
         cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
         device;
     const auto& pd = s->getIbvPd(pdIdx);
-    int dmaBufFd = useDmaBuf
-        ? ctran::utils::getCuMemDmaBufFd(buf, len, pd.useDataDirect())
-        : -1;
+    // CUDA exports page-aligned ranges; the MR still covers the user's buffer.
+    int dmaBufFd = useDmaBuf ? ctran::utils::getCuMemDmaBufFd(
+                                   dmaBufBase, dmaBufLen, pd.useDataDirect())
+                             : -1;
     auto makeErrorInfo = [&]() {
       return fmt::format(
           "CTRAN-IB: buffer registration failed: cudaDev={}, nicIdx={}, "
@@ -911,8 +919,8 @@ commResult_t CtranIb::regMem(
           pd.useDataDirect());
     };
     if (useDmaBuf && dmaBufFd != -1) {
-      auto maybeDmabufMr = pd.regDmabufMr(
-          0, len, reinterpret_cast<uint64_t>(buf), dmaBufFd, access);
+      auto maybeDmabufMr =
+          pd.regDmabufMr(dmaBufOffset, len, bufAddr, dmaBufFd, access);
       FOLLY_EXPECTED_CHECKGOTO(maybeDmabufMr, fail, makeErrorInfo());
       mrs->emplace_back(std::move(*maybeDmabufMr));
     } else {
