@@ -283,11 +283,13 @@ later one.
 `patchedContexts` and the per-device counters — a run that was supposed to inject
 and shows zero is a failed run, not a passing one.
 
-**A bad path fails open, not loud.** If `dlopen` of the requested library fails,
-`buildIbvSymbols` falls back to `libibverbs.so.1` and initialization *succeeds*
-against the real provider, so a typo'd path or an unmounted fbpkg yields a green,
-completely uninjected run. This is the same failure signature as "IB was never on
-the path", which is why the counter check above is not optional.
+**A bad path fails loud.** If `dlopen` of the requested library fails,
+`buildIbvSymbols` returns an error and `ibvInit()` fails, naming the path and the
+`dlerror`. It does *not* fall back to `libibverbs.so.1`: a fallback would load a
+different provider than the caller named and still report success, so a typo'd
+path or an unmounted fbpkg would yield a green, completely uninjected run — the
+same signature as "IB was never on the path". Strictness applies only when the
+variable is set; unset still means `libibverbs.so.1`.
 
 **Requires the default dlopen build.** `ibverbx-rdma-core` statically links
 rdma-core and never `dlopen`s, so there is nothing to intercept there.
