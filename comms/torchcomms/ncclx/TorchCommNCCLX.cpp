@@ -21,6 +21,14 @@
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/utils/CudaRAII.h"
 
+// Declared here rather than included: this lives in an NCCLX meta header,
+// which is not on this target's include path, and it deliberately stays out
+// of nccl.h because it is not part of the NCCL API.
+namespace meta::comms::ncclx {
+std::optional<meta::comms::colltrace::CapturedCollDescription>
+describeCapturedCollective(uint64_t commId, uint64_t capturedCollId);
+} // namespace meta::comms::ncclx
+
 namespace torch::comms {
 
 namespace {
@@ -561,6 +569,39 @@ std::string_view TorchCommNCCLX::getCommName() const {
 
 int64_t TorchCommNCCLX::getCommPtr() const {
   return reinterpret_cast<int64_t>(nccl_comm_);
+}
+
+std::optional<uint64_t> TorchCommNCCLX::getLifecycleCommId() const {
+  uint64_t commId = 0;
+  if (nccl_comm_ == nullptr ||
+      ::ncclx::colltrace::getCollTraceCommId(nccl_comm_, commId) !=
+          ncclSuccess) {
+    return std::nullopt;
+  }
+  return commId;
+}
+
+std::optional<uint64_t> TorchCommNCCLX::getLatestLifecycleCollectiveId() const {
+  uint64_t collId = 0;
+  if (nccl_comm_ == nullptr ||
+      ::ncclx::colltrace::getLatestCollTraceCollectiveId(nccl_comm_, collId) !=
+          ncclSuccess ||
+      collId == 0) {
+    // Zero is the no-record sentinel, which to a caller is the same answer as
+    // an untraced comm: there is nothing here to bind to.
+    return std::nullopt;
+  }
+  return collId;
+}
+
+std::optional<meta::comms::colltrace::CapturedCollDescription>
+TorchCommNCCLX::describeCapturedCollective(
+    uint64_t commId,
+    uint64_t capturedCollId) const {
+  // The comm this is called on is only the way in: the answer comes from the
+  // feed that stamped commId, which may belong to a tracer this comm has
+  // since replaced.
+  return meta::comms::ncclx::describeCapturedCollective(commId, capturedCollId);
 }
 
 void TorchCommNCCLX::setConfig(

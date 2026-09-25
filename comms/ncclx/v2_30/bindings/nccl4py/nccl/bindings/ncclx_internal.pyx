@@ -12,6 +12,7 @@ from .ncclx_internal cimport (
     drainUnreadLifecycleEvents as _drainUnreadLifecycleEvents,
     getCollTraceCommId as _getCollTraceCommId,
     getLatestCollTraceCollectiveId as _getLatestCollTraceCollectiveId,
+    latestCollTraceCollectiveIdForCommId as _latestCollTraceCollectiveIdForCommId,
     Hints as CppHints,
     LifecycleEvent as CppLifecycleEvent,
     LifecycleEventType as CppLifecycleEventType,
@@ -294,6 +295,20 @@ cpdef uint64_t colltrace_get_latest_coll_id(intptr_t comm) except? 0:
     cdef int status
     with nogil:
         status = _getLatestCollTraceCollectiveId(<ncclComm_t>comm, coll_id)
+    check_status(status)
+    return coll_id
+
+
+cpdef uint64_t colltrace_latest_coll_id_for_comm(uint64_t comm_id) except? 0:
+    """Latest collective id on the comm whose events carry `comm_id`.
+
+    Answered from the process-wide registry, so this reaches a communicator
+    created by any backend, not only an ncclx one.
+    """
+    cdef uint64_t coll_id
+    cdef int status
+    with nogil:
+        status = _latestCollTraceCollectiveIdForCommId(comm_id, coll_id)
     check_status(status)
     return coll_id
 
