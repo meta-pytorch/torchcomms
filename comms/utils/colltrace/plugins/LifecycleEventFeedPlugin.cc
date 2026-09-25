@@ -28,7 +28,8 @@ uint64_t getNextLifecycleFeedCommId() noexcept {
 LifecycleEventFeedPlugin::LifecycleEventFeedPlugin(
     const LifecycleEventFeedConfig& config)
     : commId_(config.commId),
-      logger_(&logger::getSpdlogLogger(config.loggerName)) {}
+      logger_(&logger::getSpdlogLogger(config.loggerName)),
+      maxUnreadEvents_(config.maxUnreadEvents) {}
 
 std::string_view LifecycleEventFeedPlugin::getName() const noexcept {
   return kLifecycleEventFeedPluginName;
@@ -121,17 +122,42 @@ CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
       .timestamp = timestamp,
   };
   unreadEvents_.enqueue(std::move(record));
+  discardOldestBeyondCap();
   static thread_local uint32_t backlogCheckCounter = 0;
   if (++backlogCheckCounter % kBacklogCheckPeriod == 0) {
     const auto backlog = unreadEvents_.size();
-    if (backlog >= kBacklogWarningThreshold) [[unlikely]] {
+    const auto dropped = droppedEvents_.load(std::memory_order_relaxed);
+    if (dropped != 0) [[unlikely]] {
+      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
+          << "LifecycleEventFeedPlugin has discarded " << dropped
+          << " events for comm " << commId_
+          << " to stay within its cap; the consumer is not draining and what "
+             "it eventually reads will have gaps";
+    } else if (backlog >= kBacklogWarningThreshold) [[unlikely]] {
       COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
           << "LifecycleEventFeedPlugin estimated unread backlog is " << backlog
           << " events for comm " << commId_
-          << "; consumer may be stalled and memory will continue to grow";
+          << "; consumer may be stalled and events will start being discarded";
     }
   }
   return folly::unit;
+}
+
+void LifecycleEventFeedPlugin::discardOldestBeyondCap() noexcept {
+  if (maxUnreadEvents_ == 0) {
+    return;
+  }
+  // Oldest first: a consumer that starts reading late wants recent history.
+  // Dequeueing from a producer is safe because the queue is MPMC.
+  uint64_t discarded = 0;
+  LifecycleEventRecord dropped;
+  while (unreadEvents_.size() > maxUnreadEvents_ &&
+         unreadEvents_.try_dequeue(dropped)) {
+    ++discarded;
+  }
+  if (discarded != 0) {
+    droppedEvents_.fetch_add(discarded, std::memory_order_relaxed);
+  }
 }
 
 std::vector<LifecycleEventRecord>
@@ -151,6 +177,11 @@ uint64_t LifecycleEventFeedPlugin::getLatestLifecycleCollectiveId()
 
 uint64_t LifecycleEventFeedPlugin::getCommId() const noexcept {
   return commId_;
+}
+
+uint64_t LifecycleEventFeedPlugin::getDroppedLifecycleEventCount()
+    const noexcept {
+  return droppedEvents_.load(std::memory_order_relaxed);
 }
 
 } // namespace meta::comms::colltrace
