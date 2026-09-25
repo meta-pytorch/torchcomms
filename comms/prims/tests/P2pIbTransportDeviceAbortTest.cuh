@@ -13,11 +13,36 @@ struct PrepareSendSlotAbortObservation {
   uint32_t waitReason{0};
   uint32_t confirmationReason{0};
   uint32_t slotUnretired{0};
+  uint32_t forwardCount{0};
+  uint32_t predecessorCreditCount{0};
+  uint32_t successorPutCount{0};
+  uint32_t completionRecordCount{0};
+  uint32_t recvLaneCursor{0};
   uint64_t remainingLaneMask{0};
   uint64_t generation{0};
 };
 
+struct VariableWaitAbortObservation {
+  uint32_t sendCopyCount{0};
+  uint32_t putCount{0};
+  uint32_t recvCopyCount{0};
+  uint32_t signalCount{0};
+  uint32_t recvLaneCursor{0};
+};
+
 void launchPrepareSendSlotAbortForwarding(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchLlForwardPreparationRetirementRefusal(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchLlForwardPreparationDataReadyAbort(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchSimpleForwardPreparationDataReadyAbort(
     PrepareSendSlotAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort);
 
@@ -54,6 +79,19 @@ void launchIbrcWaitSignal(
     uint64_t expected,
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait = nullptr);
+
+void launchIbWrapperTrySignal(
+    uint64_t* signal,
+    uint32_t* postedCount,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchVariableSendWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchVariableRecvWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
 
 /*
  * Depth of the command queue backing `launchIbrcPutUntilQueueFull`, so the test
