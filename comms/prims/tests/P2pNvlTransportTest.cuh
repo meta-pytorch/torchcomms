@@ -97,6 +97,20 @@ void testTileTwoCallSendOnly(
     int blockSize,
     cudaStream_t stream = nullptr);
 
+// Reuse one cooperative abort observation across an unsatisfied peer A and an
+// already-ready peer B. `receive` selects the recv/SLOT_FREE mirror of the
+// send/DATA_READY case.
+void testCooperativeAbortAcrossPeers(
+    P2pNvlTransportDevice peerA,
+    P2pNvlTransportDevice peerB,
+    void* data,
+    size_t nbytes,
+    bool receive,
+    AbortDevice abort,
+    uint32_t* abortObserved,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
 void testTileSendWaitsForWrappedSubstepAck(
     P2pNvlTransportDevice p2p,
     const char* sendData,

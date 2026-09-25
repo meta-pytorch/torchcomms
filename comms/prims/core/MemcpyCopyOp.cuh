@@ -14,6 +14,10 @@
 namespace comms::prims {
 
 struct Memcpy {
+  // recv() contains no rendezvous, group-wide collective, or all-lane
+  // dependency, so callers may invoke it on only the currently ready lanes.
+  static constexpr bool kDivergentRecvSafe = true;
+
   // Fixed-size CopyOp policy: the transport reserves exactly `chunkSize`
   // per sub-chunk and emits exactly `nbytes`. See AnsCompress (CopyOp.cuh)
   // for the variable-size counterpart that overrides these.
@@ -127,6 +131,13 @@ struct Memcpy {
     LLImpl<P>::repack(group, dst, fwd_staging, staging, nbytes, fwdFlagVal);
   }
 };
+
+template <typename Op, typename = void>
+inline constexpr bool is_divergent_recv_safe_v = false;
+template <typename Op>
+inline constexpr bool is_divergent_recv_safe_v<
+    Op,
+    std::void_t<decltype(Op::kDivergentRecvSafe)>> = Op::kDivergentRecvSafe;
 
 // Detection traits: does CopyOp `Op` provide packet-aware LL hooks for packet
 // geometry `P`? A CopyOp opts into the LL protocol by defining sendLL<P> /

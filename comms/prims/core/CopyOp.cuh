@@ -56,6 +56,10 @@ __host__ __device__ __forceinline__ constexpr std::size_t ans_header_bytes(
 
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduce {
+  // recv() contains no rendezvous, group-wide collective, or all-lane
+  // dependency, so callers may invoke it on only the currently ready lanes.
+  static constexpr bool kDivergentRecvSafe = true;
+
   // Fixed-size CopyOp policy (see AnsCompress for the variable-size one).
   static constexpr bool kVariableSize = false;
   static constexpr std::size_t kActivationThreshold = 0;
@@ -139,6 +143,10 @@ struct TileReduce {
 // Register/tile-staged reduce.
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduceStaged {
+  // recv() contains no rendezvous, group-wide collective, or all-lane
+  // dependency, so callers may invoke it on only the currently ready lanes.
+  static constexpr bool kDivergentRecvSafe = true;
+
   __host__ __device__ static constexpr std::size_t smem_bytes() {
     return 0;
   }

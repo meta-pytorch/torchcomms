@@ -7,6 +7,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/BitOps.cuh"
 #include "comms/prims/core/AbortCheck.cuh"
+#include "comms/prims/core/GroupAbort.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
@@ -168,6 +169,25 @@ struct alignas(128) SignalState {
   }
 
  private:
+  __device__ __forceinline__ static bool
+  conditionMet(uint64_t current, CmpOp op, uint64_t expected) {
+    switch (op) {
+      case CmpOp::CMP_EQ:
+        return current == expected;
+      case CmpOp::CMP_GT:
+        return current > expected;
+      case CmpOp::CMP_LT:
+        return current < expected;
+      case CmpOp::CMP_GE:
+        return current >= expected;
+      case CmpOp::CMP_LE:
+        return current <= expected;
+      case CmpOp::CMP_NE:
+        return current != expected;
+    }
+    return false;
+  }
+
  public:
   /**
    * wait_until - Wait until the signal counter satisfies a condition
@@ -252,6 +272,39 @@ struct alignas(128) SignalState {
         }
         break;
     }
+  }
+
+  /**
+   * Wait until this lane observes the signal condition or a GroupAbort.
+   *
+   * The result is intentionally lane-local and this method does not
+   * rendezvous. Callers may perform discardable lane-local work from `true`,
+   * then must converge before any peer-visible side effect.
+   */
+  __device__ __forceinline__ bool wait_until_or_abort(
+      ThreadGroup& group,
+      CmpOp op,
+      uint64_t expected,
+      GroupAbort& groupAbort) {
+    if (!groupAbort.isEnabled()) {
+      wait_until(op, expected, AbortDevice());
+      return true;
+    }
+
+    bool ready = conditionMet(load(), op, expected);
+    while (!ready && !groupAbort.observed()) {
+      if (groupAbort.checkLeader(group)) {
+        break;
+      }
+      ready = conditionMet(load(), op, expected);
+    }
+
+    // Check no-wait and immediately-ready signals too. Other lanes may begin
+    // discardable work; the caller converges before deciding whether to commit.
+    if (ready && groupAbort.checkLeader(group)) {
+      ready = false;
+    }
+    return ready;
   }
 
   // ===========================================================================

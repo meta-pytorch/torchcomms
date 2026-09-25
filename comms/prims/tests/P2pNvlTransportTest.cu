@@ -269,6 +269,47 @@ __global__ void testTileTwoCallSendOnlyKernel(
       abortDevice);
 }
 
+__global__ void testCooperativeAbortAcrossPeersKernel(
+    P2pNvlTransportDevice peerA,
+    P2pNvlTransportDevice peerB,
+    void* data,
+    size_t nbytes,
+    bool receive,
+    AbortDevice abort,
+    uint32_t* abortObserved) {
+  abort.start();
+  auto group = make_block_group();
+  __shared__ GroupAbort::Shared sharedAbort;
+  auto groupAbort = GroupAbort::initialize(group, abort, sharedAbort);
+
+  if (receive) {
+    peerA.recv(group, data, nbytes, 0, groupAbort);
+    peerB.recv(group, data, nbytes, 0, groupAbort);
+  } else {
+    peerA.send(group, data, nbytes, 0, groupAbort);
+    peerB.send(group, data, nbytes, 0, groupAbort);
+  }
+
+  if (group.is_leader()) {
+    *abortObserved = groupAbort.observed() ? 1U : 0U;
+  }
+}
+
+void testCooperativeAbortAcrossPeers(
+    P2pNvlTransportDevice peerA,
+    P2pNvlTransportDevice peerB,
+    void* data,
+    size_t nbytes,
+    bool receive,
+    AbortDevice abort,
+    uint32_t* abortObserved,
+    int blockSize,
+    cudaStream_t stream) {
+  testCooperativeAbortAcrossPeersKernel<<<1, blockSize, 0, stream>>>(
+      peerA, peerB, data, nbytes, receive, abort, abortObserved);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 __device__ void check_wrapped_substep_with_existing_signals(
     P2pNvlTransportDevice& p2p,
     ThreadGroup& group,
