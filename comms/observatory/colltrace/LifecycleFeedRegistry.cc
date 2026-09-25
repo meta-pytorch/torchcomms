@@ -254,6 +254,23 @@ std::optional<CapturedCollDescription> describeCapturedCollective(
   return std::nullopt;
 }
 
+std::optional<uint64_t> lifecycleLatestCollIdForCommId(uint64_t commId) {
+  if (commId == 0) {
+    return std::nullopt;
+  }
+  for (const auto& source : snapshotLifecycleFeeds()) {
+    if (source.ops->commId != commId || source.ops->latestCollId == nullptr) {
+      continue;
+    }
+    try {
+      return source.ops->latestCollId();
+    } catch (...) {
+      countFailure();
+    }
+  }
+  return std::nullopt;
+}
+
 void resetLifecycleFeedRegistryForTest() {
   decltype(holder().entries) dropped;
   {
