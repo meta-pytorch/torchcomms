@@ -59,6 +59,7 @@ class BackendWrapper : public c10d::Backend {
   };
 
   explicit BackendWrapper(std::shared_ptr<TorchComm> comm);
+  BackendWrapper(std::shared_ptr<TorchComm> comm, int rank, int size);
   ~BackendWrapper() override = default;
 
   c10::intrusive_ptr<c10d::Work> broadcast(
@@ -197,6 +198,18 @@ class BackendWrapper : public c10d::Backend {
   // Delegates to TorchComm::abort() which uses graceful revoke in
   // reconfigurable mode and destructive abort otherwise.
   void abort() override;
+
+#ifdef C10D_BACKEND_HAS_RECONFIGURE
+  // Exchange opaque TorchComm handles through the standard c10d interface.
+  // Create comm with enable_reconfigure=true for dynamic initialization.
+  // Reconfigure follows TorchComm's blocking initialization semantics and
+  // returns completed c10d Work; rank/size reflect the initialized
+  // communicator.
+  bool supportsReconfigure() const override;
+  c10d::ReconfigureHandle get_reconfigure_handle() const override;
+  c10::intrusive_ptr<c10d::Work> reconfigure(
+      const c10d::ReconfigureOptions& opts) override;
+#endif
 
  private:
   std::shared_ptr<TorchComm> comm_;

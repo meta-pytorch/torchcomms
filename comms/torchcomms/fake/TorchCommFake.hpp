@@ -138,6 +138,10 @@ class TorchCommFake : public TorchCommBackend {
       const std::optional<at::Tensor>& tensor = std::nullopt) override;
 
   // Fault Tolerance
+  InitHandle getInitHandle() const override {
+    return initHandle_;
+  }
+
   bool supportsReconfigure() const override {
     return true;
   }
@@ -149,6 +153,14 @@ class TorchCommFake : public TorchCommBackend {
   }
 
   // Test helpers
+  const std::optional<ReconfigureOptions>& getLastReconfigureOptions() const {
+    return lastReconfigureOptions_;
+  }
+
+  void setRank(int rank) {
+    rank_ = rank;
+  }
+
   void setSize(int size) {
     size_ = size;
   }
@@ -254,7 +266,9 @@ class TorchCommFake : public TorchCommBackend {
   bool aborted_{false};
   std::optional<std::chrono::milliseconds> timeout_;
   std::unordered_map<std::string, std::string> hints_;
+  InitHandle initHandle_{"fake:0"};
   bool shouldFailReconfigure_{false};
+  std::optional<ReconfigureOptions> lastReconfigureOptions_;
   std::unordered_set<void*> registered_addrs_;
   std::optional<SendOptions> lastSendOptions_;
   int lastSendDst_{-1};

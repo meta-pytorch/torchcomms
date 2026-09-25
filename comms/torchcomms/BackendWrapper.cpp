@@ -186,6 +186,34 @@ class C10dWindowWrapper final : public c10d::Window {
 };
 #endif
 
+#ifdef C10D_BACKEND_HAS_RECONFIGURE
+ReconfigureOptions toTorchCommOptions(
+    const c10d::ReconfigureOptions& options,
+    std::chrono::milliseconds defaultTimeout) {
+  ReconfigureOptions result;
+  result.uuid = options.uuid;
+  result.handles = options.handles;
+  result.timeout = options.timeout.value_or(defaultTimeout);
+  result.hints = options.hints;
+  return result;
+}
+
+void validateReconfigureHandles(
+    const c10d::ReconfigureOptions& options,
+    const c10d::ReconfigureHandle& localHandle) {
+  std::visit(
+      [&](const auto& handles) {
+        TORCH_CHECK(
+            !handles.empty(), "Reconfigure requires at least one handle");
+        TORCH_CHECK(
+            std::find(handles.begin(), handles.end(), localHandle) !=
+                handles.end(),
+            "Local TorchComms reconfigure handle is not part of the new communicator");
+      },
+      options.handles);
+}
+#endif
+
 void completeFutureOnce(
     const std::shared_ptr<std::atomic<bool>>& claimed,
     const c10::intrusive_ptr<c10::ivalue::Future>& future,
@@ -286,9 +314,56 @@ c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFuture() {
 }
 
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
-    : Backend(comm->getRank(), comm->getSize()),
-      comm_(comm),
+    : BackendWrapper(
+          comm,
+          comm->getRanks().empty() ? -1 : comm->getRank(),
+          comm->getRanks().empty() ? -1 : comm->getSize()) {}
+
+BackendWrapper::BackendWrapper(
+    std::shared_ptr<TorchComm> comm,
+    int rank,
+    int size)
+    : Backend(rank, size),
+      comm_(std::move(comm)),
       options_(c10::make_intrusive<Options>()) {}
+
+#ifdef C10D_BACKEND_HAS_RECONFIGURE
+bool BackendWrapper::supportsReconfigure() const {
+  return comm_->getBackendImpl()->supportsReconfigure();
+}
+
+c10d::ReconfigureHandle BackendWrapper::get_reconfigure_handle() const {
+  TORCH_CHECK(
+      supportsReconfigure(),
+      "TorchComms backend ",
+      getBackendName(),
+      " does not support reconfigure");
+  return comm_->getInitHandle();
+}
+
+c10::intrusive_ptr<c10d::Work> BackendWrapper::reconfigure(
+    const c10d::ReconfigureOptions& options) {
+  TORCH_CHECK(
+      supportsReconfigure(),
+      "TorchComms backend ",
+      getBackendName(),
+      " does not support reconfigure");
+  validateReconfigureHandles(options, get_reconfigure_handle());
+
+  // TorchComm waits for initialization before returning and refreshing ranks.
+  auto work =
+      comm_->reconfigure(toTorchCommOptions(options, options_->timeout));
+  TORCH_CHECK(
+      work->isCompleted(),
+      "TorchComms backend ",
+      getBackendName(),
+      " failed to reconfigure; work status=",
+      static_cast<int>(work->status()));
+  rank_ = comm_->getRank();
+  size_ = comm_->getSize();
+  return c10::make_intrusive<WorkWrapper>(std::move(work));
+}
+#endif
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
     std::vector<at::Tensor>& tensors,

@@ -2702,6 +2702,13 @@ Note:
           py::arg("comm"),
           py::call_guard<py::gil_scoped_release>())
       .def(
+          py::init<std::shared_ptr<TorchComm>, int, int>(),
+          "Create BackendWrapper with c10d-provided initial rank and size",
+          py::arg("comm"),
+          py::arg("rank"),
+          py::arg("size"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_comm",
           &BackendWrapper::getComm,
           "Get the underlying TorchComm instance",
