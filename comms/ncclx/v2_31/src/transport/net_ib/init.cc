@@ -201,12 +201,12 @@ ncclResult_t ncclIbMakeVDeviceInternal(int* d, ncclNetVDeviceProps_t* props) {
   }
 
   if (props->ndevs == 0) {
-    WARN("NET/IB : Can't make virtual NIC with 0 devices");
+    ERR(ncclInvalidUsage, "NET/IB : Can't make virtual NIC with 0 devices");
     return ncclInvalidUsage;
   }
 
   if (ncclNMergedIbDevs == MAX_IB_VDEVS) {
-    WARN("NET/IB : Cannot allocate any more virtual devices (%d)", MAX_IB_VDEVS);
+    ERR(ncclInvalidUsage, "NET/IB : Cannot allocate any more virtual devices (%d)", MAX_IB_VDEVS);
     return ncclInvalidUsage;
   }
 
@@ -242,12 +242,12 @@ ncclResult_t ncclIbMakeVDeviceInternal(int* d, ncclNetVDeviceProps_t* props) {
   ncclIbDev* dev0 = ncclIbDevs + props->devs[0];
   for (int i = 1; i < props->ndevs; i++) {
     if (props->devs[i] >= ncclNIbDevs) {
-      WARN("NET/IB : Cannot use physical device %d, max %d", props->devs[i], ncclNIbDevs);
+      ERR(ncclInvalidUsage, "NET/IB : Cannot use physical device %d, max %d", props->devs[i], ncclNIbDevs);
       return ncclInvalidUsage;
     }
     ncclIbDev* dev = ncclIbDevs + props->devs[i];
     if (dev->link != dev0->link) {
-      WARN("NET/IB : Attempted to merge incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of "
+      ERR(ncclInvalidUsage, "NET/IB : Attempted to merge incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of "
            "only one link type using NCCL_IB_HCA",
            props->devs[0], dev0->devName, dev0->portNum, NCCL_IB_LLSTR(dev0->link), props->devs[i], dev->devName,
            dev->portNum, NCCL_IB_LLSTR(dev->link));
@@ -304,7 +304,7 @@ ncclResult_t ncclIbInitDevices(ncclDebugLogger_t logFunction, ncclProfilerCallba
       ncclNMergedIbDevs = 0;
       NCCLCHECK(ncclFindInterfaces(ncclIbIfName, &ncclIbIfAddr, MAX_IF_NAME_SIZE, 1, &nIpIfs));
       if (nIpIfs != 1) {
-        WARN("NET/IB : No IP interface found.");
+        ERR(ncclInternalError, "NET/IB : No IP interface found.");
         ret = ncclInternalError;
         goto fail;
       }
@@ -573,7 +573,7 @@ ncclResult_t ncclIbGetPhysProperties(int dev, ncclNetProperties_t* props) {
 
 ncclResult_t ncclIbGetProperties(int dev, ncclNetProperties_t* props) {
   if (dev >= ncclNMergedIbDevs) {
-    WARN("NET/IB : Requested properties for vNic %d, only %d vNics have been created", dev, ncclNMergedIbDevs);
+    ERR(ncclInvalidUsage, "NET/IB : Requested properties for vNic %d, only %d vNics have been created", dev, ncclNMergedIbDevs);
     return ncclInvalidUsage;
   }
   struct ncclIbMergedDev* mergedDev = ncclIbMergedDevs + dev;

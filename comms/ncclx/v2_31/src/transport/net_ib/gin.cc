@@ -39,7 +39,7 @@ static ncclResult_t ncclGinIbGdrGpuSupport(bool gdaki) {
   CUCHECK(cuDeviceGetAttribute(&dmaBufSupportOnDevice, CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, cudaDev));
   if (dmaBufSupportOnDevice == 1) return ncclSuccess;
 
-  WARN("Unable to use GIN: Peermem is not supported, and device %d does not support DMA-BUF.", cudaDev);
+  ERR(ncclInvalidUsage, "Unable to use GIN: Peermem is not supported, and device %d does not support DMA-BUF.", cudaDev);
   return ncclInvalidUsage;
 }
 
@@ -258,7 +258,7 @@ ncclResult_t ncclGinIbGdakiGetGinProperties(ncclGinProperties_t* ginProps) {
 ncclResult_t ncclGinIbGdakiGetProperties(int dev, ncclNetProperties_t* props) {
   std::lock_guard<std::mutex> lock(ncclGinIbGdakiLockMutex);
   if (dev >= ncclGinIbGdakiNDevs) {
-    WARN("NET/IB : Requested properties for GIN GDAKI NIC %d, only %d GIN GDAKI NICs have been created", dev,
+    ERR(ncclInvalidUsage, "NET/IB : Requested properties for GIN GDAKI NIC %d, only %d GIN GDAKI NICs have been created", dev,
          ncclGinIbGdakiNDevs);
     return ncclInvalidUsage;
   }

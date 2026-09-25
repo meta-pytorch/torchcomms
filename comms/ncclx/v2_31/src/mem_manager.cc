@@ -134,7 +134,7 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
   if (ncclParamMemManagerDisable()) return ncclSuccess;
   if (manager == nullptr || ptr == nullptr) return ncclInternalError;
   if (!COMPILER_ATOMIC_LOAD(&manager->initialized, std::memory_order_acquire)) {
-    WARN("MemManager: Cannot track allocation ptr=%p, manager not initialized", ptr);
+    ERR(ncclInternalError, "MemManager: Cannot track allocation ptr=%p, manager not initialized", ptr);
     return ncclInternalError;
   }
 
@@ -153,7 +153,7 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
   // Scratch/Offload: create linked list entry
   ncclDynMemEntry* entry = (ncclDynMemEntry*)malloc(sizeof(ncclDynMemEntry));
   if (entry == nullptr) {
-    WARN("MemManager: Failed to allocate memory entry");
+    ERR(ncclSystemError, "MemManager: Failed to allocate memory entry");
     return ncclSystemError;
   }
 
@@ -240,7 +240,7 @@ ncclResult_t ncclMemUntrackDynamic(struct ncclMemManager* manager, void* ptr, st
 
   // Atomic check to avoid locking destroyed mutex
   if (!COMPILER_ATOMIC_LOAD(&manager->initialized, std::memory_order_acquire)) {
-    WARN("MemManager: Cannot untrack allocation ptr=%p, manager not initialized", ptr);
+    ERR(ncclInternalError, "MemManager: Cannot untrack allocation ptr=%p, manager not initialized", ptr);
     return ncclInternalError;
   }
 
@@ -356,7 +356,7 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
   if (ncclParamMemManagerDisable()) return ncclSuccess;
   if (manager == nullptr || ptr == nullptr) return ncclInternalError;
   if (!COMPILER_ATOMIC_LOAD(&manager->initialized, std::memory_order_acquire)) {
-    WARN("MemManager: Cannot mark export for ptr=%p, manager not initialized", ptr);
+    ERR(ncclInternalError, "MemManager: Cannot mark export for ptr=%p, manager not initialized", ptr);
     return ncclInternalError;
   }
   std::lock_guard<std::mutex> lock(manager->lock);
@@ -368,7 +368,7 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
   }
 
   if (entry == nullptr) {
-    WARN("MemManager: Cannot mark export for ptr=%p - not found in tracked entries. "
+    ERR(ncclInternalError, "MemManager: Cannot mark export for ptr=%p - not found in tracked entries. "
          "Only dynamic memory (scratch/offload) needs export tracking for suspend/resume.",
          ptr);
     return ncclInternalError;
@@ -376,14 +376,14 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
 
   // Verify this is a local entry, not an imported one
   if (entry->isImportedFromPeer) {
-    WARN("MemManager: Cannot mark export for ptr=%p - this is an imported buffer, not a local one", ptr);
+    ERR(ncclInternalError, "MemManager: Cannot mark export for ptr=%p - this is an imported buffer, not a local one", ptr);
     return ncclInternalError;
   }
 
   // Check if peer already exists
   for (int i = 0; i < entry->desc.local.numExportedPeers; i++) {
     if (entry->desc.local.exportedPeerRanks[i] == peerRank) {
-      WARN("MemManager: Buffer ptr=%p already exported to peer rank %d", ptr, peerRank);
+      ERR(ncclInternalError, "MemManager: Buffer ptr=%p already exported to peer rank %d", ptr, peerRank);
       return ncclInternalError;
     }
   }
@@ -417,7 +417,7 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
  */
 ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
   if (ncclParamMemManagerDisable()) {
-    WARN("MemManager: Suspend failed, memory manager is disabled");
+    ERR(ncclInvalidUsage, "MemManager: Suspend failed, memory manager is disabled");
     return ncclInvalidUsage;
   }
   if (comm == nullptr) return ncclInvalidArgument;
@@ -425,7 +425,7 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
   ncclMemManager* manager = comm->memManager;
 
   if (manager->released) {
-    WARN("MemManager: Already suspended");
+    ERR(ncclInvalidUsage, "MemManager: Already suspended");
     return ncclInvalidUsage;
   }
 
@@ -483,7 +483,7 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
     if (entry->memType == ncclMemOffload) {
       NCCLCHECKGOTO(ncclCudaHostCalloc((char**)&entry->cpuBackup, entry->size), ret, fail);
       if (entry->cpuBackup == nullptr) {
-        WARN("MemManager: Failed to allocate CPU backup for offload");
+        ERR(ncclSystemError, "MemManager: Failed to allocate CPU backup for offload");
         ret = ncclSystemError;
         goto fail;
       }
@@ -493,7 +493,7 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
       if (err != cudaSuccess) {
         ncclCudaHostFree(entry->cpuBackup);
         entry->cpuBackup = nullptr;
-        WARN("MemManager: Failed to copy to CPU backup: %s", cudaGetErrorString(err));
+        ERR(ncclUnhandledCudaError, "MemManager: Failed to copy to CPU backup: %s", cudaGetErrorString(err));
         ret = ncclUnhandledCudaError;
         goto fail;
       }
@@ -549,7 +549,7 @@ fail:
  */
 ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
   if (ncclParamMemManagerDisable()) {
-    WARN("MemManager: Resume failed, memory manager is disabled");
+    ERR(ncclInvalidUsage, "MemManager: Resume failed, memory manager is disabled");
     return ncclInvalidUsage;
   }
   if (comm == nullptr) return ncclInvalidArgument;
@@ -557,7 +557,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
   ncclMemManager* manager = comm->memManager;
 
   if (!manager->released) {
-    WARN("MemManager: Not in suspended state");
+    ERR(ncclInvalidUsage, "MemManager: Not in suspended state");
     return ncclInvalidUsage;
   }
 
@@ -632,7 +632,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     if (entry->memType == ncclMemOffload && entry->cpuBackup != NULL) {
       cudaError_t err = cudaMemcpy(entry->ptr, entry->cpuBackup, entry->size, cudaMemcpyHostToDevice);
       if (err != cudaSuccess) {
-        WARN("MemManager: Failed to restore from CPU backup: %s (backup preserved)", cudaGetErrorString(err));
+        ERR(ncclUnhandledCudaError, "MemManager: Failed to restore from CPU backup: %s (backup preserved)", cudaGetErrorString(err));
         ret = ncclUnhandledCudaError;
         goto fail;
       }
@@ -647,7 +647,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
       CUresult exportRet = CUPFN(cuMemExportToShareableHandle(&entry->desc.local.shareableHandle.fabricHandle,
                                                               newHandle, CU_MEM_HANDLE_TYPE_FABRIC, 0));
       if (exportRet != CUDA_SUCCESS) {
-        WARN("MemManager: cuMemExportToShareableHandle (FABRIC) failed for ptr=%p", entry->ptr);
+        ERR(ncclUnhandledCudaError, "MemManager: cuMemExportToShareableHandle (FABRIC) failed for ptr=%p", entry->ptr);
         CUCHECKIGNORE(cuMemUnmap((CUdeviceptr)entry->ptr, entry->size));
         CUCHECKIGNORE(cuMemRelease(newHandle));
         entry->handle = 0;
@@ -700,7 +700,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     // Allocate buffer for all counts
     allCounts = (int*)malloc(comm->nRanks * sizeof(int));
     if (allCounts == nullptr) {
-      WARN("MemManager: Failed to allocate allCounts");
+      ERR(ncclSystemError, "MemManager: Failed to allocate allCounts");
       return ncclSystemError;
     }
     memset(allCounts, 0, comm->nRanks * sizeof(int));
@@ -1006,13 +1006,13 @@ ncclResult_t ncclCommSuspend(ncclComm_t comm, int flags) {
 
   if (flags & NCCL_SUSPEND_MEM) {
     if (ncclParamMemManagerDisable()) {
-      WARN("MemManager: Suspend not supported, memory manager is disabled");
+      ERR(ncclInvalidUsage, "MemManager: Suspend not supported, memory manager is disabled");
       ret = ncclInvalidUsage;
       goto fail;
     }
     // Check if manager is shared
     if (comm->memManager && comm->memManager->refCount > 1) {
-      WARN("Memory suspend not supported with split_share communicators (refCount=%d)", comm->memManager->refCount);
+      ERR(ncclInvalidUsage, "Memory suspend not supported with split_share communicators (refCount=%d)", comm->memManager->refCount);
       ret = ncclInvalidUsage;
       goto fail;
     }
@@ -1057,13 +1057,13 @@ ncclResult_t ncclCommResume(ncclComm_t comm) {
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
 
   if (ncclParamMemManagerDisable()) {
-    WARN("MemManager: Resume not supported, memory manager is disabled");
+    ERR(ncclInvalidUsage, "MemManager: Resume not supported, memory manager is disabled");
     ret = ncclInvalidUsage;
     goto fail;
   }
   // Check if manager is shared
   if (comm->memManager && comm->memManager->refCount > 1) {
-    WARN("Memory resume not supported with split_share communicators (refCount=%d)", comm->memManager->refCount);
+    ERR(ncclInvalidUsage, "Memory resume not supported with split_share communicators (refCount=%d)", comm->memManager->refCount);
     ret = ncclInvalidUsage;
     goto fail;
   }
@@ -1102,7 +1102,7 @@ ncclResult_t ncclCommMemStats(ncclComm_t comm, ncclCommMemStat_t stat, uint64_t*
   if (value == nullptr) return ncclInvalidArgument;
 
   if (ncclParamMemManagerDisable()) {
-    WARN("MemManager: MemStats not supported, memory manager is disabled");
+    ERR(ncclInvalidUsage, "MemManager: MemStats not supported, memory manager is disabled");
     return ncclInvalidUsage;
   }
 

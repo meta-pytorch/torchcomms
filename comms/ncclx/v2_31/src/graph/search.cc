@@ -71,7 +71,7 @@ static ncclResult_t findRevLink(struct ncclTopoNode* node1, struct ncclTopoNode*
       return ncclSuccess;
     }
   }
-  WARN("Could not find rev link for %d/%ld -> %d/%ld", node1->type, node1->id, node2->type, node2->id);
+  ERR(ncclInternalError, "Could not find rev link for %d/%ld -> %d/%ld", node1->type, node1->id, node2->type, node2->id);
   return ncclInternalError;
 }
 
@@ -133,7 +133,7 @@ static ncclResult_t ncclTopoFollowPath(struct ncclTopoSystem* system, struct ncc
   struct ncclTopoNode* node2 = system->nodes[type2].nodes + index2;
 
   if (node1->paths[type2] == nullptr || node2->paths[type1] == nullptr) {
-    WARN("No path computed to go from %s/%d to %s/%d", topoNodeTypeStr[type1], index1, topoNodeTypeStr[type2], index2);
+    ERR(ncclInternalError, "No path computed to go from %s/%d to %s/%d", topoNodeTypeStr[type1], index1, topoNodeTypeStr[type2], index2);
     return ncclInternalError;
   }
 
@@ -227,7 +227,7 @@ static ncclResult_t getGpuIndex(struct ncclTopoSystem* system, int rank, int* in
       return ncclSuccess;
     }
   }
-  WARN("Could not find gpu rank %d", rank);
+  ERR(ncclInternalError, "Could not find gpu rank %d", rank);
   return ncclInternalError;
 }
 
@@ -238,7 +238,7 @@ static ncclResult_t getNetIndex(struct ncclTopoSystem* system, int64_t id, int* 
       return ncclSuccess;
     }
   }
-  WARN("Could not find net id %lx", id);
+  ERR(ncclInternalError, "Could not find net id %lx", id);
   return ncclInternalError;
 }
 
@@ -947,7 +947,7 @@ ncclResult_t ncclTopoGetChannelFromXml(struct ncclXmlNode* xmlChannel, int c, st
           }
         }
         if (rank == -1) {
-          WARN("XML Import Channel : dev %ld not found.", dev);
+          ERR(ncclSystemError, "XML Import Channel : dev %ld not found.", dev);
           return ncclSystemError;
         }
       }
@@ -1017,7 +1017,7 @@ ncclResult_t ncclTopoGetXmlFromChannel(struct ncclTopoGraph* graph, int c, struc
       }
     }
     if (dev == -1) {
-      WARN("XML Export Channel : rank %d not found.", intra[g]);
+      ERR(ncclInternalError, "XML Export Channel : rank %d not found.", intra[g]);
       return ncclInternalError;
     }
     NCCLCHECK(xmlSetAttrLong(node, "dev", dev));

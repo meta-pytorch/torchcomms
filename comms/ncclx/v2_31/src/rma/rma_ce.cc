@@ -209,7 +209,7 @@ static ncclResult_t ncclRmaCePutLaunchPersist(struct ncclComm* comm, struct nccl
       NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, task->peerWinHost, task->peerWinOffset, peerLsaRank, &peerBuff), ret,
                     fail);
       if (peerBuff == NULL) {
-        WARN("RMA CE: peerBuff is NULL after ncclDevrGetLsaRankPtr");
+        ERR(ncclInvalidArgument, "RMA CE: peerBuff is NULL after ncclDevrGetLsaRankPtr");
         ret = ncclInvalidArgument;
         goto fail;
       }
@@ -307,7 +307,7 @@ static ncclResult_t ncclRmaCePutLaunchNonPersist(struct ncclComm* comm, struct n
                                             &peerBuff),
                       ret, fail);
         if (peerBuff == NULL) {
-          WARN("RMA CE: peerBuff is NULL after ncclDevrGetLsaRankPtr");
+          ERR(ncclInvalidArgument, "RMA CE: peerBuff is NULL after ncclDevrGetLsaRankPtr");
           ret = ncclInvalidArgument;
           goto fail;
         }
@@ -389,7 +389,7 @@ fail:
 
 ncclResult_t ncclRmaCePutLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream) {
   if (!comm->rmaState.rmaCeState.initialized) {
-    WARN("RMA CE is not initialized");
+    ERR(ncclInternalError, "RMA CE is not initialized");
     return ncclInternalError;
   }
 
@@ -406,7 +406,7 @@ ncclResult_t ncclRmaCeWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* p
 
   // Make sure the RMA CE is initialized
   if (!comm->rmaState.rmaCeState.initialized) {
-    WARN("RMA CE is not initialized");
+    ERR(ncclInternalError, "RMA CE is not initialized");
     return ncclInternalError;
   }
 

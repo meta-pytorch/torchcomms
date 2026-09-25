@@ -194,7 +194,7 @@ bool ncclCudaLaunchBlocking = false;
                                                           cudaEnableDefault, &driverStatus)); \
     if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
       if (!ignore) { \
-        WARN("Retrieve %s version %d failed with %d status %d", #symbol, version, res, driverStatus); \
+        ERR(ncclSystemError, "Retrieve %s version %d failed with %d status %d", #symbol, version, res, driverStatus); \
         return ncclSystemError; \
       } \
     } \
@@ -206,7 +206,7 @@ bool ncclCudaLaunchBlocking = false;
     res = CUDACLEARERROR(cudaGetDriverEntryPoint(#symbol, (void**)(&pfn_##symbol), cudaEnableDefault, &driverStatus)); \
     if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
       if (!ignore) { \
-        WARN("Retrieve %s failed with %d status %d", #symbol, res, driverStatus); \
+        ERR(ncclSystemError, "Retrieve %s failed with %d status %d", #symbol, res, driverStatus); \
         return ncclSystemError; \
       } \
     } \
@@ -217,7 +217,7 @@ bool ncclCudaLaunchBlocking = false;
     res = CUDACLEARERROR(cudaGetDriverEntryPoint(#symbol, (void**)(&pfn_##symbol), cudaEnableDefault)); \
     if (res != cudaSuccess) { \
       if (!ignore) { \
-        WARN("Retrieve %s failed with %d", #symbol, res); \
+        ERR(ncclSystemError, "Retrieve %s failed with %d", #symbol, res); \
         return ncclSystemError; \
       } \
     } \
@@ -325,7 +325,7 @@ static void initOnceFunc() {
 
 #if CUDART_VERSION >= 11030
   if (cudaPfnFuncLoader()) {
-    WARN("CUDA some PFN functions not found in the library");
+    ERR(ncclSystemError, "CUDA some PFN functions not found in the library");
     goto error;
   }
 #endif
