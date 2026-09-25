@@ -4,6 +4,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <future>
+#include <optional>
 
 #include "comms/utils/cvars/nccl_baseline_adapter.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h" // @manual
@@ -24,6 +25,10 @@ class NCCLCvarInitEnvironment : public ::testing::Environment {
 class CvarInitTest : public ::testing::Test {
  public:
   void SetUp() override {
+    if (const char* value = getenv("MCCL_ALGO")) {
+      savedMcclAlgoEnv_ = value;
+    }
+    savedMcclAlgo_ = MCCL_ALGO;
     // Clear any existing environment variables before each test
     clearTestEnvVars();
   }
@@ -31,6 +36,12 @@ class CvarInitTest : public ::testing::Test {
   void TearDown() override {
     // Clean up environment after each test
     clearTestEnvVars();
+    if (savedMcclAlgoEnv_.has_value()) {
+      setenv("MCCL_ALGO", savedMcclAlgoEnv_->c_str(), 1);
+    } else {
+      unsetenv("MCCL_ALGO");
+    }
+    MCCL_ALGO = savedMcclAlgo_;
   }
 
  private:
@@ -40,6 +51,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("__NCCL_UNIT_TEST_BOOL_CVAR__");
     unsetenv("__NCCL_UNIT_TEST_INT_CVAR__");
     unsetenv("__NCCL_UNIT_TEST_INT64_T_CVAR__");
+    unsetenv("MCCL_ALGO");
     unsetenv("NCCL_DEBUG_SUBSYS");
     unsetenv("MCCL_IBGDA_MAX_RD_ATOMIC");
     unsetenv("NCCL_CVARS_LOG_INFO");
@@ -55,11 +67,22 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("MCCL_IBGDA_COLLAPSED_CQ_MODE");
     unsetenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
   }
+
+  std::optional<std::string> savedMcclAlgoEnv_;
+  std::string savedMcclAlgo_;
 };
 
 TEST_F(CvarInitTest, BasicInitialization) {
   // Test basic ncclCvarInit functionality
   EXPECT_NO_THROW(ncclCvarInit());
+}
+
+TEST_F(CvarInitTest, McclAlgoDefaultsToExplicitRingSimple) {
+  MCCL_ALGO = "sentinel";
+
+  EXPECT_NO_THROW(ncclCvarInit());
+  EXPECT_EQ(MCCL_ALGO, "allreduce:ring:simple");
+  EXPECT_EQ(MCCL_ALGO_DEFAULTCVARVALUE, "allreduce:ring:simple");
 }
 
 TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeDefaultsToAuto) {
@@ -350,6 +373,15 @@ TEST_F(CvarInitTest, EmptyStringHandling) {
       nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(
       result, nullptr); // Current impl returns nullptr instead of empty string
+}
+
+TEST_F(CvarInitTest, EmptyMcclAlgoEnvironmentReachesStoredCvar) {
+  MCCL_ALGO = "sentinel";
+  setenv("MCCL_ALGO", "", 1);
+
+  EXPECT_NO_THROW(ncclCvarInit());
+  EXPECT_TRUE(MCCL_ALGO.empty());
+  EXPECT_STREQ(nccl_baseline_adapter::ncclGetEnvImpl("MCCL_ALGO"), nullptr);
 }
 
 TEST_F(CvarInitTest, WhitespaceTrimming) {
