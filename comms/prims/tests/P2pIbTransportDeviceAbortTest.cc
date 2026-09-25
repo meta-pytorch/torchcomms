@@ -403,6 +403,12 @@ TEST(P2pIbTransportDeviceAbortTest, SimpleForwardStopsWhenDataReadyWaitAborts) {
   EXPECT_EQ(observation.successorPutCount, 0U);
   EXPECT_EQ(observation.completionRecordCount, 0U);
   EXPECT_EQ(observation.recvLaneCursor, 0U);
+  EXPECT_EQ(
+      observation.waitReason,
+      static_cast<uint32_t>(comms::fault_tolerance::AbortReason::ABORTED));
+  EXPECT_EQ(observation.waitCallCount, 1U);
+  EXPECT_EQ(observation.waitObservedAbortCount, 1U);
+  EXPECT_EQ(observation.waitBoundExpiredCount, 0U);
   EXPECT_TRUE(abort.isAborted());
 }
 
@@ -569,7 +575,7 @@ TEST(P2pIbTransportDeviceAbortTest, WrapperTrySignalReportsPosted) {
       fixture.data(), fixture.posted(), comms::fault_tolerance::AbortDevice{});
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  EXPECT_EQ(fixture.readPosted(), 32U);
+  EXPECT_EQ(fixture.readPosted(), test::kTestBlockSize);
 }
 
 TEST(P2pIbTransportDeviceAbortTest, WrapperTrySignalReportsPreAbortedSkip) {
@@ -596,6 +602,9 @@ TEST(
   const auto observation = fixture.read();
   EXPECT_EQ(observation.sendCopyCount, 2U);
   EXPECT_EQ(observation.putCount, 1U);
+  EXPECT_EQ(observation.waitCallCount, 1U);
+  EXPECT_EQ(observation.waitObservedAbortCount, 1U);
+  EXPECT_EQ(observation.waitBoundExpiredCount, 0U);
   EXPECT_TRUE(abort.isAborted());
 }
 
@@ -612,6 +621,9 @@ TEST(
   EXPECT_EQ(observation.recvCopyCount, 0U);
   EXPECT_EQ(observation.signalCount, 0U);
   EXPECT_EQ(observation.recvLaneCursor, 0U);
+  EXPECT_EQ(observation.waitCallCount, 1U);
+  EXPECT_EQ(observation.waitObservedAbortCount, 1U);
+  EXPECT_EQ(observation.waitBoundExpiredCount, 0U);
   EXPECT_TRUE(abort.isAborted());
 }
 
