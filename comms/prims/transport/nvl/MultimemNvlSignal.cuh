@@ -860,11 +860,12 @@ __device__ __forceinline__ void signal_publish_and_wait(
  * block synchronization makes the acquire wait or abort verdict visible to
  * the remaining threads.
  */
-__device__ __forceinline__ NvlBlockBarrierResult nvl_block_barrier(
+[[nodiscard]] __device__ __forceinline__ NvlBlockBarrierResult
+nvl_block_barrier(
     const MultimemNvlTransportDevice& transport,
     uint32_t channel,
     ThreadGroup& group,
-    const AbortDevice& abortDevice = AbortDevice{}) {
+    const AbortDevice& abortDevice) {
   nvl_signal_detail::validate_block_barrier(transport, channel, group);
 
   comms::device::fence_acq_rel_sys();
