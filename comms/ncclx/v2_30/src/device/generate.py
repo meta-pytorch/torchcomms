@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 # pyre-unsafe
+from __future__ import annotations
+
 import os
 import sys
 import shutil
@@ -149,7 +151,9 @@ def equivalent_primary(coll, redop, ty, algo, proto):
 # returned will instantiate a ncclDevKernel specialized to run this func
 # without function call overhead.
 def best_kernel(coll, redop, ty, algo, proto):
-  def best(coll, redop, ty, algo, proto):
+  def best(
+    coll: str, redop: str | None, ty: str | None, algo: str | None, proto: str | None
+  ) -> tuple[str, str | None, str | None, str | None, str | None]:
     # Modify this logic to control how many kernels are specialized.
     if coll=="Nop": return ("Generic", None, None, None, None)
     if coll=="SendRecv": return ("SendRecv", None, None, None, None)
