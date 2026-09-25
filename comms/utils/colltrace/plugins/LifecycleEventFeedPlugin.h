@@ -25,8 +25,6 @@ struct LifecycleEventFeedConfig {
   std::string loggerName{"comms"};
 };
 
-uint64_t getNextLifecycleFeedCommId() noexcept;
-
 class LifecycleEventFeedPlugin : public ICollTracePlugin {
  public:
   explicit LifecycleEventFeedPlugin(
