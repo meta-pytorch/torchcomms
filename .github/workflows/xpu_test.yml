@@ -20,7 +20,7 @@ jobs:
     # Don't run on forked repos or empty test matrix
     if: github.repository_owner == 'meta-pytorch'
     timeout-minutes: 120
-    runs-on: linux.idc.xpu.dist #Common runner label
+    runs-on: linux.idc.xpu.dist
     env:
       DOCKER_IMAGE: ubuntu:24.04
     steps:
@@ -85,10 +85,8 @@ jobs:
           msg="Please file an issue on meta-pytorch/torchcomms reporting the faulty runner. Include a link to the runner logs so the runner can be identified"
           if echo "$device_list" | grep -q 'Intel(R) Data Center GPU Max'; then
             echo "OMIX_REPO=intel-omix-pvc" >> "${GITHUB_ENV}"
-            echo "Detected Data Center GPU Max, selected PVC OMIX channel"
           elif echo "$device_list" | grep -q 'Intel(R) Arc(TM) Pro B60 Graphics'; then
             echo "OMIX_REPO=intel-omix" >> "${GITHUB_ENV}"
-            echo "Detected Arc Pro B60, selected client BMG OMIX channel"
           else
             echo "Error: could not determine the XPU device on this runner"
             echo "clinfo -l reported: ${device_list}"
@@ -139,7 +137,7 @@ jobs:
             -e BRANCH \
             -e SHA1 \
             -e RUNNER_NAME \
-            -e CONDA_PKGS_DIRS=/var/lib/jenkins/workspace/.conda_pkgs_cache \
+            -e CONDA_PKGS_DIRS=/var/lib/jenkins/workspace/.conda_pkgs_cache \ #Ensures no conflicts across multiple parallel jobs
             --ulimit stack=10485760:83886080 \
             --ulimit core=0 \
             --security-opt seccomp=unconfined \
