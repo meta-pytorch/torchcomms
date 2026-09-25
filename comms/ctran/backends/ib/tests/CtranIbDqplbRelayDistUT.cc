@@ -250,7 +250,6 @@ class CtranIbDqplbRelayTest : public ctran::CtranDistTestFixture {
           handle,
           key,
           notifyAll || put == kPutOffsets.size() - 1,
-          nullptr,
           &putReqs[put]));
     }
 
@@ -286,7 +285,6 @@ class CtranIbDqplbRelayTest : public ctran::CtranDistTestFixture {
           handle,
           key,
           /*notify*/ true,
-          nullptr,
           &putReqs[put]));
     }
 

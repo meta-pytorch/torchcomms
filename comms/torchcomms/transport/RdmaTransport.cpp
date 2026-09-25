@@ -370,7 +370,6 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
         localBuffer->localKey(),
         ibRemoteKey,
         notify,
-        nullptr,
         &work->ibReq,
         false);
     if (ibRes != commSuccess && ibRes != commInProgress) {
@@ -452,7 +451,6 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
       kDummyRank,
       localBuffer->localKey(),
       ibRemoteKey,
-      nullptr,
       &work->ibReq,
       false);
   if (ibRes != commSuccess && ibRes != commInProgress) {

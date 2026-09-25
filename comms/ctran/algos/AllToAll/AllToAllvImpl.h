@@ -7,6 +7,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -210,6 +211,11 @@ commResult_t ctranAllToAllvIbImpl(
   static thread_local auto alltoallvIbConfig =
       comm->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);
 
+  // Set-once ambient IB config for this collective; the data-phase puts below
+  // observe it without per-call overrides.
+  CtranIbActiveConfigRAII activeIbConfig(
+      comm->ctran_->mapper->ctranIbPtr(), alltoallvIbConfig);
+
   // issue network puts:
   // - Sender puts data for peers, whenever received the remote recvbuff handle
   // - Exit until all peers' put have been issued (putPeers becomes empty)
@@ -252,7 +258,6 @@ commResult_t ctranAllToAllvIbImpl(
             .memHdl_ = sendMemHdl[peer],
             .remoteAccessKey_ = remoteAccessKeys[peer],
             .notify_ = true, /*notify*/
-            .ibConfig_ = alltoallvIbConfig,
             .ibFastPath_ = enableFastPath},
         &ibPutReqs[idx++]));
     if (useProfiler) {
