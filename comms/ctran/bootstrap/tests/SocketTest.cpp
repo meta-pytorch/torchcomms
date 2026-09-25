@@ -402,6 +402,31 @@ TEST(Socket, AcceptErrorOnShutdown) {
   listenThread.join();
 }
 
+TEST(Socket, RequestStopUnblocksAcceptBeforeShutdown) {
+  // FT-disabled CTRAN builds on this blocking ServerSocket, so it needs the
+  // same stop-then-join-then-close order: accept() has to be woken while fd_
+  // is still valid, or the join races shutdown()'s write to it.
+  ctran::bootstrap::ServerSocket server{1};
+  ASSERT_EQ(0, server.bindAndListen(folly::SocketAddress("::1", 0), "lo"));
+  const int fd = server.getFd();
+  ASSERT_NE(-1, fd);
+
+  std::thread listenThread([&server]() {
+    auto maybeClient = server.accept();
+    ASSERT_TRUE(maybeClient.hasError());
+  });
+
+  EXPECT_TRUE(server.requestStop());
+  EXPECT_TRUE(server.stopRequested());
+  listenThread.join();
+
+  EXPECT_TRUE(server.hasShutDown());
+  // Still valid, so nothing invalidated it while the accept thread ran.
+  EXPECT_EQ(fd, server.getFd());
+  EXPECT_EQ(0, server.shutdown());
+  EXPECT_EQ(-1, server.getFd());
+}
+
 // Tests for ISocket interface implementation
 
 TEST(Socket, ISocketInterfaceSendAll) {

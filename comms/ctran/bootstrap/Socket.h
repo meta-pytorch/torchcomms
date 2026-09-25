@@ -127,18 +127,14 @@ class ServerSocket : public IServerSocket {
    */
   ~ServerSocket();
 
-  /**
-   * Server socket is movable
-   */
-  ServerSocket(ServerSocket&& other) noexcept;
-  ServerSocket& operator=(ServerSocket&& other) noexcept;
-
   /*
-   * But not copyable. This ensures 1:1 maping from underlying
-   * socketFd_ to its owner object.
+   * Not copyable or movable. This ensures 1:1 mapping from the underlying
+   * socket fd and its shutdown state to the owner object.
    */
   ServerSocket(const ServerSocket& other) = delete;
   ServerSocket& operator=(const ServerSocket& other) = delete;
+  ServerSocket(ServerSocket&& other) = delete;
+  ServerSocket& operator=(ServerSocket&& other) = delete;
 
   /**
    * Bind the socket to specified address in constructor. If port in addr is
@@ -172,6 +168,16 @@ class ServerSocket : public IServerSocket {
 
   int shutdown() override;
 
+  /**
+   * @return always true; accept() is woken without invalidating the
+   * descriptor, so the caller can join before shutdown() runs.
+   */
+  bool requestStop() override;
+
+  bool stopRequested() const override {
+    return stopRequested_.load();
+  }
+
   int getFd() const override {
     return fd_;
   }
@@ -190,6 +196,7 @@ class ServerSocket : public IServerSocket {
   int acceptRetryCnt_;
   int fd_{-1};
   std::atomic_bool hasShutDown_{false};
+  std::atomic_bool stopRequested_{false};
 };
 
 class SocketFactory : public ISocketFactory {

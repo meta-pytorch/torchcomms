@@ -357,23 +357,6 @@ ServerSocket::~ServerSocket() {
   }
 }
 
-ServerSocket::ServerSocket(ServerSocket&& other) noexcept {
-  *this = std::move(other);
-}
-
-ServerSocket& ServerSocket::operator=(ServerSocket&& other) noexcept {
-  if (this != &other) {
-    shutdown(); // Close the current socket if open
-    if (fd_ > 0) {
-      close(fd_);
-    }
-    isV4_ = other.isV4_;
-    fd_ = other.fd_;
-    other.fd_ = -1; // Reset the file descriptor of the moved-from object
-  }
-  return *this;
-}
-
 int ServerSocket::bind(
     const folly::SocketAddress& addr,
     const std::string& ifName,
@@ -570,6 +553,19 @@ folly::Expected<std::unique_ptr<ISocket>, int> ServerSocket::acceptSocket() {
   }
 
   return std::make_unique<Socket>(std::move(maybeSocket.value()));
+}
+
+bool ServerSocket::requestStop() {
+  // Mark first so a woken accept() reports an intentional shutdown rather than
+  // an error.
+  hasShutDown_ = true;
+  stopRequested_.store(true);
+  if (fd_ >= 0) {
+    // Wakes a blocked accept() while leaving fd_ valid, so the accept thread
+    // can be joined before shutdown() invalidates it.
+    ::shutdown(fd_, SHUT_RDWR);
+  }
+  return true;
 }
 
 int ServerSocket::shutdown() {

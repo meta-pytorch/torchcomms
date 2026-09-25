@@ -185,17 +185,13 @@ class AbortableServerSocket : public IServerSocket {
   ~AbortableServerSocket();
 
   /**
-   * AbortableServerSocket is movable
-   */
-  AbortableServerSocket(AbortableServerSocket&& other) noexcept;
-  AbortableServerSocket& operator=(AbortableServerSocket&& other) noexcept;
-
-  /**
-   * But not copyable. This ensures 1:1 mapping from underlying
-   * socketFd_ to its owner object.
+   * Not copyable or movable. This ensures 1:1 mapping from the underlying
+   * socket fd and its shutdown state to the owner object.
    */
   AbortableServerSocket(const AbortableServerSocket& other) = delete;
   AbortableServerSocket& operator=(const AbortableServerSocket& other) = delete;
+  AbortableServerSocket(AbortableServerSocket&& other) = delete;
+  AbortableServerSocket& operator=(AbortableServerSocket&& other) = delete;
 
   /**
    * @return 0 on success, errno on error
@@ -222,6 +218,18 @@ class AbortableServerSocket : public IServerSocket {
    * this call. Primarily used for testing.
    */
   int shutdown() override;
+
+  /**
+   * @return always true; acceptSocket() returns within one poll interval.
+   */
+  bool requestStop() override {
+    stopRequested_.store(true);
+    return true;
+  }
+
+  bool stopRequested() const override {
+    return stopRequested_.load();
+  }
 
   int getFd() const override {
     return fd_;
@@ -250,6 +258,9 @@ class AbortableServerSocket : public IServerSocket {
   std::shared_ptr<Abort> abort_;
   std::atomic_bool shuttingDown_{false};
   std::atomic_bool hasShutDown_{false};
+  // Distinct from shuttingDown_, which is shutdown()'s reentrancy guard, and
+  // from hasShutDown_, whose early-return in shutdown() would skip the close.
+  std::atomic_bool stopRequested_{false};
 };
 
 class AbortableSocketFactory : public ISocketFactory {

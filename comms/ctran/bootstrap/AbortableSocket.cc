@@ -427,30 +427,6 @@ AbortableServerSocket::~AbortableServerSocket() {
   shutdown();
 }
 
-AbortableServerSocket::AbortableServerSocket(
-    AbortableServerSocket&& other) noexcept
-    : isV4_(other.isV4_),
-      acceptRetryCnt_(other.acceptRetryCnt_),
-      fd_(other.fd_),
-      abort_(std::move(other.abort_)),
-      shuttingDown_(other.shuttingDown_.load()),
-      hasShutDown_(other.hasShutDown_.load()) {
-  other.fd_ = -1;
-}
-
-AbortableServerSocket& AbortableServerSocket::operator=(
-    AbortableServerSocket&& other) noexcept {
-  if (this != &other) {
-    shutdown(); // Close the current socket if open
-    isV4_ = other.isV4_;
-    acceptRetryCnt_ = other.acceptRetryCnt_;
-    fd_ = other.fd_;
-    abort_ = std::move(other.abort_);
-    other.fd_ = -1; // Reset the file descriptor of the moved-from object
-  }
-  return *this;
-}
-
 int AbortableServerSocket::bind(
     const folly::SocketAddress& addr,
     const std::string& ifName,
@@ -643,7 +619,7 @@ AbortableServerSocket::acceptAsync() {
 
 folly::Expected<std::unique_ptr<ISocket>, int>
 AbortableServerSocket::acceptSocket() {
-  while (!abort_->isAborted()) {
+  while (!abort_->isAborted() && !stopRequested_.load()) {
     auto maybeSocket = acceptAsync();
     if (!maybeSocket.hasError() || maybeSocket.error() != EAGAIN) {
       return maybeSocket;
