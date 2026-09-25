@@ -74,8 +74,25 @@ jobs:
         shell: bash
         run: |
           # Add render group for container creation.
-          render_gid=`cat /etc/group | grep render | cut -d: -f3`
+          render_gid=$(cat /etc/group | grep render | cut -d: -f3)
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/dri --group-add video --group-add $render_gid" >> "${GITHUB_ENV}"
+      
+        # Choose the OMIX Repo based on the GPU device
+      - name: Select OMIX Repo
+        shell: bash
+        run: |
+          device_list=$(timeout 30 clinfo -l || true)
+          msg="Please file an issue on meta-pytorch/torchcomms reporting the faulty runner. Include a link to the runner logs so the runner can be identified"
+          if echo "$device_list" | grep -q 'Intel(R) Data Center GPU Max'; then
+            echo "OMIX_REPO=intel-omix-pvc" >> "${GITHUB_ENV}"
+          elif echo "$device_list" | grep -q 'Intel(R) Arc(TM) Pro B60 Graphics'; then
+            echo "OMIX_REPO=intel-omix" >> "${GITHUB_ENV}"
+          else
+            echo "Error: could not determine the XPU device on this runner"
+            echo "clinfo -l reported: ${device_list}"
+            echo "$msg"
+            exit 1
+          fi
 
       - name: Get docker image
         run: |
@@ -98,7 +115,7 @@ jobs:
           ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
           DISABLED_TESTS: ${{ vars.DISABLED_TESTS }}
           OMIX_VERSION: 0.4.0
-          OMIX_REPO: intel-omix-pvc
+          OMIX_REPO: ${{ env.OMIX_REPO }}
         timeout-minutes: 120
         run: |
           set -x
@@ -120,6 +137,8 @@ jobs:
             -e BRANCH \
             -e SHA1 \
             -e RUNNER_NAME \
+            -e CONDA_PKGS_DIRS=/var/lib/jenkins/workspace/.conda_pkgs_cache \ 
+            -e CONDA_PKGS_DIRS=/var/lib/jenkins/workspace/.conda_envs \ #Ensures no conflicts across multiple parallel jobs
             --ulimit stack=10485760:83886080 \
             --ulimit core=0 \
             --security-opt seccomp=unconfined \
@@ -143,7 +162,6 @@ jobs:
       - name: Stop container before exit
         if: always()
         run: |
-          # Workaround for multiple runners on same IDC node
           docker stop "${{ env.CONTAINER_NAME }}"
 
       - name: Teardown XPU
