@@ -20,7 +20,7 @@ jobs:
     # Don't run on forked repos or empty test matrix
     if: github.repository_owner == 'meta-pytorch'
     timeout-minutes: 120
-    runs-on: linux.xpu.dist #Common runner label
+    runs-on: linux.idc.xpu.dist #Common runner label
     env:
       DOCKER_IMAGE: ubuntu:24.04
     steps:
