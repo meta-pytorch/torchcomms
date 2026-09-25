@@ -2,14 +2,17 @@
 
 #include "meta/colltrace/CollTraceWrapper.h"
 
+#include "meta/colltrace/CapturedColl.h"
+
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <string>
+#include <utility>
 
 #include <folly/Conv.h>
 #include <folly/Synchronized.h>
 #include <folly/Unit.h>
-#include "comms/utils/RankUtils.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "meta/logger/DebugExt.h"
@@ -31,6 +34,7 @@
 #include "nccl.h"
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/observatory/colltrace/LifecycleFeedRegistry.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 
 #include <fmt/core.h>
@@ -38,41 +42,104 @@
 namespace meta::comms::ncclx {
 
 namespace {
-struct LifecycleFeedRegistryEntry {
-  ncclComm_t comm{nullptr};
-  std::weak_ptr<meta::comms::colltrace::ICollTrace> colltrace;
-};
+// The set these feeds go into lives in observatory, so a feed registered by any
+// backend lands in the same one and the drain below reaches it. Resolving the
+// plugin stays on this side: that registry names no colltrace type, by design.
+meta::comms::colltrace::LifecycleEventFeedPlugin* FOLLY_NULLABLE
+lifecycleEventFeedPlugin(
+    const std::shared_ptr<meta::comms::colltrace::ICollTrace>& colltrace) {
+  if (colltrace == nullptr) {
+    return nullptr;
+  }
+  return dynamic_cast<meta::comms::colltrace::LifecycleEventFeedPlugin*>(
+      colltrace->getPluginByName(
+          std::string{meta::comms::colltrace::LifecycleEventFeedPlugin::
+                          kLifecycleEventFeedPluginName}));
+}
 
-folly::Synchronized<std::vector<LifecycleFeedRegistryEntry>>&
-getLifecycleFeedRegistry() {
-  static folly::Synchronized<std::vector<LifecycleFeedRegistryEntry>> registry;
-  return registry;
+meta::comms::colltrace::LifecycleFeedOps makeLifecycleFeedOps(
+    const std::shared_ptr<meta::comms::colltrace::ICollTrace>& colltrace) {
+  // Every callable holds the tracer weakly. The registry can hold ops for a
+  // feed whose owner is already gone, and with more than one backend in the
+  // set, calling into a dead tracer would take the others down too.
+  std::weak_ptr<meta::comms::colltrace::ICollTrace> weak = colltrace;
+  const auto* plugin = lifecycleEventFeedPlugin(colltrace);
+  return meta::comms::colltrace::LifecycleFeedOps{
+      .commId = plugin == nullptr ? 0 : plugin->getCommId(),
+      .alive = std::weak_ptr<void>(colltrace),
+      .requestFlush = [weak]() -> uint64_t {
+        auto tracer = weak.lock();
+        return tracer == nullptr ? 0 : tracer->requestFlush();
+      },
+      .waitFlush =
+          [weak](uint64_t generation, std::chrono::nanoseconds timeout) {
+            auto tracer = weak.lock();
+            // A tracer that has gone has nothing left to flush, so the wait is
+            // over rather than timed out.
+            return tracer == nullptr || tracer->waitFlush(generation, timeout);
+          },
+      .drainUnread = [weak]()
+          -> std::vector<meta::comms::colltrace::LifecycleEventRecord> {
+        // The lock is held in a named local, not passed as a temporary: the
+        // plugin points into the tracer, so the owning reference has to outlive
+        // the call that uses it. The sibling callables here and in the other
+        // backend do the same.
+        auto tracer = weak.lock();
+        auto* plugin = lifecycleEventFeedPlugin(tracer);
+        if (plugin == nullptr) {
+          return {};
+        }
+        return plugin->drainUnreadLifecycleEvents();
+      },
+      .latestCollId = [weak]() -> uint64_t {
+        auto tracer = weak.lock();
+        auto* plugin = lifecycleEventFeedPlugin(tracer);
+        return plugin == nullptr ? 0 : plugin->getLatestLifecycleCollectiveId();
+      },
+      .describeCaptured = [weak](uint64_t capturedCollId)
+          -> std::optional<meta::comms::colltrace::CapturedCollDescription> {
+        auto tracer = weak.lock();
+        if (tracer == nullptr) {
+          return std::nullopt;
+        }
+        return tracer->describeCapturedCollective(capturedCollId);
+      },
+  };
 }
 
 void registerLifecycleFeed(
     ncclComm_t comm,
     const std::shared_ptr<meta::comms::colltrace::ICollTrace>& colltrace) {
-  auto registry = getLifecycleFeedRegistry().wlock();
-  const auto existing = std::find_if(
-      registry->begin(), registry->end(), [comm](const auto& entry) {
-        return entry.comm == comm;
-      });
-  if (existing != registry->end()) {
-    existing->colltrace = colltrace;
+  // Keyed on the communicator, which the registry only ever compares.
+  //
+  // `colltrace` is a live shared_ptr here, so the registry cannot refuse this;
+  // the check is against a future caller that registers after moving its owning
+  // reference away, which would otherwise register a feed the first snapshot
+  // reaps and leave every later drain silently short.
+  auto ops = makeLifecycleFeedOps(colltrace);
+  const auto commId = ops.commId;
+  bool commIdCollision = false;
+  if (!meta::comms::colltrace::registerLifecycleFeed(
+          static_cast<const void*>(comm), std::move(ops), &commIdCollision)) {
+    NCCLX_LOG(
+        WARN,
+        "CollTrace: lifecycle feed not registered -- the tracer was already "
+        "released, so this comm's start/end events will not be drained");
     return;
   }
-  registry->push_back(
-      LifecycleFeedRegistryEntry{.comm = comm, .colltrace = colltrace});
+  if (commIdCollision) {
+    NCCLX_LOG_FIRST_N(
+        WARN,
+        1,
+        "CollTrace: another live feed already stamps comm id {}; consumers key "
+        "on that id, so the two communicators will be read as one",
+        commId);
+  }
 }
 
 void deregisterLifecycleFeed(ncclComm_t comm) {
-  auto registry = getLifecycleFeedRegistry().wlock();
-  registry->erase(
-      std::remove_if(
-          registry->begin(),
-          registry->end(),
-          [comm](const auto& entry) { return entry.comm == comm; }),
-      registry->end());
+  meta::comms::colltrace::deregisterLifecycleFeed(
+      static_cast<const void*>(comm));
 }
 
 enum class KernelPlanType { none, single, multiple };
@@ -550,6 +617,23 @@ std::unordered_map<std::string, std::string> collTraceGetInfo() {
 
   return info;
 }
+
+__attribute__((visibility(
+    "default"))) std::optional<meta::comms::colltrace::CapturedCollDescription>
+describeCapturedCollective(uint64_t commId, uint64_t capturedCollId) {
+  // Asked of the feed that reported the event, not of a communicator. A comm
+  // that rebuilds its tracer keeps reporting the old one's replays, and the
+  // new tracer has never captured them.
+  //
+  // Lifecycle events carry one-based ids (toExternalLifecycleCollId);
+  // colltrace keys its records zero-based. Zero means no record.
+  if (capturedCollId == 0) {
+    return std::nullopt;
+  }
+  return meta::comms::colltrace::describeCapturedCollective(
+      commId, capturedCollId - 1);
+}
+
 } // namespace meta::comms::ncclx
 
 namespace ncclx::colltrace {
@@ -643,38 +727,27 @@ getLatestCollTraceCollectiveId(ncclComm_t comm, uint64_t& collId) {
 }
 
 __attribute__((visibility("default"))) ncclResult_t
+latestCollTraceCollectiveIdForCommId(uint64_t commId, uint64_t& collId) {
+  // Answered from the registry rather than from a communicator, so a caller
+  // holding only the id -- which every backend's events carry -- can ask
+  // without holding anything of the backend that owns it.
+  const auto latest =
+      meta::comms::colltrace::lifecycleLatestCollIdForCommId(commId);
+  collId = latest.value_or(0);
+  return latest.has_value() ? ncclSuccess : ncclInvalidUsage;
+}
+
+__attribute__((visibility("default"))) ncclResult_t
 drainUnreadLifecycleEvents(std::vector<LifecycleEvent>& events) {
   events.clear();
-  auto registry = meta::comms::ncclx::getLifecycleFeedRegistry().wlock();
-  registry->erase(
-      std::remove_if(
-          registry->begin(),
-          registry->end(),
-          [](const auto& entry) { return entry.colltrace.expired(); }),
-      registry->end());
-
-  std::vector<
-      std::pair<std::shared_ptr<meta::comms::colltrace::ICollTrace>, uint64_t>>
-      flushes;
-  flushes.reserve(registry->size());
-  for (const auto& entry : *registry) {
-    if (auto colltrace = entry.colltrace.lock()) {
-      flushes.emplace_back(colltrace, colltrace->requestFlush());
-    }
-  }
-  for (const auto& [colltrace, generation] : flushes) {
-    colltrace->waitFlush(generation);
-  }
-  for (const auto& [colltrace, _] : flushes) {
-    auto* plugin = getLifecycleEventFeedPlugin(colltrace);
-    if (plugin != nullptr) {
-      appendLifecycleEvents(plugin->drainUnreadLifecycleEvents(), events);
-    }
-  }
-  std::stable_sort(
-      events.begin(), events.end(), [](const auto& lhs, const auto& rhs) {
-        return lhs.timestamp < rhs.timestamp;
-      });
+  // Every feed in the process, from whichever backend registered it, already
+  // flushed and merged in timestamp order. Walking the snapshot here instead
+  // would be a second copy of that, and the copy that a caller on this path
+  // cannot afford: it would wait on each feed without a deadline, so one
+  // backend stuck in a driver call would hold the consumer that asked. This
+  // path is a step boundary and a hang investigation.
+  appendLifecycleEvents(
+      meta::comms::colltrace::drainAllLifecycleEvents(), events);
   return ncclSuccess;
 }
 
