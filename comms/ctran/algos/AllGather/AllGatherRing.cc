@@ -13,6 +13,8 @@ struct PutQElem {
   char* rAddr;
   size_t size;
   void* hdl;
+  // Flush covering this block's arrival, or null when nothing was received.
+  CtranMapperRequest* flushReq;
 };
 
 static const auto myAlgo = NCCL_ALLGATHER_ALGO::ctring;
@@ -71,6 +73,7 @@ static commResult_t impl(
       std::max(1LU, (sendSize + stepSize - 1) / stepSize); // ceilDiv
   std::deque<PutQElem> putQ;
   std::deque<std::unique_ptr<CtranMapperRequest>> iputReqs;
+  std::deque<std::unique_ptr<CtranMapperRequest>> flushReqs;
   std::unique_ptr<CtranMapperNotify> notifyLeft = nullptr;
   uint64_t blockNum{0};
   uint64_t stepInBlock{0};
@@ -111,10 +114,11 @@ static commResult_t impl(
     char* lAddr = (char*)op->allgather.recvbuff + offset;
     char* rAddr = (char*)remoteRecvBuff + offset;
     size_t size = std::min(stepSize, sendSize - i * stepSize);
-    putQ.push_back({lAddr, rAddr, size, memHdl});
+    putQ.push_back({lAddr, rAddr, size, memHdl, nullptr});
   }
 
   while (!putQ.empty() || !iputReqs.empty() || (blockNum < nRanks - 1)) {
+    const size_t queuedBefore = putQ.size();
     // Check for notifications from left and queue up corresponding sends
     while (true) {
       bool notifyRcvd{false};
@@ -130,12 +134,25 @@ static commResult_t impl(
         char* rAddr =
             (char*)remoteRecvBuff + blockId * sendSize + stepInBlock * stepSize;
         size_t size = std::min(stepSize, sendSize - stepInBlock * stepSize);
-        putQ.push_back({lAddr, rAddr, size, memHdl});
+        putQ.push_back({lAddr, rAddr, size, memHdl, nullptr});
       }
       if (stepInBlock == stepsPerBlock - 1) {
         ++blockNum;
       }
       stepInBlock = (stepInBlock + 1) % stepsPerBlock;
+    }
+
+    // A notification means one NIC finished the write, which on GB300 does not
+    // put the bytes in GPU memory, so forwarding without a flush would send
+    // stale data. One flush covers every block that arrived in this pass, and
+    // the forwards below wait on it instead of this loop blocking on it.
+    if (putQ.size() > queuedBefore) {
+      CtranMapperRequest* flushReq = nullptr;
+      FB_COMMCHECK(mapper->iflush(op->allgather.recvbuff, memHdl, &flushReq));
+      flushReqs.emplace_back(flushReq);
+      for (size_t i = queuedBefore; i < putQ.size(); i++) {
+        putQ.at(i).flushReq = flushReq;
+      }
     }
 
     // Remove any completed puts from putQ, making room for new puts if possible
@@ -153,6 +170,13 @@ static commResult_t impl(
     while (!putQ.empty()) {
       CtranMapperRequest* req;
       const auto& e = putQ.front();
+      if (e.flushReq != nullptr) {
+        bool flushed = false;
+        FB_COMMCHECK(mapper->testRequest(e.flushReq, &flushed));
+        if (!flushed) {
+          break;
+        }
+      }
       // Always notify receiver and always get a cqe back
       FB_COMMCHECK(mapper->iput(
           e.lAddr,
@@ -174,6 +198,10 @@ static commResult_t impl(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
 
   FB_COMMCHECK(mapper->waitRequest(isendReq.get()));
+
+  // The final block is never forwarded, so flush it here before the caller
+  // reads it, and before the deregistration below invalidates memHdl.
+  FB_COMMCHECK(mapper->flush(op->allgather.recvbuff, memHdl));
 
   if (localMemReg) {
     FB_COMMCHECK(mapper->deregDynamic(memHdl));
