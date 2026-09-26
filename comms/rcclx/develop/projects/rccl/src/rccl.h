@@ -14,10 +14,10 @@
 
 #define NCCL_MAJOR 2
 #define NCCL_MINOR 30
-#define NCCL_PATCH 4
+#define NCCL_PATCH 7
 #define NCCL_SUFFIX "dev"
 
-#define NCCL_VERSION_CODE 23004
+#define NCCL_VERSION_CODE 23007
 #define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
 
 #define RCCL_BFLOAT16 1
@@ -99,7 +99,7 @@ typedef struct { char internal[NCCL_UNIQUE_ID_BYTES]; /*!< Opaque array>*/} nccl
 
 /*! @brief      Communicator configuration
     @details    Users can assign value to attributes to specify the behavior of a communicator */
-typedef struct ncclConfig_v22800 {
+typedef struct ncclConfig_v23000 {
   /* attributes that users should never touch. */
   size_t size;                 /*!< Should not be touched */
   unsigned int magic;          /*!< Should not be touched */
@@ -123,32 +123,34 @@ typedef struct ncclConfig_v22800 {
   int numRmaCtx;               /*!< Number of RMA contexts*/
   int maxP2pPeers;             /*!< Maximum number of P2P peers*/
   const char *commDesc;        /*!< Communicator description from process group */
+  int graphStreamOrdering;     /*!< CUDA Graph stream ordering mode*/
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
- * Not initialized config will result in an error. */
-#define NCCL_CONFIG_INITIALIZER {                                               \
-  sizeof(ncclConfig_t),                             /* size */                  \
-  NCCL_API_MAGIC,                                   /* magic */                 \
-  NCCL_VERSION(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH), /* version */               \
-  NCCL_CONFIG_UNDEF_INT,                            /* blocking */              \
-  NCCL_CONFIG_UNDEF_INT,                            /* cgaClusterSize */        \
-  NCCL_CONFIG_UNDEF_INT,                            /* minCTAs */               \
-  NCCL_CONFIG_UNDEF_INT,                            /* maxCTAs */               \
-  NCCL_CONFIG_UNDEF_PTR,                            /* netName */               \
-  NCCL_CONFIG_UNDEF_INT,                            /* splitShare */            \
-  NCCL_CONFIG_UNDEF_INT,                            /* trafficClass */          \
-  NCCL_CONFIG_UNDEF_PTR,                            /* commName */              \
-  NCCL_CONFIG_UNDEF_INT,                            /* collnetEnable */         \
-  NCCL_CONFIG_UNDEF_INT,                            /* CTAPolicy */             \
-  NCCL_CONFIG_UNDEF_INT,                            /* shrinkShare */           \
-  NCCL_CONFIG_UNDEF_INT,                            /* nvlsCTAs */              \
-  NCCL_CONFIG_UNDEF_INT,                            /* nChannelsPerNetPeer */   \
-  NCCL_CONFIG_UNDEF_INT,                            /* nvlinkCentricSched */    \
-  NCCL_CONFIG_UNDEF_INT,                            /* graphUsageMode */        \
-  NCCL_CONFIG_UNDEF_INT,                            /* numRmaCtx */             \
-  NCCL_CONFIG_UNDEF_INT,                            /* maxP2pPeers */           \
-  NCCL_CONFIG_UNDEF_PTR,                            /* commDesc */              \
+ * Not initialized config will result in NCCL error. */
+#define NCCL_CONFIG_INITIALIZER {                                       \
+  sizeof(ncclConfig_t),                     /* size */                  \
+  NCCL_API_MAGIC,                           /* magic */                 \
+  NCCL_VERSION_CODE,                        /* version */               \
+  NCCL_CONFIG_UNDEF_INT,                    /* blocking */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* cgaClusterSize */        \
+  NCCL_CONFIG_UNDEF_INT,                    /* minCTAs */               \
+  NCCL_CONFIG_UNDEF_INT,                    /* maxCTAs */               \
+  NCCL_CONFIG_UNDEF_PTR,                    /* netName */               \
+  NCCL_CONFIG_UNDEF_INT,                    /* splitShare */            \
+  NCCL_CONFIG_UNDEF_INT,                    /* trafficClass */          \
+  NCCL_CONFIG_UNDEF_PTR,                    /* commName */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* collnetEnable */         \
+  NCCL_CONFIG_UNDEF_INT,                    /* CTAPolicy */             \
+  NCCL_CONFIG_UNDEF_INT,                    /* shrinkShare */           \
+  NCCL_CONFIG_UNDEF_INT,                    /* nvlsCTAs */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* nChannelsPerNetPeer */   \
+  NCCL_CONFIG_UNDEF_INT,                    /* nvlinkCentricSched */    \
+  NCCL_CONFIG_UNDEF_INT,                    /* graphUsageMode */        \
+  NCCL_CONFIG_UNDEF_INT,                    /* numRmaCtx */             \
+  NCCL_CONFIG_UNDEF_INT,                    /* maxP2pPeers */           \
+  NCCL_CONFIG_UNDEF_PTR,                    /* commDesc */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* graphStreamOrdering */   \
 }
 /*! @} */
 
@@ -360,22 +362,44 @@ ncclResult_t pncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *new
 ncclResult_t  ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm, ncclConfig_t* config, int shrinkFlags);
 ncclResult_t pncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm, ncclConfig_t* config, int shrinkFlags);
 
-/* Generate per-communicator unique ID for grow.
- * Constraints:
- * - Cannot generate a new UID while a previous UID is unconsumed
- * - Each UID can only be used once (no reuse after consumption)
- * - Must wait for grow operation to complete before calling again */
-ncclResult_t ncclCommGetUniqueId(ncclComm_t comm, ncclUniqueId* uniqueId);
-ncclResult_t pncclCommGetUniqueId(ncclComm_t comm, ncclUniqueId* uniqueId);
+/*! @brief      Generate a per-communicator unique ID for growing a communicator.
+    @details    Generates a unique ID on an existing communicator. The ID must be
+                distributed to the ranks joining through ncclCommGrow.
+                Constraints:
+                - A new ID cannot be generated while a previous ID is unconsumed.
+                - Each ID can only be used once (no reuse after consumption).
+                - The grow operation must complete before calling this again.
+    @return     Result code. See @ref rccl_result_code for more details.
 
-/* Grow communicator by adding new ranks.
- * Parameter usage:
- * - Existing non-root: comm, uniqueId=NULL, rank=-1
- * - Existing root: comm, uniqueId=&id, rank=-1
- * - New ranks: comm=NULL, uniqueId=&id, rank=assigned
- * The UID is consumed upon successful grow and cannot be reused. */
+    @param[in]  comm          Existing communicator that coordinates the grow
+    @param[out] uniqueId      Pointer to the generated unique ID */
+ncclResult_t ncclCommGetUniqueId(ncclComm_t comm, ncclUniqueId* uniqueId);
+/*! @cond       include_hidden */
+ncclResult_t pncclCommGetUniqueId(ncclComm_t comm, ncclUniqueId* uniqueId);
+/*! @endcond */
+
+/*! @brief      Grow a communicator by adding new ranks.
+    @details    Creates a larger communicator from an existing one plus newly
+                joining ranks. The unique ID obtained from ncclCommGetUniqueId
+                must be distributed to the new ranks. Parameter usage:
+                - Existing non-root ranks: comm set, uniqueId = NULL, rank = -1
+                - Existing root rank: comm set, uniqueId = &id, rank = -1
+                - New ranks: comm = NULL, uniqueId = &id, rank = assigned
+                The unique ID is consumed upon a successful grow and cannot be reused.
+                If config is NULL, the new communicator inherits the original
+                communicator's configuration.
+    @return     Result code. See @ref rccl_result_code for more details.
+
+    @param[in]  comm          Existing communicator, or NULL for newly joining ranks
+    @param[in]  nRanks        Total number of ranks in the new communicator
+    @param[in]  uniqueId      Unique ID from ncclCommGetUniqueId; NULL on existing non-root ranks
+    @param[in]  rank          Rank in the new communicator for joining ranks; -1 for existing ranks
+    @param[out] newcomm       Pointer to the new communicator
+    @param[in]  config        Config for the new communicator. May be NULL to inherit from comm */
 ncclResult_t  ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqueId, int rank, ncclComm_t* newcomm, ncclConfig_t* config);
+/*! @cond       include_hidden */
 ncclResult_t pncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqueId, int rank, ncclComm_t* newcomm, ncclConfig_t* config);
+/*! @endcond */
 
 /*! @brief      Creates a new communicator (multi thread/process version), similar to ncclCommInitRankConfig.
      @details    Allows to use more than one ncclUniqueId (up to one per rank),
@@ -495,7 +519,8 @@ ncclResult_t pncclCommDeregister(const ncclComm_t comm, void* handle);
 
 /*! @brief      Suspend communicator operations to free resources.
     @details    Releases the resources selected by @p flags. The communicator
-                cannot be used until @ref ncclCommResume is called.
+                cannot be used until @ref ncclCommResume is called; a collective
+                issued in the meantime returns ncclInvalidUsage.
     @return     Result code. See @ref rccl_result_code for more details.
 
     @param[in]  comm          Communicator to suspend
@@ -1544,60 +1569,60 @@ ncclResult_t pncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
  *
  * Handles represents parameters and are opaque (internal details hidden).
  */
-typedef struct ncclParamHandle ncclParamHandle_t;
+typedef struct ncclParamHandle* ncclParamHandle_t;
 
 /*
  * Look up the parameter identified by key and store a handle to it in
  * out. The returned handle is owned by the parameter system and must not
  * be freed by the caller.
  */
-ncclResult_t ncclParamBind(ncclParamHandle_t** out, const char* key);
-ncclResult_t pncclParamBind(ncclParamHandle_t** out, const char* key);
+ncclResult_t ncclParamBind(ncclParamHandle_t* out, const char* key);
+ncclResult_t pncclParamBind(ncclParamHandle_t* out, const char* key);
 
 /*
  * Read the value of the parameter bound to h as the type of out.
  * Function names are suffixed with I/U and 8/16/32/64 for 8-, 16-, 32- and 64-bit
  * signed and unsigned integers.
  */
-ncclResult_t ncclParamGetI8(ncclParamHandle_t* h, int8_t* out);
-ncclResult_t pncclParamGetI8(ncclParamHandle_t* h, int8_t* out);
+ncclResult_t ncclParamGetI8(ncclParamHandle_t h, int8_t* out);
+ncclResult_t pncclParamGetI8(ncclParamHandle_t h, int8_t* out);
 
-ncclResult_t ncclParamGetI16(ncclParamHandle_t* h, int16_t* out);
-ncclResult_t pncclParamGetI16(ncclParamHandle_t* h, int16_t* out);
+ncclResult_t ncclParamGetI16(ncclParamHandle_t h, int16_t* out);
+ncclResult_t pncclParamGetI16(ncclParamHandle_t h, int16_t* out);
 
-ncclResult_t ncclParamGetI32(ncclParamHandle_t* h, int32_t* out);
-ncclResult_t pncclParamGetI32(ncclParamHandle_t* h, int32_t* out);
+ncclResult_t ncclParamGetI32(ncclParamHandle_t h, int32_t* out);
+ncclResult_t pncclParamGetI32(ncclParamHandle_t h, int32_t* out);
 
-ncclResult_t ncclParamGetI64(ncclParamHandle_t* h, int64_t* out);
-ncclResult_t pncclParamGetI64(ncclParamHandle_t* h, int64_t* out);
+ncclResult_t ncclParamGetI64(ncclParamHandle_t h, int64_t* out);
+ncclResult_t pncclParamGetI64(ncclParamHandle_t h, int64_t* out);
 
-ncclResult_t ncclParamGetU8(ncclParamHandle_t* h, uint8_t* out);
-ncclResult_t pncclParamGetU8(ncclParamHandle_t* h, uint8_t* out);
+ncclResult_t ncclParamGetU8(ncclParamHandle_t h, uint8_t* out);
+ncclResult_t pncclParamGetU8(ncclParamHandle_t h, uint8_t* out);
 
-ncclResult_t ncclParamGetU16(ncclParamHandle_t* h, uint16_t* out);
-ncclResult_t pncclParamGetU16(ncclParamHandle_t* h, uint16_t* out);
+ncclResult_t ncclParamGetU16(ncclParamHandle_t h, uint16_t* out);
+ncclResult_t pncclParamGetU16(ncclParamHandle_t h, uint16_t* out);
 
-ncclResult_t ncclParamGetU32(ncclParamHandle_t* h, uint32_t* out);
-ncclResult_t pncclParamGetU32(ncclParamHandle_t* h, uint32_t* out);
+ncclResult_t ncclParamGetU32(ncclParamHandle_t h, uint32_t* out);
+ncclResult_t pncclParamGetU32(ncclParamHandle_t h, uint32_t* out);
 
-ncclResult_t ncclParamGetU64(ncclParamHandle_t* h, uint64_t* out);
-ncclResult_t pncclParamGetU64(ncclParamHandle_t* h, uint64_t* out);
+ncclResult_t ncclParamGetU64(ncclParamHandle_t h, uint64_t* out);
+ncclResult_t pncclParamGetU64(ncclParamHandle_t h, uint64_t* out);
 
 /*
  * Read the value of the parameter bound to h as a string.
  * Returned pointer is owned by the parameter system and is valid until the
  * next ncclParamGetStr() call on the same thread.
  */
-ncclResult_t ncclParamGetStr(ncclParamHandle_t* h, const char** out);
-ncclResult_t pncclParamGetStr(ncclParamHandle_t* h, const char** out);
+ncclResult_t ncclParamGetStr(ncclParamHandle_t h, const char** out);
+ncclResult_t pncclParamGetStr(ncclParamHandle_t h, const char** out);
 
 /*
  * Read the value of the parameter bound to h as raw binary data.
  * The user needs to allocate a buffer for the result and the parameter value is copied
  * into user buffer as bytes.
  */
-ncclResult_t ncclParamGet(ncclParamHandle_t* h, void* out, int maxLen, int* len);
-ncclResult_t pncclParamGet(ncclParamHandle_t* h, void* out, int maxLen, int* len);
+ncclResult_t ncclParamGet(ncclParamHandle_t h, void* out, int maxLen, int* len);
+ncclResult_t pncclParamGet(ncclParamHandle_t h, void* out, int maxLen, int* len);
 
 /*
  * Key-based API (no handle required, typeless access, return value as string)
