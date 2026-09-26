@@ -8,7 +8,7 @@
 #ifndef NET_IB_CONNECT_H_
 #define NET_IB_CONNECT_H_
 
-#include "net_ib/common.h"
+#include "common.h"
 #include "ibvwrap.h"
 
 struct ncclIbQpCreateAttr {
