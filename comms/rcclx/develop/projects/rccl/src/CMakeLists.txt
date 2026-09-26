@@ -512,9 +512,6 @@ set(SRC_FILES
 # Run this command to get META_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/scuba/*" ! -path "*/testinfra/*" ! -path "*/tests/*" ! -path "*/lib/*" ! -path "*/lpcoll/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sed 's|^comms/rcclx/develop/\(build/release/hipify/\)\?||' | sort
 set(RCCLX_FILES
-  meta/algorithms/AlgoInit.cc
-  meta/algorithms/AlgoInit.h
-  meta/algorithms/AlgoUtils.h
   meta/ctran/BaselineBootstrap.cc
   meta/ctran/BaselineBootstrap.h
   meta/ctran/Hints.cc
@@ -709,31 +706,6 @@ set(CTRAN_FILES
 # Run this command to get COMMON_FILES:
 # find comms/utils/ comms/common -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
-  comms/common/algorithms/AlgoFactory.cu
-  comms/common/algorithms/AlgoFactory.cuh
-  comms/common/algorithms/AlgoUtils.cc
-  comms/common/algorithms/AlgoUtils.h
-  comms/common/algorithms/all_gather/AlgoAllGather.cu
-  comms/common/algorithms/all_gather/AlgoAllGather.cuh
-  comms/common/algorithms/all_gather/AllGatherAlgoManager.cu
-  comms/common/algorithms/all_gather/AllGatherAlgoManager.h
-  comms/common/algorithms/all_gather/all_gather_dda.cuh
-  comms/common/algorithms/all_reduce/AlgoAllReduce.cu
-  comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
-  comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
-  comms/common/algorithms/all_reduce/AllReduceAlgoManager.h
-  comms/common/algorithms/all_reduce/all_reduce_dda.cuh
-  comms/common/algorithms/all_to_all/AlgoAllToAll.cu
-  comms/common/algorithms/all_to_all/AlgoAllToAll.cuh
-  comms/common/algorithms/all_to_all/AllToAllAlgoManager.cu
-  comms/common/algorithms/all_to_all/AllToAllAlgoManager.h
-  comms/common/algorithms/all_to_all/all_to_all_dda.cuh
-  comms/common/algorithms/CollCommon.cuh
-  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu
-  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cuh
-  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.cu
-  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h
-  comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
   comms/common/AtomicUtils.cuh
   comms/common/BitOps.cuh
   comms/common/CudaWrap.h
@@ -1321,10 +1293,6 @@ if(ENABLE_DEVICE_LINKER)
   # it -- a missing entry links cleanly and only surfaces as an undefined
   # __hip_fatbin_* when librccl.so is dlopen'd.
   set(META_DEVICE_SOURCES
-    comms/common/algorithms/all_gather/AlgoAllGather.cu.cpp
-    comms/common/algorithms/all_reduce/AlgoAllReduce.cu.cpp
-    comms/common/algorithms/all_to_all/AlgoAllToAll.cu.cpp
-    comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu.cpp
     comms/ctran/algos/AllGather/AllGatherBrucksFF.cu.cpp
     comms/ctran/algos/AllGather/AllGatherRing.cu.cpp
     comms/ctran/algos/AllGather/StreamedRd/Impl.cu.cpp
