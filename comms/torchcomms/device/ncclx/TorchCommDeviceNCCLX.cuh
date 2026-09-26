@@ -30,11 +30,14 @@
 
 #include <cuda_runtime.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+
 #include <nccl_device.h> // @manual=//comms/ncclx:nccl
 #include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 
 #include "comms/common/AtomicUtils.cuh"
-#include "comms/prims/core/CopyUtils.cuh"
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLXTypes.hpp"
 
 namespace torchcomms::device {
@@ -72,32 +75,6 @@ __device__ inline bool cmp_op(CmpOp cmp, uint64_t lhs, uint64_t rhs) {
   return false;
 }
 
-// Build a pipes::ThreadGroup for the given CoopScope.
-// Delegates to the pipes factory functions for each scope.
-__device__ inline comms::prims::ThreadGroup make_thread_group(CoopScope scope) {
-  switch (scope) {
-    case CoopScope::WARP:
-      return comms::prims::make_warp_group();
-    case CoopScope::BLOCK:
-      return comms::prims::make_block_group();
-    case CoopScope::THREAD:
-      return comms::prims::make_thread_solo();
-  }
-  // Unreachable — all CoopScope values are handled above.
-  __builtin_unreachable();
-}
-
-// NVLink memcpy using pipes::memcpy_vectorized with the given cooperative
-// scope. No volatile or ordering semantics — put() provides no ordering
-// guarantees. Callers must use signal(), fence(), or flush() for store
-// visibility.
-__device__ inline void
-memcpy_nvl(void* dst, const void* src, size_t bytes, CoopScope scope) {
-  auto group = make_thread_group(scope);
-  comms::prims::memcpy_vectorized(
-      static_cast<char*>(dst), static_cast<const char*>(src), bytes, group);
-}
-
 // Dispatch a callable with the appropriate NCCL coop type based on CoopScope.
 // GIN methods are templated on coop type, so we need a dispatch function.
 template <typename Func>
@@ -112,6 +89,108 @@ __device__ inline auto nccl_coop_dispatch(CoopScope scope, Func&& func) {
   }
   // Unreachable — all CoopScope values are handled above.
   __builtin_unreachable();
+}
+
+template <typename Coop>
+__device__ __forceinline__ void coop_sync(Coop& coop) {
+  comms::device::compiler_barrier();
+  coop.sync();
+}
+
+template <typename T, int kUnroll = 8>
+__device__ __forceinline__ void memcpy_nvl_aligned(
+    T* __restrict__ dst,
+    const T* __restrict__ src,
+    size_t count,
+    int thread_rank,
+    int thread_count) {
+  const size_t stride = thread_count * kUnroll;
+  const size_t aligned_count = (count / stride) * stride;
+
+  for (size_t i = thread_rank; i < aligned_count; i += stride) {
+    T values[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      values[j] = src[i + j * thread_count];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst[i + j * thread_count] = values[j];
+    }
+  }
+
+  for (size_t i = aligned_count + thread_rank; i < count; i += thread_count) {
+    dst[i] = src[i];
+  }
+}
+
+__device__ __forceinline__ void memcpy_nvl_cooperative(
+    char* dst,
+    const char* src,
+    size_t bytes,
+    int thread_rank,
+    int thread_count) {
+  if (bytes == 0 || dst == src) {
+    return;
+  }
+
+  const uintptr_t dst_begin = reinterpret_cast<uintptr_t>(dst);
+  const uintptr_t src_begin = reinterpret_cast<uintptr_t>(src);
+  const uintptr_t dst_end = dst_begin + bytes;
+  const uintptr_t src_end = src_begin + bytes;
+  if (dst_begin < src_end && src_begin < dst_end) {
+    if (thread_rank == 0) {
+      printf("TorchComms NVLink copy does not support overlapping ranges\n");
+    }
+    __trap();
+  }
+
+  constexpr size_t kAlignment = sizeof(uint4);
+  if (dst_begin % kAlignment == 0 && src_begin % kAlignment == 0) {
+    const size_t vector_count = bytes / kAlignment;
+    auto* dst_vector = reinterpret_cast<uint4*>(dst);
+    const auto* src_vector = reinterpret_cast<const uint4*>(src);
+    memcpy_nvl_aligned(
+        dst_vector, src_vector, vector_count, thread_rank, thread_count);
+    const size_t copied = vector_count * kAlignment;
+    dst += copied;
+    src += copied;
+    bytes -= copied;
+  }
+
+  memcpy_nvl_aligned(dst, src, bytes, thread_rank, thread_count);
+}
+
+// The copy itself has no ordering semantics. Callers provide any required
+// synchronization before publishing or reusing the buffer.
+__device__ inline void
+memcpy_nvl(void* dst, const void* src, size_t bytes, CoopScope scope) {
+  int thread_rank = 0;
+  int thread_count = 0;
+  // TorchComms device kernels use one-dimensional thread blocks.
+  switch (scope) {
+    case CoopScope::WARP:
+      thread_rank = threadIdx.x % 32;
+      thread_count = 32;
+      break;
+    case CoopScope::BLOCK:
+      thread_rank = threadIdx.x;
+      thread_count = blockDim.x;
+      break;
+    case CoopScope::THREAD:
+      thread_rank = 0;
+      thread_count = 1;
+      break;
+  }
+  if (thread_count == 0) {
+    __builtin_unreachable();
+  }
+  memcpy_nvl_cooperative(
+      static_cast<char*>(dst),
+      static_cast<const char*>(src),
+      bytes,
+      thread_rank,
+      thread_count);
 }
 
 // Flat index into the signal buffer: slots[signal_id * num_ranks + rank].
@@ -161,26 +240,24 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::signal(
     // Signal is a single atomic/store — only thread 0 needs to execute it.
     // For warp/block scope, all threads reach this point but only thread 0
     // performs the actual write (same pattern as GIN internally).
-    auto group = detail::make_thread_group(scope);
-    if (group.is_leader()) {
-      int lsa_peer = ncclTeamRankToTeam(
-          ncclTeamLsa(dev_comm), ncclTeamWorld(dev_comm), peer);
-      void* peer_buf = ncclGetResourceBufferLsaPointer(
-          dev_comm, signal_buffer_handle_, lsa_peer);
-      uint64_t* slot = reinterpret_cast<uint64_t*>(peer_buf) +
-          detail::signal_slot_index(signal_id, num_ranks_, rank_);
+    detail::nccl_coop_dispatch(scope, [&](auto coop) {
+      if (coop.thread_rank() == 0) {
+        int lsa_peer = ncclTeamRankToTeam(
+            ncclTeamLsa(dev_comm), ncclTeamWorld(dev_comm), peer);
+        void* peer_buf = ncclGetResourceBufferLsaPointer(
+            dev_comm, signal_buffer_handle_, lsa_peer);
+        uint64_t* slot = reinterpret_cast<uint64_t*>(peer_buf) +
+            detail::signal_slot_index(signal_id, num_ranks_, rank_);
 
-      if (op == SignalOp::ADD) {
-        // atom.release.sys.add.u64 — single NVLink atomic with release
-        // semantics, ensuring all prior stores (data writes from put())
-        // are visible before the counter increment.
-        comms::device::atomic_fetch_add_release_sys_global(slot, value);
-      } else {
-        // st.release.sys — release store ensures all prior writes are
-        // visible before the signal value lands on the peer.
-        comms::device::st_release_sys_global(slot, value);
+        if (op == SignalOp::ADD) {
+          // atom.release.sys.add.u64 — release for the issuing thread.
+          comms::device::atomic_fetch_add_release_sys_global(slot, value);
+        } else {
+          // st.release.sys — release for the issuing thread.
+          comms::device::st_release_sys_global(slot, value);
+        }
       }
-    }
+    });
   } else {
     // ---- GIN (RDMA) path ----
     if (!gin_enabled_) {
@@ -245,10 +322,6 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::put(
     void* dst = ncclGetPeerPointer(dst_win, dst_offset, dst_rank);
 
     detail::memcpy_nvl(dst, src, bytes, scope);
-    // No explicit fence needed here — the signal() call below uses
-    // st.release.sys / atom.release.sys which orders all prior stores
-    // (including the memcpy data writes) before the signal write.
-
     if (signal_id >= 0) {
       signal(dst_rank, signal_id, SignalOp::ADD, 1, scope);
     }
@@ -303,28 +376,25 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_signal(
     CmpOp cmp,
     uint64_t value,
     CoopScope scope) {
-  auto group = detail::make_thread_group(scope);
+  detail::nccl_coop_dispatch(scope, [&](auto coop) {
+    if (coop.thread_rank() == 0) {
+      const ncclDevComm& dev_comm = comm_;
+      uint64_t* base = detail::signal_slot_base(
+          dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
 
-  if (group.is_leader()) {
-    const ncclDevComm& dev_comm = comm_;
-    uint64_t* base = detail::signal_slot_base(
-        dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
-
-    // Spin-poll with acquire loads
-    // that once we see a signal value, all prior stores from the signaler
-    // (i.e. the data written by put()) are visible to us.
-    for (;;) {
-      uint64_t sum = 0;
-      for (int i = 0; i < num_ranks_; i++) {
-        sum += comms::device::ld_acquire_sys_global(base + i);
-      }
-      if (detail::cmp_op(cmp, sum, value)) {
-        break;
+      // Spin-poll the signal slots with acquire loads.
+      for (;;) {
+        uint64_t sum = 0;
+        for (int i = 0; i < num_ranks_; i++) {
+          sum += comms::device::ld_acquire_sys_global(base + i);
+        }
+        if (detail::cmp_op(cmp, sum, value)) {
+          break;
+        }
       }
     }
-  }
-
-  group.sync();
+    detail::coop_sync(coop);
+  });
   return 0;
 }
 
@@ -336,24 +406,23 @@ TorchCommDeviceWindow<NCCLDeviceBackend>::wait_signal_from(
     CmpOp cmp,
     uint64_t value,
     CoopScope scope) {
-  auto group = detail::make_thread_group(scope);
+  detail::nccl_coop_dispatch(scope, [&](auto coop) {
+    if (coop.thread_rank() == 0) {
+      const ncclDevComm& dev_comm = comm_;
+      uint64_t* slot =
+          detail::signal_slot_base(
+              dev_comm, signal_buffer_handle_, signal_id, num_ranks_) +
+          peer;
 
-  if (group.is_leader()) {
-    const ncclDevComm& dev_comm = comm_;
-    uint64_t* slot =
-        detail::signal_slot_base(
-            dev_comm, signal_buffer_handle_, signal_id, num_ranks_) +
-        peer;
-
-    for (;;) {
-      uint64_t val = comms::device::ld_acquire_sys_global(slot);
-      if (detail::cmp_op(cmp, val, value)) {
-        break;
+      for (;;) {
+        uint64_t val = comms::device::ld_acquire_sys_global(slot);
+        if (detail::cmp_op(cmp, val, value)) {
+          break;
+        }
       }
     }
-  }
-
-  group.sync();
+    detail::coop_sync(coop);
+  });
   return 0;
 }
 
@@ -375,18 +444,18 @@ template <>
 __device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_signal(
     int signal_id,
     CoopScope scope) {
-  auto group = detail::make_thread_group(scope);
-  group.sync();
+  detail::nccl_coop_dispatch(scope, [&](auto coop) {
+    detail::coop_sync(coop);
+    if (coop.thread_rank() == 0) {
+      const ncclDevComm& dev_comm = comm_;
+      uint64_t* base = detail::signal_slot_base(
+          dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
 
-  if (group.is_leader()) {
-    const ncclDevComm& dev_comm = comm_;
-    uint64_t* base = detail::signal_slot_base(
-        dev_comm, signal_buffer_handle_, signal_id, num_ranks_);
-
-    for (int i = 0; i < num_ranks_; i++) {
-      comms::device::st_release_sys_global(base + i, 0ULL);
+      for (int i = 0; i < num_ranks_; i++) {
+        comms::device::st_release_sys_global(base + i, 0ULL);
+      }
     }
-  }
+  });
 }
 
 // =============================================================================
@@ -442,18 +511,14 @@ template <>
 __device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_counter(
     int counter_id,
     CoopScope scope) {
-  auto group = detail::make_thread_group(scope);
-  group.sync();
-
-  if (!gin_enabled_) {
-    return;
-  }
-
-  if (group.is_leader()) {
-    const ncclDevComm& dev_comm = comm_;
-    ncclGin gin(dev_comm, kDefaultGinContextIndex);
-    gin.resetCounter(static_cast<ncclGinCounter_t>(counter_id));
-  }
+  detail::nccl_coop_dispatch(scope, [&](auto coop) {
+    detail::coop_sync(coop);
+    if (gin_enabled_ && coop.thread_rank() == 0) {
+      const ncclDevComm& dev_comm = comm_;
+      ncclGin gin(dev_comm, kDefaultGinContextIndex);
+      gin.resetCounter(static_cast<ncclGinCounter_t>(counter_id));
+    }
+  });
 }
 
 // =============================================================================
@@ -484,8 +549,8 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::flush(
   // RDMA (GIN) path: puts are async WQEs posted to the NIC. gin.flush() spins
   // until the NIC signals local completion (source buffer safe to reuse).
   // gin.flush() internally handles any necessary group synchronization.
-  auto group = detail::make_thread_group(scope);
-  group.sync();
+  detail::nccl_coop_dispatch(
+      scope, [&](auto coop) { detail::coop_sync(coop); });
 
   if (!gin_enabled_) {
     return 0;

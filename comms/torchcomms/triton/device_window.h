@@ -22,8 +22,8 @@
 //     control flow before the call site).
 //       - put_block/signal_block: delegate to win->put()/win->signal() with
 //         CoopScope::BLOCK, which handles LSA and GIN internally. LSA: all
-//         threads cooperate on memcpy_vectorized; signal() uses
-//         atom.release.sys to order prior stores. GIN: ncclCoopCta{} emits
+//         threads cooperate on the copy; thread 0 issues the signal. GIN:
+//         ncclCoopCta{} emits
 //         __syncthreads__ before/after posting the WQE.
 //       - flush_block/barrier_block: threadIdx.x == 0 guard + CoopScope::THREAD
 //         to avoid __syncthreads__ in gin.flush()/ncclBarrierSession, which
