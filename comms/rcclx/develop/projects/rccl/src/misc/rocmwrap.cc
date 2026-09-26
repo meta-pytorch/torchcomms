@@ -58,6 +58,11 @@ static int ncclGetKernelVersionCode() {
 
 // Runtime probe: run the cuMem VMM cycle + register.cc pointer queries once; some ROCm builds advertise cuMem but reject the ops at runtime. Returns 1 if all succeed, 0 otherwise; never fatal.
 static int ncclCuMemFunctionalProbe(CUdevice dev, int devOrdinal) {
+#if !NCCL_CUMEM_VERSION_SUPPORTED(HIP_VERSION)
+  (void)dev;
+  (void)devOrdinal;
+  return 0;
+#else
   size_t granularity = 0;
   CUmemGenericAllocationHandle handle = 0;
   CUdeviceptr ptr = 0;
@@ -120,6 +125,7 @@ done:
   if (!ok)
     INFO(NCCL_INIT, "cuMem functional probe failed on device %d; disabling cuMem", devOrdinal);
   return ok;
+#endif
 }
 
 // Determine whether CUMEM & VMM RDMA is supported on this platform

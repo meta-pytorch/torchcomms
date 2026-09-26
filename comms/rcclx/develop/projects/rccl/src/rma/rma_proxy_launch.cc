@@ -811,6 +811,10 @@ ncclResult_t ncclRmaProxyDestroyDescNonPersistent(struct ncclRmaProxyDesc* desc)
 ncclResult_t ncclRmaProxyDestroyDescPersistent(struct ncclComm* comm, struct ncclRmaProxyDesc* desc) {
   return ncclSuccess;
 }
+ncclResult_t ncclRmaProxyDestroyDesc(struct ncclComm* comm, struct ncclRmaProxyDesc** desc) {
+  *desc = nullptr;
+  return ncclSuccess;
+}
 // rma_proxy_progress.cc polls ncclRmaProxyCircularBufEmpty; only the launches
 // below would enqueue descriptors, so the queues are always empty
 bool ncclRmaProxyCircularBufFull(struct ncclRmaProxyCtx* ctx, int peer) {
