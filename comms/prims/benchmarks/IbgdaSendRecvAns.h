@@ -33,7 +33,7 @@ void launch_ibgda_send_ans(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 /**
  * Launch unidirectional ANS (compressed) tile recv. All blocks receive.
@@ -45,6 +45,6 @@ void launch_ibgda_recv_ans(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 } // namespace comms::prims::benchmark

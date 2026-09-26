@@ -141,19 +141,18 @@ constexpr std::size_t kSlotSize = 16 * 1024 * 1024; // 16MB per slot
  * manual offset math. Each block queries its tile pointer and size from
  * the TiledBuffer.
  *
- * @param p2p           Transport device (passed by value from host memory)
- * @param sendTiles     Tiled view of the send buffer
- * @param recvTiles     Tiled view of the recv buffer
- * @param stepState     Persistent step counters [2 * numSendBlocks int64s],
- *                      zeroed before first use
- * @param abortDevice       Optional abortDevice for signal waits
+ * @param p2p              Transport device (passed by value from host memory)
+ * @param sendTiles        Tiled view of the send buffer
+ * @param recvTiles        Tiled view of the recv buffer
+ * @param abortDevice      Caller-supplied abort handle for signal waits
+ * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
  */
 __global__ void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes = 0);
 
 /**
  * p2pTileSendRecvBidirCta — Bidirectional in a single block via half-block
@@ -169,8 +168,8 @@ __global__ void p2pTileSendRecvBidirCta(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes = 0);
 
 /**
  * p2pTileProgressSendRecv — Bidirectional exchange over the resumable progress
@@ -188,15 +187,15 @@ __global__ void p2pTileSendRecvBidirCta(
  * @param p2p              Transport device (passed by value from host memory)
  * @param sendTiles        Tiled view of the send buffer
  * @param recvTiles        Tiled view of the recv buffer
+ * @param abortDevice      Caller-supplied abort handle for the polling loop
  * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
- * @param timeout          Abort handle for the polling loop
  */
 __global__ void p2pTileProgressSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes = 0,
-    AbortDevice timeout = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes = 0);
 
 /**
  * p2pTileProgressDrainSendRecv — serial alternation, but each direction
@@ -208,13 +207,19 @@ __global__ void p2pTileProgressSendRecv(
  * overlap the two directions -- only two concurrent groups do that -- so the
  * gain should be bounded by how much work a direction can queue before
  * blocking, i.e. by pipelineDepth.
+ *
+ * @param p2p              Transport device (passed by value from host memory)
+ * @param sendTiles        Tiled view of the send buffer
+ * @param recvTiles        Tiled view of the recv buffer
+ * @param abortDevice      Caller-supplied abort handle for the polling loop
+ * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
  */
 __global__ void p2pTileProgressDrainSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes = 0,
-    AbortDevice timeout = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes = 0);
 
 /**
  * p2pTileProgressSendRecvBidirCta — Progress API with the two directions in
@@ -225,13 +230,19 @@ __global__ void p2pTileProgressDrainSendRecv(
  * calls to p2pTileProgressSendRecv, different group structure.
  *
  * Launches with `numSendBlocks` total blocks.
+ *
+ * @param p2p              Transport device (passed by value from host memory)
+ * @param sendTiles        Tiled view of the send buffer
+ * @param recvTiles        Tiled view of the recv buffer
+ * @param abortDevice      Caller-supplied abort handle for the polling loop
+ * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
  */
 __global__ void p2pTileProgressSendRecvBidirCta(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes = 0,
-    AbortDevice timeout = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes = 0);
 
 /**
  * p2pTileSendRecvDynamic — Variant using transport-internal tile state
@@ -251,16 +262,18 @@ __global__ void p2pTileProgressSendRecvBidirCta(
  *
  * CUDA graph compatible: all synchronization is device-side.
  *
- * @param numBlocks    Active block count (controls staging partition).
- *                     Launch with 2 * numBlocks total blocks.
+ * The active block count controls the staging partition. Launch with twice
+ * that many total blocks.
+ *
  * @param needsBarrier Set true when numBlocks changed since last call.
+ * @param abortDevice  Caller-supplied abort handle for signal waits.
  */
 __global__ void p2pTileSendRecvDynamic(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     bool needsBarrier,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 /**
  * p2pTileForward — Tile-style fused recv+forward kernel.
@@ -279,14 +292,14 @@ __global__ void p2pTileSendRecvDynamic(
  * @param p2p_pred   Transport to predecessor (read source staging)
  * @param p2p_succ   Transport to successor (write target staging)
  * @param dstTiles   Tiled view of the local output buffer
+ * @param abortDevice      Caller-supplied abort handle for signal waits
  * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
- * @param abortDevice    Optional abortDevice for signal waits
  */
 __global__ void p2pTileForward(
     P2pNvlTransportDevice p2p_pred,
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
-    std::size_t max_signal_bytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes = 0);
 
 } // namespace comms::prims::benchmark
