@@ -2011,7 +2011,19 @@ ncclResult_t scheduleCeCollTaskToPlan(struct ncclComm* comm, struct ncclKernelPl
 bool ncclCeAvailable(struct ncclComm* comm, ncclFunc_t coll, int/*ncclDevRedOp_t*/ red, ncclDataType_t ty, ncclSymRegType_t winRegType) {
   return false;
 }
+bool ncclCeScratchAvailable(struct ncclComm* comm, ncclFunc_t coll, int/*ncclDevRedOp_t*/ red,
+                            ncclDataType_t ty, ncclSymRegType_t winRegType) {
+  return false;
+}
 bool ncclCeImplemented(ncclFunc_t coll, int/*ncclDevRedOp_t*/ red, ncclDataType_t ty) {
+  return false;
+}
+bool ncclHierCeAvailable(struct ncclComm* comm, ncclFunc_t coll, int/*ncclDevRedOp_t*/ red,
+                         ncclDataType_t ty, ncclSymRegType_t winRegType) {
+  return false;
+}
+bool ncclCeAlltoAllvEligible(struct ncclComm* comm, ncclDataType_t datatype, ncclSymRegType_t winRegType,
+                             bool hasSysmemSegment, bool capturing) {
   return false;
 }
 // init.cc calls this during commFree without first checking ncclCeAvailable result,
@@ -2039,6 +2051,11 @@ ncclResult_t ncclCeGather(struct ncclComm* comm, struct ncclCeCollArgs* args, cu
   return ncclInternalError;
 }
 ncclResult_t ncclCeAlltoAll(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream) {
+  return ncclInternalError;
+}
+ncclResult_t ncclCeAllReduce(struct ncclComm* comm, const void* sendbuff, void* recvbuff, size_t count,
+                             ncclDataType_t datatype, ncclRedOp_t op, cudaStream_t stream,
+                             struct ncclDevrWindow* recvWin) {
   return ncclInternalError;
 }
 #endif
