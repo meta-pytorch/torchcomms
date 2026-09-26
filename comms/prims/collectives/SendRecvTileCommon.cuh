@@ -181,7 +181,7 @@ __device__ __forceinline__ void send_to_peer(
       "the plain IB path ships bytes verbatim; a fixed-size non-Memcpy CopyOp "
       "routed here would be silently downgraded to Memcpy");
   handle.get_ib(peer).send<Memcpy>(
-      group, src, nbytes, max_signal_bytes, abortDevice);
+      group, src, nbytes, abortDevice, max_signal_bytes);
 }
 
 template <typename CopyOp = Memcpy>
@@ -231,7 +231,7 @@ __device__ __forceinline__ void recv_from_peer(
       "the plain IB path ships bytes verbatim; a fixed-size non-Memcpy CopyOp "
       "routed here would be silently downgraded to Memcpy");
   handle.get_ib(peer).recv<Memcpy>(
-      group, dst, nbytes, max_signal_bytes, abortDevice);
+      group, dst, nbytes, abortDevice, max_signal_bytes);
 }
 
 // Per-block plain/compressed selector for the mixed-mode dispatch. When

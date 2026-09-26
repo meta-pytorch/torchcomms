@@ -68,10 +68,10 @@ __global__ void sendRecvKernel(
   abortDevice.start();
   if (send) {
     detail::send<P2pIbgdaTransportDevice, Memcpy, Proto>(
-        *transport, group, buffer, nbytes, maxSignalBytes, abortDevice);
+        *transport, group, buffer, nbytes, abortDevice, maxSignalBytes);
   } else {
     detail::recv<P2pIbgdaTransportDevice, Memcpy, Proto>(
-        *transport, group, buffer, nbytes, maxSignalBytes, abortDevice);
+        *transport, group, buffer, nbytes, abortDevice, maxSignalBytes);
   }
 }
 
