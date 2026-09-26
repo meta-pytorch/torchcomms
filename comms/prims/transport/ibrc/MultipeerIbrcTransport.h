@@ -57,7 +57,8 @@ class MultipeerIbrcTransport
  public:
   // `abort` is the owning communicator's device handle. It is baked into every
   // per-peer device slot so the device-side waits on the CPU proxy terminate on
-  // abort instead of trapping. A default-constructed handle keeps the legacy
+  // abort instead of trapping. Callers without an owning fault-tolerance domain
+  // pass a default-constructed handle explicitly to retain the legacy
   // cycle-deadline trap; see kIbrcDefaultDeviceTimeoutCycles.
   //
   // `hostAborted` is the same abort seen from the CPU, and it is separate only
@@ -69,7 +70,7 @@ class MultipeerIbrcTransport
       int nRanks,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultipeerIbTransportConfig& config,
-      comms::fault_tolerance::AbortDevice abort = {},
+      comms::fault_tolerance::AbortDevice abort,
       std::function<bool()> hostAborted = nullptr);
 
   ~MultipeerIbrcTransport();
