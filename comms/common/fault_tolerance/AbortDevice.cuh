@@ -62,12 +62,13 @@ inline constexpr const char* kDeadlineExpiredContext =
     "device deadline expired";
 
 /**
- * Linkage for the cold abort log.
+ * Linkage for cold abort paths.
  *
- * The abort *check* must stay inline -- it is the throttle gate, on every spin
- * iteration of every wait. The *log* is the opposite: it runs at most once per
- * communicator, so its runtime cost is irrelevant and its *static* cost is
- * everything.
+ * The abort throttle gate must stay inline -- it runs on every spin iteration
+ * of every wait. Work reached only after that gate is cold: the mapped-state
+ * read runs once per poll interval, and the deadline CAS and log run only on a
+ * timeout. Its call overhead is negligible, while duplicating it into every
+ * collective specialization has a large static cost.
  *
  * This is load-bearing for correctness of the hot path, not just for code size.
  * A device `printf` is an external `vprintf` call that cannot be inlined; if
@@ -106,9 +107,9 @@ inline constexpr const char* kDeadlineExpiredContext =
  * also included by plain host translation units.
  */
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-#define COMMS_FT_ABORT_LOG_LINKAGE __device__ inline __attribute__((noinline))
+#define COMMS_FT_COLD_PATH_LINKAGE __device__ inline __attribute__((noinline))
 #else
-#define COMMS_FT_ABORT_LOG_LINKAGE __device__ inline
+#define COMMS_FT_COLD_PATH_LINKAGE __device__ inline
 #endif
 
 namespace detail {
@@ -214,7 +215,7 @@ __device__ __forceinline__ void publishContextReady(AbortState* state) {
  *
  * Every device path that takes `AbortState::abort` from `NONE` to a terminal
  * reason ends here -- `AbortDevice::setAbort`, `AbortFlag::setAbort`, and the
- * deadline CAS in `markTimedOutIfExpired`, all of which reach it through
+ * deadline CAS in `deviceCheckExpiredSlow`, all of which reach it through
  * `deviceTrySetAbort`. There is no second emitter, so the marker has one
  * spelling and one field list, and counting it counts transitions.
  *
@@ -222,7 +223,7 @@ __device__ __forceinline__ void publishContextReady(AbortState* state) {
  * message and source location. That is an observation, not a transition, so it
  * deliberately does not reuse this marker.
  */
-COMMS_FT_ABORT_LOG_LINKAGE void deviceLogFirstWriter(
+COMMS_FT_COLD_PATH_LINKAGE void deviceLogFirstWriter(
     AbortReason reason,
     const char* context) {
   // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
@@ -282,6 +283,33 @@ __device__ __forceinline__ bool deviceTrySetAbort(
     *observed = static_cast<AbortReason>(expected);
   }
   return won;
+}
+
+inline constexpr uint32_t kAbortSlowCheckAborted = 1U;
+inline constexpr uint32_t kAbortSlowCheckFlippedHere = 2U;
+
+/*
+ * Performs the shared-state work after `checkExpired()` passes its inline
+ * throttle gate. Keep this boundary scalar-only: passing `AbortDevice` by
+ * reference can make nvcc materialize a `__grid_constant__` kernel argument in
+ * thread-local memory.
+ */
+COMMS_FT_COLD_PATH_LINKAGE uint32_t
+deviceCheckExpiredSlow(AbortState* state, bool deadlineDue) {
+  if (static_cast<AbortReason>(deviceLoadAcquireSystem(&state->abort)) !=
+      AbortReason::NONE) {
+    return kAbortSlowCheckAborted;
+  }
+  if (!deadlineDue) {
+    return 0;
+  }
+
+  AbortReason observed = AbortReason::NONE;
+  if (deviceTrySetAbort(
+          state, AbortReason::TIMED_OUT, kDeadlineExpiredContext, &observed)) {
+    return kAbortSlowCheckAborted | kAbortSlowCheckFlippedHere;
+  }
+  return observed == AbortReason::TIMED_OUT ? kAbortSlowCheckAborted : 0U;
 }
 
 } // namespace detail
@@ -368,6 +396,16 @@ struct AbortDevice final {
    */
   __host__ __device__ uint64_t deadlineCycles() const {
     return deadlineCycles_;
+  }
+
+  /**
+   * Minimum device-clock cycles between reads of mapped abort state.
+   *
+   * Exposed for scalar-only cold-path boundaries that cannot safely carry this
+   * handle by reference.
+   */
+  __host__ __device__ uint64_t pollIntervalCycles() const {
+    return pollIntervalCycles_;
   }
 
   /**
@@ -489,11 +527,13 @@ struct AbortDevice final {
     }
     nextPollCycles_ = now + pollIntervalCycles_;
 
-    if (reason() != AbortReason::NONE) {
-      sawTerminalReason_ = true;
-      return true;
+    const uint32_t slowResult =
+        detail::deviceCheckExpiredSlow(state_, deadlineDue);
+    if ((slowResult & detail::kAbortSlowCheckFlippedHere) != 0U &&
+        flippedHere != nullptr) {
+      *flippedHere = true;
     }
-    if (deadlineDue && markTimedOutIfExpired(flippedHere)) {
+    if ((slowResult & detail::kAbortSlowCheckAborted) != 0U) {
       sawTerminalReason_ = true;
       return true;
     }
@@ -613,47 +653,6 @@ struct AbortDevice final {
         cyclesPerMs_{cyclesPerMs},
         pollIntervalCycles_{cyclesPerMs / kAbortPollsPerMs},
         behavior_{behavior} {}
-
-  __device__ bool deadlineExpired() const {
-    return deadlineCycles_ != 0 && detail::deviceClock() >= deadlineCycles_;
-  }
-
-  /**
-   * Records `TIMED_OUT` when this handle's deadline has lapsed.
-   *
-   * Goes through `detail::deviceTrySetAbort` rather than running its own CAS,
-   * so the deadline transitions and logs on exactly the same terms as
-   * `setAbort()` does. This used to be the one device writer that could take
-   * the shared reason silently: most production waits observe their own
-   * deadline through `groupAborted()` or a bare `isAborted()`, and every later
-   * observer takes the `reason() != NONE` early return without transitioning,
-   * so nobody was left who could report the origin.
-   *
-   * `flippedHere` is a plain out-param -- "this call won the CAS" -- and has no
-   * bearing on whether the line is emitted. `FT_ABORT_CHECK` reads it to decide
-   * whether to add its own site line, not to decide whether anything logs.
-   *
-   * Returns true for a CAS loss to another `TIMED_OUT` writer as well as for a
-   * win, because either way the deadline is recorded by the time this returns.
-   */
-  __device__ bool markTimedOutIfExpired(bool* flippedHere = nullptr) const {
-    if (!isEnabled() || !deadlineExpired()) {
-      return false;
-    }
-
-    AbortReason observed = AbortReason::NONE;
-    if (detail::deviceTrySetAbort(
-            state_,
-            AbortReason::TIMED_OUT,
-            kDeadlineExpiredContext,
-            &observed)) {
-      if (flippedHere != nullptr) {
-        *flippedHere = true;
-      }
-      return true;
-    }
-    return observed == AbortReason::TIMED_OUT;
-  }
 
   /**
    * Device pointer to the same mapped pinned state owned by the host `Abort`.

@@ -10,6 +10,9 @@ list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/tests/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/benchmarks/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/examples/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/issues/.*")
+# The injection DSO is a standalone libibverbs shim. Folding it into a backend
+# binds that backend's normal verbs calls to the shim instead of its provider.
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ibverbx/ib_injection/.*")
 if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     add_compile_definitions(CTRAN_DISABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ctran/backends/tcpdevmem/.*")
