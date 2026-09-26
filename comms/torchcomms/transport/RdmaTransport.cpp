@@ -19,6 +19,7 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
+#include "comms/utils/InitFolly.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
 
@@ -32,6 +33,10 @@ constexpr int kDummyDevice = 0;
 folly::once_flag initOnceFlag;
 void initEnvironment() {
   folly::call_once(initOnceFlag, [] {
+    // Every extension that hides its static-archive symbols gets a private
+    // folly::SingletonVault, so _transport has to complete its own
+    // registration rather than inherit NCCLX's.
+    meta::comms::initFolly();
     ncclCvarInit();
     ctran::logging::initCtranLogging();
     ctran::utils::commCudaLibraryInit();

@@ -128,6 +128,13 @@ else()
     # rewriting it concurrently under `ninja -j` raced and intermittently
     # failed the link with "cannot find libnccl_static.a".
     add_dependencies(torchcomms_transport_cca_hook torchcomms_comms_ncclx)
+
+    # Keep static NCCLX and Folly symbols local to this extension. It can be
+    # loaded beside _comms_ncclx, which embeds the same archives.
+    target_link_options(torchcomms_transport_cca_hook PRIVATE
+        "-Wl,--exclude-libs,ALL"
+        "-Wl,-Bsymbolic"
+    )
 endif()
 
 if(CUDA_FOUND)
