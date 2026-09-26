@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -936,6 +937,11 @@ class MultiPeerIbTransportBase {
    * driver call; on a miss it resolves the allocation, exports a DMA-BUF, and
    * registers one MR per NIC on the base-owned PDs.
    *
+   * If registration succeeds on only some NICs and rollback cannot deregister
+   * every MR, the transport requires process-lifetime quarantine. The caller
+   * must retain the backing allocation when the concrete transport reports
+   * requiresProcessLifetimeQuarantine().
+   *
    * @return IbgdaLocalBuffer carrying one lkey per NIC.
    */
   // @param relaxedOrdering eligible for PCIe Relaxed Ordering (gated by
@@ -1114,6 +1120,10 @@ class MultiPeerIbTransportBase {
   // allocated, so these referenced buffers must outlive the C++ object too.
   void retainOwnedBuffersForProcessLifetime() noexcept;
 
+  bool registrationRollbackFailed() const noexcept {
+    return registrationRollbackFailed_.load(std::memory_order_acquire);
+  }
+
   void validateSendRecvConfig() const;
   std::size_t sendRecvStagingBytesPerPeer() const;
   std::size_t sendRecvSignalBytesPerPeer() const;
@@ -1202,12 +1212,23 @@ class MultiPeerIbTransportBase {
     std::map<uintptr_t, CachedMr> registeredBuffers;
   };
   folly::Synchronized<RegistrationState> registrationState_;
+  std::atomic<bool> registrationRollbackFailed_{false};
 
+  IbgdaLocalBuffer registerBufferTrackingQuarantine(
+      void* ptr,
+      std::size_t size,
+      bool relaxedOrdering,
+      bool& registrationQuarantined);
   IbgdaLocalBuffer registerBufferLocked(
       void* ptr,
       std::size_t size,
       bool relaxedOrdering,
-      RegistrationState& registrations);
+      RegistrationState& registrations,
+      bool* registrationQuarantined);
+  void quarantineFailedRegistrationRollback(
+      uintptr_t allocBase,
+      CachedMr cached,
+      RegistrationState& registrations) noexcept;
   bool deregisterBufferLocked(void* ptr, RegistrationState& registrations);
 
   struct RegisteredDeviceBuffer {

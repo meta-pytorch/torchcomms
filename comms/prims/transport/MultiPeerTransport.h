@@ -275,7 +275,7 @@ class MultiPeerTransport {
   bool is_lazy_mode() const;
 
   /**
-   * Returns true when an ambiguous IBGDA failure requires every locally owned
+   * Returns true when an ambiguous IB failure requires every locally owned
    * or caller-owned registered target allocation to remain alive until process
    * exit.
    */
@@ -466,8 +466,8 @@ class MultiPeerTransport {
   Transport* transportsGpu_{nullptr};
   std::vector<Transport> transportsHost_;
   bool deviceHandleBuilt_{false};
-  // Once set, the destructor detaches the IBGDA transport instead of releasing
-  // resources that a remote peer may still address.
+  // Once set, the destructor detaches the configured IB transport instead of
+  // releasing resources that a peer or provider may still address.
   std::atomic<bool> ibgdaResourcesQuarantined_{false};
 
   enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };

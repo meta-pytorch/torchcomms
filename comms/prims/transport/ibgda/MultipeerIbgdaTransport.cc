@@ -1443,20 +1443,32 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
   cleanup();
 }
 
+bool MultipeerIbgdaTransport::requiresProcessLifetimeQuarantine()
+    const noexcept {
+  return requiresProcessLifetimeQuarantine_.load(std::memory_order_acquire) ||
+      registrationRollbackFailed();
+}
+
 void MultipeerIbgdaTransport::cleanup() {
   auto& symbols = ibverbx::ibvSymbols;
 
   const auto exposedPeerIndex = materializationFailed_
       ? detail::findPossiblyExposedPeer(peerRkeyExposureStates_)
       : std::nullopt;
-  if (exposedPeerIndex.has_value()) {
-    requiresProcessLifetimeQuarantine_ = true;
+  if (registrationRollbackFailed() || exposedPeerIndex.has_value()) {
+    requiresProcessLifetimeQuarantine_.store(true, std::memory_order_release);
     retainOwnedBuffersForProcessLifetime();
-    LOG(ERROR)
-        << "MultipeerIbgdaTransport: retaining QPs, MRs, and buffers for "
-           "process lifetime after ambiguous rkey exposure; "
-           "exposed_peer_index="
-        << *exposedPeerIndex;
+    if (exposedPeerIndex.has_value()) {
+      LOG(ERROR)
+          << "MultipeerIbgdaTransport: retaining QPs, MRs, and buffers for "
+             "process lifetime after ambiguous rkey exposure; "
+             "exposed_peer_index="
+          << *exposedPeerIndex;
+    } else {
+      LOG(ERROR)
+          << "MultipeerIbgdaTransport: retaining QPs, MRs, and buffers for "
+             "process lifetime after partial-registration rollback failed";
+    }
     return;
   }
 
@@ -1793,8 +1805,9 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
     cleanupPeerSignalCounterResources(peerIndex);
   };
 
-  if (detail::findPossiblyExposedPeer(peerRkeyExposureStates_).has_value()) {
-    requiresProcessLifetimeQuarantine_ = true;
+  if (registrationRollbackFailed() ||
+      detail::findPossiblyExposedPeer(peerRkeyExposureStates_).has_value()) {
+    requiresProcessLifetimeQuarantine_.store(true, std::memory_order_release);
     retainOwnedBuffersForProcessLifetime();
     return;
   }

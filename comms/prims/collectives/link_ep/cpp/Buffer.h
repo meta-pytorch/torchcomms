@@ -239,6 +239,7 @@ class Buffer {
   // this, the gathered handles are all zeros and `cudaIpcOpenMemHandle`
   // fails at sync time.
   void* localIpcBuffer_{nullptr};
+  bool retainLocalIpcBufferForProcessLifetime_{false};
   mutable cudaIpcMemHandle_t localIpcHandle_{};
   mutable bool localIpcHandleReady_{false};
 
