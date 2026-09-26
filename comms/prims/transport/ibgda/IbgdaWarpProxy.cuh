@@ -153,8 +153,8 @@ class IbgdaWarpProxy {
           this,
           src,
           nbytes,
-          maxSignalBytes,
           abortDevice_,
+          maxSignalBytes,
           nullptr,
           args...);
     }
@@ -177,8 +177,8 @@ class IbgdaWarpProxy {
           this,
           dst,
           nbytes,
-          maxSignalBytes,
           abortDevice_,
+          maxSignalBytes,
           nullptr,
           args...);
     }
@@ -204,8 +204,8 @@ class IbgdaWarpProxy {
           dst,
           next,
           nbytes,
-          maxSignalBytes,
           abortDevice_,
+          maxSignalBytes,
           nullptr,
           nullptr,
           args...);
@@ -1019,11 +1019,11 @@ class IbgdaWarpProxy {
         remote.recvStaging.subBuffer(offset),
         tx.publishedBytes[slot],
         remote.dataReady,
+        abortDevice,
         stream.slotBytes,
         /*counterBuf=*/{},
         /*counterVal=*/0,
-        /*signalPerLane=*/true,
-        abortDevice);
+        /*signalPerLane=*/true);
     if (!ticket.posted) {
       return;
     }
