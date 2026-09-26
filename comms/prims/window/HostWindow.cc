@@ -164,31 +164,44 @@ HostWindow::~HostWindow() {
       callerBufferLifetimeQuarantineRequired_,
       callerBufferKeepAlives_,
       [this]() noexcept -> bool {
-        try {
-          if (ibgdaBarrierLocalBuf_.ptr != nullptr) {
-            if (ibgdaBarrierLocalBuf_.lkey_per_device.size > 0) {
-              transport_.localDeregisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr);
-            }
-            static_cast<void>(cudaFree(ibgdaBarrierLocalBuf_.ptr));
-          }
-          if (ibgdaPeerSignalLocalBuf_.ptr != nullptr) {
-            if (ibgdaPeerSignalLocalBuf_.lkey_per_device.size > 0) {
-              transport_.localDeregisterIbgdaBuffer(
-                  ibgdaPeerSignalLocalBuf_.ptr);
-            }
-            static_cast<void>(cudaFree(ibgdaPeerSignalLocalBuf_.ptr));
-          }
-          if (ibgdaPeerCounterLocalBuf_.ptr != nullptr) {
-            transport_.freeIbCounterBuffer(
-                ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_);
-          }
-          for (auto* ptr : registeredLocalBuffers_) {
-            transport_.localDeregisterIbgdaBuffer(ptr);
-          }
-          return true;
-        } catch (...) {
+        bool allMrsDeregistered = true;
+        const auto deregisterOwnedBuffer =
+            [this, &allMrsDeregistered](IbgdaLocalBuffer& buffer) {
+              if (buffer.ptr == nullptr || buffer.lkey_per_device.size == 0) {
+                return;
+              }
+              const bool deregistered =
+                  transport_.localDeregisterIbgdaBuffer(buffer.ptr);
+              allMrsDeregistered = deregistered && allMrsDeregistered;
+              if (deregistered) {
+                buffer.lkey_per_device = NetworkLKeys{};
+              }
+            };
+
+        deregisterOwnedBuffer(ibgdaBarrierLocalBuf_);
+        deregisterOwnedBuffer(ibgdaPeerSignalLocalBuf_);
+        deregisterOwnedBuffer(ibgdaPeerCounterLocalBuf_);
+        for (auto* ptr : registeredLocalBuffers_) {
+          const bool deregistered = transport_.localDeregisterIbgdaBuffer(ptr);
+          allMrsDeregistered = deregistered && allMrsDeregistered;
+        }
+
+        if (!allMrsDeregistered) {
           return false;
         }
+
+        if (ibgdaBarrierLocalBuf_.ptr != nullptr) {
+          static_cast<void>(cudaFree(ibgdaBarrierLocalBuf_.ptr));
+        }
+        if (ibgdaPeerSignalLocalBuf_.ptr != nullptr) {
+          static_cast<void>(cudaFree(ibgdaPeerSignalLocalBuf_.ptr));
+        }
+        if (ibgdaPeerCounterLocalBuf_.ptr != nullptr &&
+            !transport_.freeIbCounterBuffer(
+                ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_)) {
+          return false;
+        }
+        return true;
       }));
 
   if (!exchangedNvlMappedPtrs_.empty()) {

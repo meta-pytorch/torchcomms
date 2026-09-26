@@ -147,12 +147,11 @@ struct TransportHandle {
                  : ibrc->registerBuffer(ptr, size, relaxedOrdering);
   }
 
-  void deregisterBuffer(void* ptr) {
+  bool deregisterBuffer(void* ptr) {
     if (ibgda) {
-      ibgda->deregisterBuffer(ptr);
-    } else {
-      ibrc->deregisterBuffer(ptr);
+      return ibgda->deregisterBuffer(ptr);
     }
+    return ibrc->deregisterBuffer(ptr);
   }
 
   IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size) {
@@ -241,12 +240,14 @@ TEST_P(MultiSegmentRegistrationTest, DisjointBufferRegistration) {
   }
 
   // Deregister sub-buffer first (decrements refcount).
-  transport.deregisterBuffer(subPtr);
+  ASSERT_TRUE(transport.deregisterBuffer(subPtr));
 
   // Deregister main buffer (drops refcount to zero, frees MR).
-  transport.deregisterBuffer(disjointBuf.ptr());
-
-  disjointBuf.free();
+  const bool deregistered = transport.deregisterBuffer(disjointBuf.ptr());
+  EXPECT_TRUE(deregistered);
+  if (deregistered) {
+    disjointBuf.free();
+  }
 }
 
 TEST_P(MultiSegmentRegistrationTest, ContiguousBufferRegistration) {
@@ -268,8 +269,11 @@ TEST_P(MultiSegmentRegistrationTest, ContiguousBufferRegistration) {
   EXPECT_NE(reg.ptr, nullptr);
   EXPECT_EQ(reg.ptr, devPtr);
 
-  transport.deregisterBuffer(devPtr);
-  CUDACHECK_TEST(cudaFree(devPtr));
+  const bool deregistered = transport.deregisterBuffer(devPtr);
+  EXPECT_TRUE(deregistered);
+  if (deregistered) {
+    CUDACHECK_TEST(cudaFree(devPtr));
+  }
 }
 
 TEST_P(MultiSegmentRegistrationTest, ExactRangeSpansDisjointSegments) {
@@ -399,8 +403,11 @@ TEST_P(MultiSegmentRegistrationTest, ExactRangeDoesNotReuseCachedRegistration) {
   }
 
   transport.deregisterIbBufferRange(exact);
-  transport.deregisterBuffer(allocation);
-  CUDACHECK_TEST(cudaFree(allocation));
+  const bool deregistered = transport.deregisterBuffer(allocation);
+  EXPECT_TRUE(deregistered);
+  if (deregistered) {
+    CUDACHECK_TEST(cudaFree(allocation));
+  }
 }
 
 TEST_P(MultiSegmentRegistrationTest, OverlappingExactRangesRemainIndependent) {

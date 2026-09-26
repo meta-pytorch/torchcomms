@@ -544,7 +544,11 @@ class IbgdaSendRecvBenchmarkContext {
       bootstrap_->barrierAll();
     }
     if (transport_ && registeredSendBuf_.ptr != nullptr) {
-      transport_->deregisterBuffer(sendBuf_->get());
+      if (!transport_->deregisterBuffer(sendBuf_->get())) {
+        LOG(ERROR) << "Retaining registered send buffer after failed MR "
+                      "deregistration";
+        static_cast<void>(sendBuf_.release());
+      }
       registeredSendBuf_ = {};
     }
     if (stream_ != nullptr) {

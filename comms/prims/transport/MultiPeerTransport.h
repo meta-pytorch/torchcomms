@@ -343,8 +343,10 @@ class MultiPeerTransport {
    * keep the allocation alive until exit.
    *
    * @param ptr Pointer to the buffer to deregister
+   * @return False when the backing allocation must remain alive because the
+   *         registration could not be safely revoked
    */
-  void localDeregisterIbgdaBuffer(void* ptr);
+  [[nodiscard]] bool localDeregisterIbgdaBuffer(void* ptr) noexcept;
 
   /**
    * Collectively exchange IBGDA buffer info with all peers.
@@ -395,7 +397,9 @@ class MultiPeerTransport {
   IbgdaLocalBuffer registerIbCounterBuffer(
       const IbgdaLocalBuffer& buffer,
       std::size_t size);
-  void freeIbCounterBuffer(IbgdaLocalBuffer& buffer, void*& hostPtr) noexcept;
+  [[nodiscard]] bool freeIbCounterBuffer(
+      IbgdaLocalBuffer& buffer,
+      void*& hostPtr) noexcept;
 
   /**
    * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.
