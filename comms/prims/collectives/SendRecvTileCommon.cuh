@@ -121,7 +121,7 @@ __device__ __forceinline__ void send_to_peer(
       sendrecv_peer_transport_type(group, handle, peer, "send to");
   if (peerType == TransportType::P2P_NVL) {
     handle.get_nvl(peer).send(
-        group, src, nbytes, max_signal_bytes, abortDevice);
+        group, src, nbytes, abortDevice, max_signal_bytes);
     return;
   }
   sendrecv_require_ib_peer(group, peerType, peer, "send to");
@@ -199,7 +199,7 @@ __device__ __forceinline__ void recv_from_peer(
       sendrecv_peer_transport_type(group, handle, peer, "recv from");
   if (peerType == TransportType::P2P_NVL) {
     handle.get_nvl(peer).recv(
-        group, dst, nbytes, max_signal_bytes, abortDevice);
+        group, dst, nbytes, abortDevice, max_signal_bytes);
     return;
   }
   sendrecv_require_ib_peer(group, peerType, peer, "recv from");

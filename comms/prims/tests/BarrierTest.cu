@@ -115,7 +115,8 @@ __global__ void testDeviceBarrierSyncKernel(
     uint64_t barrierId,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->barrier_sync(group, barrierId);
+  const AbortDevice abortDevice;
+  p2p->barrier_sync(group, barrierId, abortDevice);
 }
 
 __global__ void testDeviceBarrierSyncMultipleKernel(
@@ -124,8 +125,9 @@ __global__ void testDeviceBarrierSyncMultipleKernel(
     int numSyncs,
     GroupType groupType) {
   auto group = make_group(groupType);
+  const AbortDevice abortDevice;
   for (int i = 0; i < numSyncs; ++i) {
-    p2p->barrier_sync(group, barrierId);
+    p2p->barrier_sync(group, barrierId, abortDevice);
   }
 }
 
@@ -164,6 +166,7 @@ __global__ void testBarrierWriteDataKernel(
     size_t dataSize,
     GroupType groupType) {
   auto group = make_group(groupType);
+  const AbortDevice abortDevice;
 
   // Each thread group uses its own barrier id
   uint64_t barrierId = group.group_id;
@@ -172,7 +175,7 @@ __global__ void testBarrierWriteDataKernel(
   p2p->put(group, remoteDataBuffer, localSrcBuffer, dataSize);
 
   // Each thread group uses its own barrier id
-  p2p->barrier_sync(group, barrierId);
+  p2p->barrier_sync(group, barrierId, abortDevice);
 }
 
 __global__ void testBarrierVerifyDataKernel(
@@ -183,13 +186,14 @@ __global__ void testBarrierVerifyDataKernel(
     uint32_t* errorCount,
     GroupType groupType) {
   auto group = make_group(groupType);
+  const AbortDevice abortDevice;
 
   // Each thread group uses its own barrier id (matches the writer)
   uint64_t barrierId = group.group_id;
 
   // Barrier sync - arrive on remote, wait on local
   // This ensures writer's data is visible before we read
-  p2p->barrier_sync(group, barrierId);
+  p2p->barrier_sync(group, barrierId, abortDevice);
 
   // Calculate the portion of data this thread group handles
   size_t bytesPerGroup = dataSize / group.total_groups;

@@ -65,7 +65,7 @@ __global__ void testTileSendKernel(
   abortDevice.start();
   auto group = make_block_group();
   TiledBuffer<char> tiles(reinterpret_cast<char*>(src_d), nbytes, group);
-  p2p.send(group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+  p2p.send(group, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
 }
 
 __global__ void testTileRecvKernel(
@@ -77,7 +77,7 @@ __global__ void testTileRecvKernel(
   abortDevice.start();
   auto group = make_block_group();
   TiledBuffer<char> tiles(reinterpret_cast<char*>(dst_d), nbytes, group);
-  p2p.recv(group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+  p2p.recv(group, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
 }
 
 __device__ void wait_for_second_call_signal(
@@ -126,8 +126,8 @@ __global__ void testTileMultiCallSendRecvKernel(
           sub,
           sendTile + i * bytesPerCall,
           bytesPerCall,
-          maxSignalBytes,
-          abortDevice);
+          abortDevice,
+          maxSignalBytes);
     }
   } else {
     wait_for_second_call_signal(
@@ -144,8 +144,8 @@ __global__ void testTileMultiCallSendRecvKernel(
           sub,
           recvTile + i * bytesPerCall,
           bytesPerCall,
-          maxSignalBytes,
-          abortDevice);
+          abortDevice,
+          maxSignalBytes);
     }
   }
 }
@@ -168,13 +168,13 @@ __global__ void testTileTwoCallVariableSignalSendRecvKernel(
 
   if (role == 0) {
     char* sendTile = sendTiles.tile_data(blockId);
-    p2p.send(sub, sendTile, firstCallBytes, firstMaxSignalBytes, abortDevice);
+    p2p.send(sub, sendTile, firstCallBytes, abortDevice, firstMaxSignalBytes);
     p2p.send(
         sub,
         sendTile + firstCallBytes,
         secondCallBytes,
-        secondMaxSignalBytes,
-        abortDevice);
+        abortDevice,
+        secondMaxSignalBytes);
   } else {
     wait_for_second_call_signal(
         p2p,
@@ -185,13 +185,13 @@ __global__ void testTileTwoCallVariableSignalSendRecvKernel(
         waitForSecondCallSignal,
         abortDevice);
     char* recvTile = recvTiles.tile_data(blockId);
-    p2p.recv(sub, recvTile, firstCallBytes, firstMaxSignalBytes, abortDevice);
+    p2p.recv(sub, recvTile, firstCallBytes, abortDevice, firstMaxSignalBytes);
     p2p.recv(
         sub,
         recvTile + firstCallBytes,
         secondCallBytes,
-        secondMaxSignalBytes,
-        abortDevice);
+        abortDevice,
+        secondMaxSignalBytes);
   }
 }
 
@@ -210,20 +210,20 @@ __global__ void testTileTwoCallSendThenRecvKernel(
   char* sendTile = sendTiles.tile_data(blockId);
   char* recvTile = recvTiles.tile_data(blockId);
 
-  p2p.send(group, sendTile, firstCallBytes, maxSignalBytes, abortDevice);
-  p2p.recv(group, recvTile, firstCallBytes, maxSignalBytes, abortDevice);
+  p2p.send(group, sendTile, firstCallBytes, abortDevice, maxSignalBytes);
+  p2p.recv(group, recvTile, firstCallBytes, abortDevice, maxSignalBytes);
   p2p.send(
       group,
       sendTile + firstCallBytes,
       secondCallBytes,
-      maxSignalBytes,
-      abortDevice);
+      abortDevice,
+      maxSignalBytes);
   p2p.recv(
       group,
       recvTile + firstCallBytes,
       secondCallBytes,
-      maxSignalBytes,
-      abortDevice);
+      abortDevice,
+      maxSignalBytes);
 }
 
 __global__ void testTileMultiCallSendOnlyKernel(
@@ -243,8 +243,8 @@ __global__ void testTileMultiCallSendOnlyKernel(
         group,
         sendTile + i * bytesPerCall,
         bytesPerCall,
-        maxSignalBytes,
-        abortDevice);
+        abortDevice,
+        maxSignalBytes);
   }
 }
 
@@ -260,13 +260,13 @@ __global__ void testTileTwoCallSendOnlyKernel(
   auto group = make_block_group();
   const int blockId = group.group_id;
   char* sendTile = sendTiles.tile_data(blockId);
-  p2p.send(group, sendTile, firstCallBytes, maxSignalBytes, abortDevice);
+  p2p.send(group, sendTile, firstCallBytes, abortDevice, maxSignalBytes);
   p2p.send(
       group,
       sendTile + firstCallBytes,
       secondCallBytes,
-      maxSignalBytes,
-      abortDevice);
+      abortDevice,
+      maxSignalBytes);
 }
 
 __device__ void check_wrapped_substep_with_existing_signals(
@@ -329,7 +329,7 @@ __global__ void testTileSendWaitsForWrappedSubstepAckKernel(
 
   auto group = make_block_group();
   if (blockIdx.x == 0) {
-    p2p.send(group, sendData, nbytes, maxSignalBytes, abortDevice);
+    p2p.send(group, sendData, nbytes, abortDevice, maxSignalBytes);
   } else {
     check_wrapped_substep_with_existing_signals(
         p2p,
@@ -354,7 +354,7 @@ __global__ void testTileForwardWaitsForWrappedSubstepAckKernel(
 
   auto group = make_block_group();
   if (blockIdx.x == 0) {
-    pred.forward(group, dst, nbytes, succ, maxSignalBytes, abortDevice);
+    pred.forward(group, dst, nbytes, succ, abortDevice, maxSignalBytes);
   } else {
     check_wrapped_substep_with_existing_signals(
         succ,
@@ -505,8 +505,8 @@ __global__ void testTileMultiCallRecvOnlyKernel(
         group,
         recvTile + i * bytesPerCall,
         bytesPerCall,
-        maxSignalBytes,
-        abortDevice);
+        abortDevice,
+        maxSignalBytes);
   }
 }
 
@@ -522,13 +522,13 @@ __global__ void testTileTwoCallRecvOnlyKernel(
   auto group = make_block_group();
   const int blockId = group.group_id;
   char* recvTile = recvTiles.tile_data(blockId);
-  p2p.recv(group, recvTile, firstCallBytes, maxSignalBytes, abortDevice);
+  p2p.recv(group, recvTile, firstCallBytes, abortDevice, maxSignalBytes);
   p2p.recv(
       group,
       recvTile + firstCallBytes,
       secondCallBytes,
-      maxSignalBytes,
-      abortDevice);
+      abortDevice,
+      maxSignalBytes);
 }
 
 __global__ void testTileMultiCallForwardKernel(
@@ -560,8 +560,8 @@ __global__ void testTileMultiCallForwardKernel(
         dstTile + i * bytesPerCall,
         bytesPerCall,
         succ,
-        maxSignalBytes,
-        abortDevice);
+        abortDevice,
+        maxSignalBytes);
   }
 }
 
@@ -579,14 +579,14 @@ __global__ void testTileTwoCallForwardKernel(
   const int blockId = group.group_id;
   char* dstTile = dstTiles.tile_data(blockId);
   pred.forward(
-      group, dstTile, firstCallBytes, succ, maxSignalBytes, abortDevice);
+      group, dstTile, firstCallBytes, succ, abortDevice, maxSignalBytes);
   pred.forward(
       group,
       dstTile + firstCallBytes,
       secondCallBytes,
       succ,
-      maxSignalBytes,
-      abortDevice);
+      abortDevice,
+      maxSignalBytes);
 }
 
 __global__ void testTileTwoCallVariableSignalForwardKernel(
@@ -604,14 +604,14 @@ __global__ void testTileTwoCallVariableSignalForwardKernel(
   const int blockId = group.group_id;
   char* dstTile = dstTiles.tile_data(blockId);
   pred.forward(
-      group, dstTile, firstCallBytes, succ, firstMaxSignalBytes, abortDevice);
+      group, dstTile, firstCallBytes, succ, abortDevice, firstMaxSignalBytes);
   pred.forward(
       group,
       dstTile + firstCallBytes,
       secondCallBytes,
       succ,
-      secondMaxSignalBytes,
-      abortDevice);
+      abortDevice,
+      secondMaxSignalBytes);
 }
 
 __global__ void testCopyLocalStagingKernel(
@@ -989,7 +989,8 @@ __global__ void testWaitKernel(
     uint64_t expected,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->wait_signal_until(group, signal_id, op, expected);
+  const AbortDevice abortDevice;
+  p2p->wait_signal_until(group, signal_id, op, expected, abortDevice);
 }
 
 void testWait(
