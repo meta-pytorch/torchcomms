@@ -111,6 +111,13 @@ else()
         "-l:libboost_context.a"
         ${FOLLY_LDFLAGS}
     )
+
+    # Keep symbols from the embedded transport and Folly archives local to
+    # this extension so they cannot interpose on sibling TorchComms modules.
+    target_link_options(torchcomms_transport PRIVATE
+        "-Wl,--exclude-libs,ALL"
+        "-Wl,-Bsymbolic"
+    )
 endif()
 
 if(CUDA_FOUND)

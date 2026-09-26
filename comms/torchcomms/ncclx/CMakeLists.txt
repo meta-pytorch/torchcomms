@@ -191,6 +191,14 @@ else()
         PRE_LINK
         COMMAND "${ROOT}/rename_symbols.sh" "${NCCLX_STATIC_LIB}"
     )
+
+    # Keep static NCCLX and Folly symbols local to this extension. Other
+    # TorchComms modules embed the same archives, and ELF interposition across
+    # the modules otherwise makes their singleton registrations collide.
+    target_link_options(torchcomms_comms_ncclx PRIVATE
+        "-Wl,--exclude-libs,ALL"
+        "-Wl,-Bsymbolic"
+    )
 endif()
 
 if(CUDA_FOUND)
