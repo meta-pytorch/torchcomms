@@ -48,6 +48,22 @@ _NIC_READ_MARKERS = (
 )
 
 
+def _function_body(source: str, name: str) -> str:
+    match = re.search(rf"\b{name}\s*\([^;{{]*\)\s*\{{", source, re.DOTALL)
+    if match is None:
+        raise AssertionError(f"could not find definition of {name}")
+    start = match.end() - 1
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : index]
+    raise AssertionError(f"could not find end of definition of {name}")
+
+
 class P2pIbTransportBuildContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.package = Path(__file__).resolve().parent
@@ -179,6 +195,47 @@ class P2pIbTransportBuildContractTest(unittest.TestCase):
         proxy_loop = proxy[retire_end:]
         self.assertIn("post_send_once(", proxy_loop)
         self.assertIn("retire_send_at_high_watermark_once(", proxy_loop)
+
+    def test_amd_bnxt_producers_lock_before_reserving(self) -> None:
+        """Prevents a lower reservation from blocking behind its successor."""
+        ops = (self.transport / "amd/prims_amd_gda/PrimsAmdGdaOps.h").read_text()
+        producers = {
+            "try_prims_amd_gda_gpu_dev_verbs_put": "nic.tryLockQp(qp, shouldContinue)",
+            "try_prims_amd_gda_gpu_dev_verbs_signal": "nic.tryLockQp(qp, shouldContinue)",
+            "try_prims_amd_gda_gpu_dev_verbs_put_signal": "nic.tryLockQp(qp, shouldContinue)",
+            "prims_amd_gda_fence": "nic.lockQp(qp)",
+            "prims_amd_gda_gpu_dev_verbs_p": "nic.lockQp(qp)",
+            "prims_amd_gda_gpu_dev_verbs_put_signal_counter": "nic.lockQp(mainQp)",
+            "prims_amd_gda_gpu_dev_verbs_signal_counter": "nic.lockQp(mainQp)",
+        }
+        reservation = "prims_amd_gda_gpu_dev_verbs_reserve_wq_slots"
+        for name, lock in producers.items():
+            body = _function_body(ops, name)
+            self.assertIn(lock, body, name)
+            self.assertIn(reservation, body, name)
+            self.assertLess(body.index(lock), body.index(reservation), name)
+
+    def test_abort_aware_amd_posts_require_published_doorbell(self) -> None:
+        ops = (self.transport / "amd/prims_amd_gda/PrimsAmdGdaOps.h").read_text()
+        try_submit = "try_prims_amd_gda_gpu_dev_verbs_submit"
+        helper = _function_body(ops, try_submit)
+        submit = "prims_amd_gda_gpu_dev_verbs_submit(nic, qp, nextWqeIdx)"
+        self.assertIn("if (qp_is_terminal(qp))", helper)
+        self.assertIn(submit, helper)
+        self.assertIn("return !qp_is_terminal(qp)", helper)
+
+        publication_counts = {
+            "try_prims_amd_gda_gpu_dev_verbs_put": 2,
+            "try_prims_amd_gda_gpu_dev_verbs_signal": 1,
+            "try_prims_amd_gda_gpu_dev_verbs_put_signal": 3,
+        }
+        for name, expected_count in publication_counts.items():
+            body = _function_body(ops, name)
+            self.assertEqual(body.count(try_submit), expected_count, name)
+            self.assertIsNone(
+                re.search(r"(?<!try_)prims_amd_gda_gpu_dev_verbs_submit\s*\(", body),
+                name,
+            )
 
 
 if __name__ == "__main__":

@@ -245,6 +245,7 @@ struct prims_amd_gda_gpu_dev_verbs_qp {
   uint32_t sq_num_shift8_be_3ds; /**< SQ num << 8 big endian */
   uint32_t sq_num_shift8_be_4ds; /**< SQ num << 8 big endian */
   int sq_lock; /**< SQ lock */
+  uint32_t terminal; ///< Non-zero once this QP has abandoned a reservation
   uint16_t sq_wqe_num; /**< Number of SQ WQE slots */
   uint16_t sq_wqe_mask; /**< SQ WQE index mask (sq_wqe_num - 1) */
   uint8_t* sq_wqe_daddr; /**< SQ WQE buffer device address */

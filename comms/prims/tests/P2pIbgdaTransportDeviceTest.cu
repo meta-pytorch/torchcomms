@@ -999,4 +999,364 @@ cudaError_t runTestDataOnlySqErrorWithoutFt() {
 }
 #endif
 
+#ifdef __HIP_PLATFORM_AMD__
+namespace {
+
+struct AmdDataOnlyAbortState {
+  doca_gpu_dev_verbs_qp qp{};
+  doca_gpu_dev_verbs_qp* qps[2 * kIbDirections]{};
+  doca_gpu_dev_verbs_qp* companionQps[2 * kIbDirections]{};
+  IbLocalChannel channels[2]{};
+  alignas(64) uint8_t sq[1024]{};
+  alignas(64) uint8_t cqe[64]{};
+  uint64_t msnTable[16]{};
+  __be32 doorbellRecord[2]{};
+  uint64_t doorbell{};
+  uint8_t localData{};
+  uint8_t remoteData{};
+  uint64_t remoteSignal[2]{};
+  uint32_t producersCompleted{};
+  AmdDataOnlyAbortResult result{};
+};
+
+enum class AmdPostKind : uint8_t {
+  DataOnly,
+  PutSignal,
+  SignalOnly,
+};
+
+__device__ void initializeAmdDataOnlyState(
+    AmdDataOnlyAbortState* state,
+    uint64_t reservedIndex) {
+  state->qp.sq_rsvd_index = reservedIndex;
+  state->qp.sq_ready_index = 0;
+  state->qp.terminal = 0;
+  state->qp.sq_wqe_daddr = state->sq;
+  state->qp.sq_wqe_num = 16;
+  state->qp.sq_wqe_mask = 15;
+  state->qp.sq_dbrec = state->doorbellRecord;
+  state->qp.sq_db = &state->doorbell;
+  state->qp.cq_sq.cqe_daddr = state->cqe;
+  state->qp.cq_sq.cqe_num = 1;
+  state->qp.cq_sq.cqe_mask = 0;
+  state->qp.cq_sq.dbrec = state->doorbellRecord;
+#ifdef NIC_BNXT
+  state->qp.nic.bnxt.sq_depth = 48;
+  state->qp.nic.bnxt.cq_depth = 1;
+  state->qp.nic.bnxt.cq_buf = state->cqe;
+  state->qp.nic.bnxt.msntbl = state->msnTable;
+  state->qp.nic.bnxt.msn_tbl_sz = 16;
+  state->qp.nic.bnxt.mtu = 4096;
+  state->qp.nic.bnxt.dbr = &state->doorbell;
+#elif defined(NIC_IONIC)
+  state->qp.nic.ionic.sq_buf = state->sq;
+  state->qp.nic.ionic.sq_mask = 15;
+  state->qp.nic.ionic.sq_dbreg = &state->doorbell;
+  state->qp.nic.ionic.cq_buf = state->cqe;
+#endif
+  for (int i = 0; i < 2 * kIbDirections; ++i) {
+    state->qps[i] = &state->qp;
+    state->companionQps[i] = &state->qp;
+  }
+}
+
+__device__ bool issueAmdPost(
+    AmdDataOnlyAbortState* state,
+    ThreadGroup& group,
+    const comms::fault_tolerance::AbortDevice& abort,
+    AmdPostKind postKind) {
+  NicDeviceIbgdaResources nic{
+      .qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(state->qps, 2 * kIbDirections),
+      .companion_qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(
+          state->companionQps, 2 * kIbDirections),
+  };
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>(&nic, 1),
+      IbgdaRemoteBuffer{},
+      IbgdaLocalBuffer{},
+      IbgdaLocalBuffer{},
+      /*numSignalSlots=*/0,
+      /*numCounterSlots=*/0,
+      /*maxGroups=*/2,
+      /*qpsPerConnection=*/1,
+      /*qpDirectionCount=*/kIbDirections,
+      DeviceSpan<IbLocalChannel>(state->channels, 2),
+      IbChannelLayout{},
+      /*collapsedCq=*/false);
+  const IbgdaLocalBuffer localData(
+      &state->localData, NetworkLKeys{NetworkLKey{0x1111}});
+  const IbgdaRemoteBuffer remoteData(
+      &state->remoteData, NetworkRKeys{NetworkRKey{0x2222}});
+  const IbgdaRemoteBuffer remoteSignal(
+      state->remoteSignal, NetworkRKeys{NetworkRKey{0x3333}});
+  if (postKind == AmdPostKind::SignalOnly) {
+    return transport.try_signal(
+        group, remoteSignal, /*signalVal=*/1, IbDirection::Send, abort);
+  }
+  if (postKind == AmdPostKind::PutSignal) {
+    return transport
+        .put_staged<true>(
+            group,
+            localData,
+            remoteData,
+            /*nbytes=*/1,
+            remoteSignal,
+            /*signalVal=*/1,
+            abort)
+        .posted;
+  }
+  return transport
+      .put_staged<false>(
+          group,
+          localData,
+          remoteData,
+          /*nbytes=*/1,
+          IbgdaRemoteBuffer{},
+          /*signalVal=*/0,
+          abort)
+      .posted;
+}
+
+__device__ void recordAmdDataOnlyQueueState(AmdDataOnlyAbortState* state) {
+  state->result.reservedIndex = state->qp.sq_rsvd_index;
+  state->result.readyIndex = state->qp.sq_ready_index;
+  state->result.doorbell = state->doorbell;
+  state->result.terminal = state->qp.terminal;
+#ifdef NIC_BNXT
+  state->result.lockReleased = state->qp.nic.bnxt.sq_lock == 0 ? 1U : 0U;
+#else
+  state->result.lockReleased = 1U;
+#endif
+  state->result.completed = 1U;
+}
+
+__device__ void recordAmdDataOnlyResult(
+    AmdDataOnlyAbortState* state,
+    bool firstPosted,
+    bool secondPosted) {
+  state->result.posted = firstPosted ? 1U : 0U;
+  state->result.secondPosted = secondPosted ? 1U : 0U;
+  recordAmdDataOnlyQueueState(state);
+}
+
+__global__ void testAmdPostPreAbort(
+    AmdDataOnlyAbortState* state,
+    comms::fault_tolerance::AbortDevice abort,
+    AmdPostKind postKind) {
+  if (threadIdx.x == 0) {
+    initializeAmdDataOnlyState(state, /*reservedIndex=*/0);
+  }
+  __syncthreads();
+  auto group = comms::prims::make_warp_group();
+  const bool firstPosted = issueAmdPost(state, group, abort, postKind);
+  const bool secondPosted = issueAmdPost(
+      state, group, comms::fault_tolerance::AbortDevice{}, postKind);
+  if (group.is_leader()) {
+    recordAmdDataOnlyResult(state, firstPosted, secondPosted);
+  }
+}
+
+__global__ void testAmdPostMidWaitAbort(
+    AmdDataOnlyAbortState* state,
+    comms::fault_tolerance::AbortDevice abort,
+    AmdPostKind postKind) {
+  if (threadIdx.x == 0) {
+    initializeAmdDataOnlyState(state, /*reservedIndex=*/1);
+  }
+  __syncthreads();
+
+  if (threadIdx.x < 2 * comms::prims::kWarpSize) {
+    auto group = comms::prims::make_warp_group();
+    const bool posted = issueAmdPost(
+        state,
+        group,
+        group.group_id == 0 ? abort : comms::fault_tolerance::AbortDevice{},
+        postKind);
+    if (group.is_leader()) {
+      if (group.group_id == 0) {
+        state->result.posted = posted ? 1U : 0U;
+      } else {
+        state->result.secondPosted = posted ? 1U : 0U;
+      }
+      if (group.group_id == 0) {
+        state->result.firstProducerCompleted = 1U;
+      } else {
+        state->result.secondProducerCompleted = 1U;
+      }
+      __threadfence();
+      if (atomicAdd(&state->producersCompleted, 1U) == 1U) {
+        recordAmdDataOnlyQueueState(state);
+      }
+    }
+    return;
+  }
+
+  if (threadIdx.x == 2 * comms::prims::kWarpSize) {
+    constexpr uint64_t kObservationBoundCycles = 10'000'000'000ULL;
+    const uint64_t start = clock64();
+    while (atomicAdd(
+               reinterpret_cast<unsigned long long*>(&state->qp.sq_rsvd_index),
+               0ULL) < 2ULL) {
+      if (clock64() - start >= kObservationBoundCycles) {
+        state->result.reservationObservationTimedOut = 1U;
+        abort.setAbort();
+        return;
+      }
+    }
+    state->result.reservationObserved = 1U;
+    abort.setAbort();
+  }
+}
+
+#ifdef NIC_BNXT
+__global__ void testAmdDataOnlyNetworkError(
+    AmdDataOnlyAbortState* state,
+    comms::fault_tolerance::AbortDevice abort,
+    bool capacityTimeout) {
+  if (threadIdx.x == 0) {
+    initializeAmdDataOnlyState(state, /*reservedIndex=*/0);
+    if (capacityTimeout) {
+      state->qp.nic.bnxt.sq_depth = PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT - 1;
+    } else {
+      auto* req = reinterpret_cast<prims_amd_gda_bnxt_req_cqe*>(state->cqe);
+      auto* base = reinterpret_cast<prims_amd_gda_bnxt_bcqe*>(
+          state->cqe + sizeof(prims_amd_gda_bnxt_req_cqe));
+      req->con_indx = 1;
+      base->flg_st_typ_ph = static_cast<uint32_t>(
+          PRIMS_AMD_GDA_BNXT_REQ_ST_LOC_QP_OP
+          << PRIMS_AMD_GDA_BNXT_BCQE_STATUS_SHIFT);
+    }
+  }
+  __syncthreads();
+
+  auto group = comms::prims::make_warp_group();
+  const bool posted = issueAmdPost(state, group, abort, AmdPostKind::DataOnly);
+  if (group.is_leader()) {
+    recordAmdDataOnlyResult(state, posted, /*secondPosted=*/false);
+  }
+}
+#endif
+
+cudaError_t runAmdDataOnlyAbort(
+    bool preAbort,
+    AmdPostKind postKind,
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  AmdDataOnlyAbortState* state = nullptr;
+  cudaError_t status = cudaMalloc(&state, sizeof(*state));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMemset(state, 0, sizeof(*state));
+  if (status == cudaSuccess) {
+    if (preAbort) {
+      abort.setAbort();
+      testAmdPostPreAbort<<<1, comms::prims::kWarpSize>>>(
+          state, abort.getDeviceHandle(), postKind);
+    } else {
+      testAmdPostMidWaitAbort<<<1, 3 * comms::prims::kWarpSize>>>(
+          state, abort.getDeviceHandle(), postKind);
+    }
+    status = cudaGetLastError();
+  }
+  if (status == cudaSuccess) {
+    status = cudaDeviceSynchronize();
+  }
+  if (status == cudaSuccess) {
+    status = cudaMemcpy(
+        result, &state->result, sizeof(*result), cudaMemcpyDeviceToHost);
+  }
+  const cudaError_t freeStatus = cudaFree(state);
+  return status == cudaSuccess ? freeStatus : status;
+}
+
+#ifdef NIC_BNXT
+cudaError_t runAmdDataOnlyNetworkError(
+    bool capacityTimeout,
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  AmdDataOnlyAbortState* state = nullptr;
+  cudaError_t status = cudaMalloc(&state, sizeof(*state));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMemset(state, 0, sizeof(*state));
+  if (status == cudaSuccess) {
+    testAmdDataOnlyNetworkError<<<1, comms::prims::kWarpSize>>>(
+        state, abort.getDeviceHandle(), capacityTimeout);
+    status = cudaGetLastError();
+  }
+  if (status == cudaSuccess) {
+    status = cudaDeviceSynchronize();
+  }
+  if (status == cudaSuccess) {
+    status = cudaMemcpy(
+        result, &state->result, sizeof(*result), cudaMemcpyDeviceToHost);
+  }
+  const cudaError_t freeStatus = cudaFree(state);
+  return status == cudaSuccess ? freeStatus : status;
+}
+#endif
+
+} // namespace
+
+cudaError_t runTestAmdDataOnlyPreAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyAbort(
+      /*preAbort=*/true, AmdPostKind::DataOnly, abort, result);
+}
+
+cudaError_t runTestAmdDataOnlyMidWaitAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyAbort(
+      /*preAbort=*/false, AmdPostKind::DataOnly, abort, result);
+}
+
+cudaError_t runTestAmdPutSignalPreAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyAbort(
+      /*preAbort=*/true, AmdPostKind::PutSignal, abort, result);
+}
+
+cudaError_t runTestAmdPutSignalMidWaitAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyAbort(
+      /*preAbort=*/false, AmdPostKind::PutSignal, abort, result);
+}
+
+cudaError_t runTestAmdSignalPreAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyAbort(
+      /*preAbort=*/true, AmdPostKind::SignalOnly, abort, result);
+}
+
+cudaError_t runTestAmdSignalMidWaitAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyAbort(
+      /*preAbort=*/false, AmdPostKind::SignalOnly, abort, result);
+}
+
+#ifdef NIC_BNXT
+cudaError_t runTestAmdDataOnlyCqErrorWithFt(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyNetworkError(
+      /*capacityTimeout=*/false, abort, result);
+}
+
+cudaError_t runTestAmdDataOnlySqCapacityTimeoutWithFt(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result) {
+  return runAmdDataOnlyNetworkError(
+      /*capacityTimeout=*/true, abort, result);
+}
+#endif
+#endif
+
 } // namespace comms::prims::tests

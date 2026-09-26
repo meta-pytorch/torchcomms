@@ -442,6 +442,28 @@ struct NicDeviceIbgdaResources {
  *      Buffer ptr==nullptr means "disabled" (no signal/counter).
  */
 class P2pIbgdaTransportDevice {
+ private:
+#ifdef __HIP_PLATFORM_AMD__
+  struct AmdAbortContinuePolicy {
+    const AbortDevice& abortDevice;
+
+    __device__ __forceinline__ bool operator()() const {
+      return !FT_ABORT_CHECK(
+          abortDevice, "AMD transport post on an aborted communicator");
+    }
+
+    __device__ __forceinline__ bool recordNetworkErrorAndShouldTrap() const {
+      if (!abortDevice.isEnabled()) {
+        return true;
+      }
+      (void)abortDevice.setAbort(
+          comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+      return abortDevice.behavior() ==
+          comms::fault_tolerance::AbortBehavior::TRAP;
+    }
+  };
+#endif
+
  public:
   // Default ctor required so an array of these can be cudaMemcpy'd from host
   // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
@@ -1995,11 +2017,19 @@ class P2pIbgdaTransportDevice {
       std::size_t nbytes,
       const AbortDevice& abortDevice) {
 #ifdef __HIP_PLATFORM_AMD__
-    (void)abortDevice;
-    return {
-        .put_wqe = put_single_impl(lane, localBuf, remoteBuf, nbytes),
-        .posted = true,
-    };
+    doca_gpu_dev_verbs_addr localAddr = {
+        .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
+    const auto result = try_doca_gpu_dev_verbs_put(
+        lane.qp,
+        remoteAddr,
+        localAddr,
+        nbytes,
+        AmdAbortContinuePolicy{abortDevice});
+    return {.put_wqe = result.ticket, .posted = result.posted};
 #else
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
@@ -2329,20 +2359,21 @@ class P2pIbgdaTransportDevice {
 
 #ifdef __HIP_PLATFORM_AMD__
     prims_amd_gda::ActiveNicBackend amdNic{};
-    uint64_t ticket = 0;
-    prims_amd_gda::prims_amd_gda_gpu_dev_verbs_put_signal(
-        amdNic,
-        lane.qp,
-        remoteAddr,
-        localAddr,
-        nbytes,
-        sigRemoteAddr,
-        sigSinkAddr,
-        signalVal,
-        &ticket);
-    (void)abortDevice;
+    const auto result =
+        prims_amd_gda::try_prims_amd_gda_gpu_dev_verbs_put_signal(
+            amdNic,
+            lane.qp,
+            remoteAddr,
+            localAddr,
+            nbytes,
+            sigRemoteAddr,
+            sigSinkAddr,
+            signalVal,
+            AmdAbortContinuePolicy{abortDevice});
     return IbgdaPutSignalTickets{
-        .put_wqe = ticket, .signal_wqe = ticket, .posted = true};
+        .put_wqe = result.ticket,
+        .signal_wqe = result.ticket,
+        .posted = result.posted};
 #else
     uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
@@ -2762,15 +2793,26 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = nic.sink_lkey.value};
 
 #ifdef __HIP_PLATFORM_AMD__
-    (void)abortDevice;
-    uint64_t wqe_idx = reserve_wqes(qp, 1);
+    const auto result = try_doca_gpu_dev_verbs_signal(
+        qp,
+        remoteAddr,
+        sinkAddr,
+        signalVal,
+        static_cast<uint8_t>(
+            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE |
+            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE),
+        AmdAbortContinuePolicy{abortDevice});
+    if (!result.posted) {
+      return false;
+    }
+    signalTicket = result.ticket;
+    return true;
 #else
     const auto reservation = try_reserve_wqes(qp, 1, abortDevice);
     if (!reservation.acquired) {
       return false;
     }
     uint64_t wqe_idx = reservation.firstWqe;
-#endif
 
     doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
@@ -2795,6 +2837,7 @@ class P2pIbgdaTransportDevice {
     submit_wqes(qp, wqe_idx);
     signalTicket = wqe_idx;
     return true;
+#endif
   }
 
   __device__ uint64_t signal_fenced(
