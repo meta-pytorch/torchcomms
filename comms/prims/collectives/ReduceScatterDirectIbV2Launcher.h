@@ -23,6 +23,9 @@ struct DirectReduceScatterIbV2LaunchParams {
   std::size_t signaling_data_size{0};
   const __nv_bfloat16* input{nullptr};
   float* output{nullptr};
+  // If an abort interrupts a partially posted registered send, keep `input`
+  // and this registration alive and unchanged until every peer transport has
+  // completed teardown or reconfiguration.
   IbgdaLocalBuffer input_reg{};
   int num_blocks{2};
   int block_threads{1024};

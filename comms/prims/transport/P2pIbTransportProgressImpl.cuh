@@ -447,6 +447,32 @@ __device__ __forceinline__ SendSignal progress_send_signal(
   return SendSignal{IbgdaRemoteBuffer{}, /*val=*/0};
 }
 
+/*
+ * Keep abort-aware posting behind one device-call boundary shared by the
+ * staged and registered progress paths. Inlining the backend reservation
+ * machinery into both state machines makes ptxas work grow nonlinearly.
+ *
+ * Keep this helper translation-unit-local because its callers are compiled
+ * with different device-function register caps. Also pass compact buffer
+ * descriptors by value so the emitted function does not dereference
+ * caller-local aggregate temporaries. The remaining references point to
+ * transport storage and per-thread state, never kernel-argument storage.
+ */
+template <bool HasSignal, typename Transport>
+[[nodiscard]] static __device__ __noinline__ IbLocalCompletionTicket
+progress_post_staged_send(
+    Transport* transport,
+    ThreadGroup& group,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    IbgdaRemoteBuffer signalBuf,
+    uint64_t signalVal,
+    const AbortDevice& abortDevice) {
+  return transport->template put_staged<HasSignal>(
+      group, localBuf, remoteBuf, nbytes, signalBuf, signalVal, abortDevice);
+}
+
 template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     Transport& transport,
@@ -645,6 +671,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       abandon_progress_state(group, progressSlot, state);
       return IbgdaSendRecvProgressStatus::Aborted;
     }
+    uint32_t putPosted = 1U;
     if (group.is_leader()) {
       __threadfence_system();
       trace_allreduce_event(
@@ -666,16 +693,17 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           PipesTraceEventType::kAllReduceWqeSubmitBegin,
           qpLane,
           protocolBytesThis);
-      const auto completion = transport.put(
-          solo,
-          channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
-          remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
-          chunk.wireBytes,
-          sig.buf,
-          sig.val,
-          /*counterBuf=*/{},
-          /*counterVal=*/0,
-          /*signalPerLane=*/true);
+      const auto completion =
+          progress_post_staged_send<Proto::kUsesDataReadySignal>(
+              &transport,
+              solo,
+              channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
+              remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
+              chunk.wireBytes,
+              sig.buf,
+              sig.val,
+              abortDevice);
+      putPosted = completion.posted ? 1U : 0U;
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceWqeSubmitEnd,
@@ -686,19 +714,24 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           PipesTraceEventType::kAllReduceBookkeepingBegin,
           qpLane,
           protocolBytesThis);
-      record_send_completion<Proto>(
-          transport,
-          static_cast<uint32_t>(progress_params.groupId),
-          chunk.slotId,
-          chunk.pipelineGeneration,
-          completion);
+      if (completion.posted) {
+        record_send_completion<Proto>(
+            transport,
+            static_cast<uint32_t>(progress_params.groupId),
+            chunk.slotId,
+            chunk.pipelineGeneration,
+            completion);
+      }
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceBookkeepingEnd,
           qpLane,
           protocolBytesThis);
     }
-    group.sync();
+    if (group.broadcast<uint32_t>(putPosted) == 0U) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaSendRecvProgressStatus::Aborted;
+    }
 
     state.activeNextByte += chunk.payloadBytes;
     if (active_payload_offset(state) >= progress_params.protocolBytes) {
@@ -851,28 +884,34 @@ progress_registered_send_once(
       abandon_progress_state(group, progressSlot, state);
       return IbgdaRegisteredSendProgressStatus::Aborted;
     }
+    uint32_t putPosted = 1U;
     if (group.is_leader()) {
       __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      const auto completion = transport.put(
+      const auto completion = progress_post_staged_send<true>(
+          &transport,
           solo,
           state.activeRegisteredBuf.subBuffer(chunk.dataOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           validBytes,
           remoteChannel.dataReady,
           protocolBytesThis,
-          {},
-          0,
-          true);
-      record_send_completion<protocol::Simple>(
-          transport,
-          static_cast<uint32_t>(geometry.groupId),
-          chunk.slotId,
-          chunk.pipelineGeneration,
-          completion);
+          abortDevice);
+      putPosted = completion.posted ? 1U : 0U;
+      if (completion.posted) {
+        record_send_completion<protocol::Simple>(
+            transport,
+            static_cast<uint32_t>(geometry.groupId),
+            chunk.slotId,
+            chunk.pipelineGeneration,
+            completion);
+      }
     }
-    group.sync();
+    if (group.broadcast<uint32_t>(putPosted) == 0U) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaRegisteredSendProgressStatus::Aborted;
+    }
 
     state.activeNextByte += chunk.payloadBytes;
     if (active_payload_offset(state) >= geometry.protocolBytes) {
@@ -1521,8 +1560,23 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
         qpLane,
         protocolBytesThis);
   }
-  transport.signal(
-      group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+  const bool creditPosted = transport.try_signal(
+      group,
+      remoteChannel.slotFree,
+      protocolBytesThis,
+      IbDirection::Recv,
+      abortDevice);
+  if (!creditPosted) {
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          traceContext,
+          PipesTraceEventType::kAllReduceBookkeepingEnd,
+          qpLane,
+          protocolBytesThis);
+    }
+    abandon_progress_state(group, progressSlot, state);
+    return IbgdaSendRecvProgressStatus::Aborted;
+  }
 
   state.activeNextByte += chunk.payloadBytes;
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
@@ -1698,6 +1752,34 @@ progress_recv_acquire_once(
 #endif
 }
 
+template <typename Proto, typename Transport>
+__device__ __forceinline__ void abandon_send_progress_state(
+    Transport& transport,
+    ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  auto& slot = progress_send_slot<Proto>(transport, group);
+  IbChannelProgress state = slot;
+  abandon_progress_state(group, slot, state);
+#else
+  (void)transport;
+  (void)group;
+#endif
+}
+
+template <typename Proto, typename Transport>
+__device__ __forceinline__ void abandon_recv_progress_state(
+    Transport& transport,
+    ThreadGroup& group) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  auto& slot = progress_recv_slot<Proto>(transport, group);
+  IbChannelProgress state = slot;
+  abandon_progress_state(group, slot, state);
+#else
+  (void)transport;
+  (void)group;
+#endif
+}
+
 /**
  * Return the SLOT_FREE credit for a chunk a previous
  * progress_recv_acquire_once() handed back.
@@ -1717,16 +1799,20 @@ progress_recv_acquire_once(
  * releasing chunk 2 before chunk 1 already lets chunk 3 land on chunk 1's slot.
  * Supporting genuine out-of-order release would need per-slot credits instead
  * of one counter; no caller needs that today.
+ *
+ * A refused credit marks the local receive-progress slot terminal without
+ * publishing the credit. Callers holding views from other transports must
+ * abandon those transports separately before leaving the operation.
  */
 template <typename Transport, typename Proto>
-__device__ __forceinline__ void progress_recv_release_once(
-    Transport& transport,
-    ThreadGroup& group,
-    const AbortDevice& abortDevice,
-    const RecvChunkAcquisition& view) {
+[[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
+    [[maybe_unused]] Transport& transport,
+    [[maybe_unused]] ThreadGroup& group,
+    [[maybe_unused]] const AbortDevice& abortDevice,
+    [[maybe_unused]] const RecvChunkAcquisition& view) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if (view.staging == nullptr) {
-    return;
+    return true;
   }
   // SLOT_FREE is a peer-visible credit: it tells the sender this range has been
   // consumed and may be overwritten. After an abort the consumption either did
@@ -1745,18 +1831,24 @@ __device__ __forceinline__ void progress_recv_release_once(
         : 0U;
   }
   if (group.broadcast<uint32_t>(aborted) != 0U) {
-    return;
+    abandon_recv_progress_state<Proto>(transport, group);
+    return false;
   }
   auto& channelLayout = transport.channel_layout();
   const ChannelSlotView ch =
       acquire_channel<Proto>(transport, channelLayout, group);
-  transport.signal(
-      group, ch.remote.slotFree, view.protocolBytes, IbDirection::Recv);
+  const bool posted = transport.try_signal(
+      group,
+      ch.remote.slotFree,
+      view.protocolBytes,
+      IbDirection::Recv,
+      abortDevice);
+  if (!posted) {
+    abandon_recv_progress_state<Proto>(transport, group);
+  }
+  return posted;
 #else
-  (void)transport;
-  (void)group;
-  (void)abortDevice;
-  (void)view;
+  return true;
 #endif
 }
 

@@ -135,14 +135,52 @@ struct IbgdaSqPollResult {
   bool aborted{false};
 };
 
+__device__ __forceinline__ bool checkIbgdaSqCapacityAbort(
+    const AbortDevice& abortDevice,
+    uint64_t ticket) {
+  return FT_ABORT_CHECK(
+      abortDevice,
+      "IBGDA SQ capacity wait timed out (ticket=%llu)",
+      static_cast<unsigned long long>(ticket));
+}
+
+inline constexpr uint32_t kIbgdaSqFailureReport = 1U;
+inline constexpr uint32_t kIbgdaSqFailureTrap = 2U;
+
+inline __device__ __noinline__ uint32_t classifyIbgdaSqCapacityPollFailure(
+    comms::fault_tolerance::AbortState* abortState,
+    comms::fault_tolerance::AbortBehavior abortBehavior) {
+  if (abortState == nullptr) {
+    return kIbgdaSqFailureReport | kIbgdaSqFailureTrap;
+  }
+  const bool firstWriter = comms::fault_tolerance::detail::deviceTrySetAbort(
+      abortState,
+      comms::fault_tolerance::AbortReason::NETWORK_ERROR,
+      /*context=*/nullptr);
+  uint32_t action = firstWriter ? kIbgdaSqFailureReport : 0U;
+  if (abortBehavior == comms::fault_tolerance::AbortBehavior::TRAP) {
+    action |= kIbgdaSqFailureReport | kIbgdaSqFailureTrap;
+  }
+  return action;
+}
+
+inline __device__ __noinline__ void reportIbgdaSqCapacityPollFailure(
+    uint64_t ticket,
+    int status) {
+  printf(
+      "P2pIbgdaTransportDevice: SQ capacity poll failed "
+      "(ticket=%llu status=%d)\n",
+      static_cast<unsigned long long>(ticket),
+      status);
+}
+
 template <
     doca_gpu_dev_verbs_resource_sharing_mode CqSharingMode,
     doca_gpu_dev_verbs_sync_scope AcquireScope>
-__device__ __forceinline__ IbgdaSqPollResult pollIbgdaSqOnce(
+__device__ __forceinline__ int pollIbgdaSqStatusOnce(
     doca_gpu_dev_verbs_cq* cq,
     uint64_t ticket,
-    bool collapsedCq,
-    const AbortDevice& abortDevice) {
+    bool collapsedCq) {
   int status;
 #if !defined(PRIMS_IBGDA_DISABLE_COLLAPSED_CQ)
   if (collapsedCq) {
@@ -160,11 +198,101 @@ __device__ __forceinline__ IbgdaSqPollResult pollIbgdaSqOnce(
     status = doca_gpu_dev_verbs_poll_one_cq_at<CqSharingMode>(cq, ticket);
 #endif
   }
-  const bool aborted = status == EBUSY &&
-      FT_ABORT_CHECK(abortDevice,
-                     "IBGDA SQ capacity wait timed out (ticket=%llu)",
-                     static_cast<unsigned long long>(ticket));
+  return status;
+}
+
+template <
+    doca_gpu_dev_verbs_resource_sharing_mode CqSharingMode,
+    doca_gpu_dev_verbs_sync_scope AcquireScope>
+__device__ __forceinline__ IbgdaSqPollResult pollIbgdaSqOnce(
+    doca_gpu_dev_verbs_cq* cq,
+    uint64_t ticket,
+    bool collapsedCq,
+    const AbortDevice& abortDevice) {
+  const int status = pollIbgdaSqStatusOnce<CqSharingMode, AcquireScope>(
+      cq, ticket, collapsedCq);
+  const bool aborted =
+      status == EBUSY && checkIbgdaSqCapacityAbort(abortDevice, ticket);
   return {.status = status, .aborted = aborted};
+}
+
+template <doca_gpu_dev_verbs_sync_scope AcquireScope>
+// A reference here can make nvcc address a `__grid_constant__` kernel argument
+// as thread-local storage across this noinline boundary.
+__device__ __noinline__ IbgdaWqeReservation waitForIbgdaSqCapacity(
+    doca_gpu_dev_verbs_qp* qp,
+    uint64_t firstWqe,
+    uint64_t lastWqe,
+    bool collapsedCq,
+    doca_gpu_dev_verbs_resource_sharing_mode cqSharingMode,
+    comms::fault_tolerance::AbortState* abortState,
+    comms::fault_tolerance::AbortBehavior abortBehavior,
+    uint64_t deadlineCycles,
+    uint64_t pollIntervalCycles) {
+  const uint16_t sqDepth = __ldg(&qp->sq_wqe_num);
+  const uint64_t completionTicket = lastWqe - sqDepth;
+  auto* cq = doca_gpu_dev_verbs_qp_get_cq_sq(qp);
+  uint64_t nextPollCycles =
+      comms::fault_tolerance::detail::deviceClock() + pollIntervalCycles;
+  int status;
+  do {
+    status =
+        cqSharingMode == DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE
+        ? pollIbgdaSqStatusOnce<
+              DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+              AcquireScope>(cq, completionTicket, collapsedCq)
+        : pollIbgdaSqStatusOnce<
+              DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+              AcquireScope>(cq, completionTicket, collapsedCq);
+    if (status == EBUSY && abortState != nullptr) {
+      const uint64_t now = comms::fault_tolerance::detail::deviceClock();
+      const bool deadlineDue = deadlineCycles != 0 && now >= deadlineCycles;
+      if (deadlineDue || now >= nextPollCycles) {
+        nextPollCycles = now + pollIntervalCycles;
+        const uint32_t slowResult =
+            comms::fault_tolerance::detail::deviceCheckExpiredSlow(
+                abortState, deadlineDue);
+        if ((slowResult &
+             comms::fault_tolerance::detail::kAbortSlowCheckAborted) != 0U) {
+          const bool flippedHere =
+              (slowResult &
+               comms::fault_tolerance::detail::kAbortSlowCheckFlippedHere) !=
+              0U;
+          if (flippedHere) {
+            printf(
+                FT_ABORT_SITE_
+                "IBGDA SQ capacity wait timed out (ticket=%llu)" FT_ABORT_SITE_SUFFIX_,
+                static_cast<unsigned long long>(completionTicket),
+                __func__);
+          } else if (
+              abortBehavior == comms::fault_tolerance::AbortBehavior::TRAP) {
+            printf(
+                "CUDA ABORT ERROR: IBGDA SQ capacity wait timed out "
+                "(ticket=%llu)" FT_ABORT_SITE_SUFFIX_,
+                static_cast<unsigned long long>(completionTicket),
+                __func__);
+          }
+          if (abortBehavior == comms::fault_tolerance::AbortBehavior::TRAP) {
+            PIPES_DEVICE_TRAP();
+          }
+          return {.firstWqe = firstWqe, .acquired = false};
+        }
+      }
+    }
+  } while (status == EBUSY);
+
+  if (status == 0) {
+    return {.firstWqe = firstWqe, .acquired = true};
+  }
+  const uint32_t failureAction =
+      classifyIbgdaSqCapacityPollFailure(abortState, abortBehavior);
+  if ((failureAction & kIbgdaSqFailureReport) != 0U) {
+    reportIbgdaSqCapacityPollFailure(completionTicket, status);
+  }
+  if ((failureAction & kIbgdaSqFailureTrap) != 0U) {
+    PIPES_DEVICE_TRAP();
+  }
+  return {.firstWqe = firstWqe, .acquired = false};
 }
 
 template <
@@ -179,48 +307,22 @@ __device__ __forceinline__ IbgdaWqeReservation tryReserveIbgdaWqes(
   const uint64_t firstWqe = doca_gpu_dev_verbs_reserve_wq_slots<SqSharingMode>(
       qp, count, DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_AVAILABILITY_CHECK);
   const uint64_t lastWqe = firstWqe + count - 1;
-  const uint16_t sqDepth = __ldg(&qp->sq_wqe_num);
-  if (lastWqe < sqDepth) {
+  if (lastWqe < __ldg(&qp->sq_wqe_num)) {
     return {.firstWqe = firstWqe, .acquired = true};
   }
-
-  const uint64_t completionTicket = lastWqe - sqDepth;
-  auto* cq = doca_gpu_dev_verbs_qp_get_cq_sq(qp);
-  IbgdaSqPollResult pollResult;
-  do {
-    pollResult = pollIbgdaSqOnce<CqSharingMode, AcquireScope>(
-        cq, completionTicket, collapsedCq, abortDevice);
-    if (pollResult.aborted) {
-      return {.firstWqe = firstWqe, .acquired = false};
-    }
-  } while (pollResult.status == EBUSY);
-
-  if (pollResult.status == 0) {
-    return {.firstWqe = firstWqe, .acquired = true};
-  }
-  if (!abortDevice.isEnabled()) {
-    printf(
-        "P2pIbgdaTransportDevice: SQ capacity poll failed "
-        "(ticket=%llu status=%d)\n",
-        static_cast<unsigned long long>(completionTicket),
-        pollResult.status);
-    PIPES_DEVICE_TRAP();
-    return {.firstWqe = firstWqe, .acquired = false};
-  }
-  if (abortDevice.setAbort(
-          comms::fault_tolerance::AbortReason::NETWORK_ERROR)) {
-    printf(
-        "P2pIbgdaTransportDevice: SQ capacity poll failed "
-        "(ticket=%llu status=%d)\n",
-        static_cast<unsigned long long>(completionTicket),
-        pollResult.status);
-  }
-  (void)FT_ABORT_CHECK(
-      abortDevice,
-      "IBGDA SQ capacity poll failed (ticket=%llu status=%d)",
-      static_cast<unsigned long long>(completionTicket),
-      pollResult.status);
-  return {.firstWqe = firstWqe, .acquired = false};
+  static_assert(
+      CqSharingMode == DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE ||
+      CqSharingMode == DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU);
+  return waitForIbgdaSqCapacity<AcquireScope>(
+      qp,
+      firstWqe,
+      lastWqe,
+      collapsedCq,
+      CqSharingMode,
+      abortDevice.stateForFlag(),
+      abortDevice.behavior(),
+      abortDevice.deadlineCycles(),
+      abortDevice.pollIntervalCycles());
 }
 
 } // namespace detail
@@ -340,6 +442,28 @@ struct NicDeviceIbgdaResources {
  *      Buffer ptr==nullptr means "disabled" (no signal/counter).
  */
 class P2pIbgdaTransportDevice {
+ private:
+#ifdef __HIP_PLATFORM_AMD__
+  struct AmdAbortContinuePolicy {
+    const AbortDevice& abortDevice;
+
+    __device__ __forceinline__ bool operator()() const {
+      return !FT_ABORT_CHECK(
+          abortDevice, "AMD transport post on an aborted communicator");
+    }
+
+    __device__ __forceinline__ bool recordNetworkErrorAndShouldTrap() const {
+      if (!abortDevice.isEnabled()) {
+        return true;
+      }
+      (void)abortDevice.setAbort(
+          comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+      return abortDevice.behavior() ==
+          comms::fault_tolerance::AbortBehavior::TRAP;
+    }
+  };
+#endif
+
  public:
   // Default ctor required so an array of these can be cudaMemcpy'd from host
   // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
@@ -713,8 +837,7 @@ class P2pIbgdaTransportDevice {
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
-      bool signalPerLane = false,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      bool signalPerLane = false) {
     return put_impl(
         group,
         localBuf,
@@ -725,6 +848,54 @@ class P2pIbgdaTransportDevice {
         counterBuf,
         counterVal,
         signalPerLane,
+        /*abortDevice=*/nullptr);
+  }
+
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal,
+      bool signalPerLane,
+      const AbortDevice& abortDevice) {
+    return put_impl(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalBuf,
+        signalVal,
+        counterBuf,
+        counterVal,
+        signalPerLane,
+        &abortDevice);
+  }
+
+  template <bool HasSignal>
+  __device__ __forceinline__ IbLocalCompletionTicket put_staged(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const AbortDevice& abortDevice) {
+    const IbgdaRemoteBuffer effectiveSignalBuf =
+        HasSignal ? signalBuf : IbgdaRemoteBuffer{};
+    return put(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        effectiveSignalBuf,
+        signalVal,
+        /*counterBuf=*/{},
+        /*counterVal=*/0,
+        /*signalPerLane=*/true,
         abortDevice);
   }
 
@@ -1146,6 +1317,11 @@ class P2pIbgdaTransportDevice {
     bool posted{false};
   };
 
+  struct IbgdaPutTicket {
+    uint64_t put_wqe{0};
+    bool posted{false};
+  };
+
   __device__ __forceinline__ static uint64_t load_acquire_system_u64(
       const void* ptr) {
     auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
@@ -1473,7 +1649,7 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& counterBuf,
       uint64_t counterVal,
       bool signalPerLane,
-      const AbortDevice& abortDevice) {
+      const AbortDevice* abortDevice) {
     const bool hasSignal = signalBuf.ptr != nullptr;
     if (nbytes == 0) {
       if (group.is_leader()) {
@@ -1517,14 +1693,27 @@ class P2pIbgdaTransportDevice {
         record_put_wqe(lane, tickets.put_wqe);
         record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasSignal) {
-        const auto tickets = put_signal_single_impl(
-            lane,
-            localBuf,
-            remoteBuf,
-            nbytes,
-            effectiveSignalBuf,
-            signalVal,
-            abortDevice);
+        IbgdaPutSignalTickets tickets;
+        if (abortDevice != nullptr) {
+          tickets = put_signal_single_impl(
+              lane,
+              localBuf,
+              remoteBuf,
+              nbytes,
+              effectiveSignalBuf,
+              signalVal,
+              *abortDevice);
+        } else {
+          const AbortDevice disabledAbort;
+          tickets = put_signal_single_impl(
+              lane,
+              localBuf,
+              remoteBuf,
+              nbytes,
+              effectiveSignalBuf,
+              signalVal,
+              disabledAbort);
+        }
         if (tickets.posted) {
           dataTicket = tickets.put_wqe;
           record_put_wqe(lane, tickets.put_wqe);
@@ -1538,10 +1727,19 @@ class P2pIbgdaTransportDevice {
         dataTicket = putTicket;
         record_put_wqe(lane, putTicket);
       } else {
-        const uint64_t putTicket =
-            put_single_impl(lane, localBuf, remoteBuf, nbytes);
-        dataTicket = putTicket;
-        record_put_wqe(lane, putTicket);
+        const auto ticket = abortDevice != nullptr
+            ? try_put_single_impl(
+                  lane, localBuf, remoteBuf, nbytes, *abortDevice)
+            : IbgdaPutTicket{
+                  .put_wqe = put_single_impl(lane, localBuf, remoteBuf, nbytes),
+                  .posted = true,
+              };
+        if (ticket.posted) {
+          dataTicket = ticket.put_wqe;
+          record_put_wqe(lane, ticket.put_wqe);
+        } else {
+          dataPosted = false;
+        }
       }
       if (dataPosted) {
         completion = IbLocalCompletionTicket{
@@ -1803,7 +2001,60 @@ class P2pIbgdaTransportDevice {
         lane.qp, remoteAddr, localAddr, nbytes, &ticket);
     return ticket;
 #else
-    return put_single_local(lane.qp, remoteAddr, localAddr, nbytes);
+    const uint32_t numChunks = maxDataWqeCount(nbytes);
+    const uint64_t firstWqe =
+        reserve_wqes_mode<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+            lane.qp, numChunks);
+    return put_single_local(
+        lane.qp, remoteAddr, localAddr, nbytes, firstWqe, numChunks);
+#endif
+  }
+
+  __device__ IbgdaPutTicket try_put_single_impl(
+      const IbgdaLane& lane,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const AbortDevice& abortDevice) {
+#ifdef __HIP_PLATFORM_AMD__
+    doca_gpu_dev_verbs_addr localAddr = {
+        .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
+    const auto result = try_doca_gpu_dev_verbs_put(
+        lane.qp,
+        remoteAddr,
+        localAddr,
+        nbytes,
+        AmdAbortContinuePolicy{abortDevice});
+    return {.put_wqe = result.ticket, .posted = result.posted};
+#else
+    doca_gpu_dev_verbs_addr localAddr = {
+        .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
+    const uint32_t numChunks = maxDataWqeCount(nbytes);
+    const auto reservation = try_reserve_wqes_mode<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        lane.qp, numChunks, abortDevice);
+    if (!reservation.acquired) {
+      return {};
+    }
+    return {
+        .put_wqe = put_single_local(
+            lane.qp,
+            remoteAddr,
+            localAddr,
+            nbytes,
+            reservation.firstWqe,
+            numChunks),
+        .posted = true,
+    };
 #endif
   }
 
@@ -1959,17 +2210,20 @@ class P2pIbgdaTransportDevice {
 #endif
 
 #ifndef __HIP_PLATFORM_AMD__
+  __device__ __forceinline__ static uint32_t maxDataWqeCount(
+      std::size_t nbytes) {
+    const uint32_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2_32bits(
+        nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+    return numChunks > 1 ? numChunks : 1;
+  }
+
   __device__ __forceinline__ uint64_t put_single_local(
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_addr remoteAddr,
       doca_gpu_dev_verbs_addr localAddr,
-      std::size_t nbytes) const {
-    uint32_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2_32bits(
-        nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
-    numChunks = numChunks > 1 ? numChunks : 1;
-    const uint64_t firstWqe =
-        reserve_wqes_mode<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            qp, numChunks);
+      std::size_t nbytes,
+      uint64_t firstWqe,
+      uint32_t numChunks) const {
     uint64_t lastWqe = firstWqe;
     std::size_t remainingBytes = nbytes;
 
@@ -2105,20 +2359,21 @@ class P2pIbgdaTransportDevice {
 
 #ifdef __HIP_PLATFORM_AMD__
     prims_amd_gda::ActiveNicBackend amdNic{};
-    uint64_t ticket = 0;
-    prims_amd_gda::prims_amd_gda_gpu_dev_verbs_put_signal(
-        amdNic,
-        lane.qp,
-        remoteAddr,
-        localAddr,
-        nbytes,
-        sigRemoteAddr,
-        sigSinkAddr,
-        signalVal,
-        &ticket);
-    (void)abortDevice;
+    const auto result =
+        prims_amd_gda::try_prims_amd_gda_gpu_dev_verbs_put_signal(
+            amdNic,
+            lane.qp,
+            remoteAddr,
+            localAddr,
+            nbytes,
+            sigRemoteAddr,
+            sigSinkAddr,
+            signalVal,
+            AmdAbortContinuePolicy{abortDevice});
     return IbgdaPutSignalTickets{
-        .put_wqe = ticket, .signal_wqe = ticket, .posted = true};
+        .put_wqe = result.ticket,
+        .signal_wqe = result.ticket,
+        .posted = result.posted};
 #else
     uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
@@ -2538,15 +2793,26 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = nic.sink_lkey.value};
 
 #ifdef __HIP_PLATFORM_AMD__
-    (void)abortDevice;
-    uint64_t wqe_idx = reserve_wqes(qp, 1);
+    const auto result = try_doca_gpu_dev_verbs_signal(
+        qp,
+        remoteAddr,
+        sinkAddr,
+        signalVal,
+        static_cast<uint8_t>(
+            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE |
+            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE),
+        AmdAbortContinuePolicy{abortDevice});
+    if (!result.posted) {
+      return false;
+    }
+    signalTicket = result.ticket;
+    return true;
 #else
     const auto reservation = try_reserve_wqes(qp, 1, abortDevice);
     if (!reservation.acquired) {
       return false;
     }
     uint64_t wqe_idx = reservation.firstWqe;
-#endif
 
     doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
@@ -2571,6 +2837,7 @@ class P2pIbgdaTransportDevice {
     submit_wqes(qp, wqe_idx);
     signalTicket = wqe_idx;
     return true;
+#endif
   }
 
   __device__ uint64_t signal_fenced(
@@ -2879,8 +3146,11 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * Poll all outstanding send completion tickets for this channel. `Drained`
-   * means registered source ranges posted before the call are reusable.
+   * Poll outstanding send completion tickets for this channel. On a healthy
+   * path, `Drained` means the registered source ranges are reusable. Once an
+   * abort is observed, local progress terminates for liveness without proving
+   * completion of earlier WQEs; their source remains owned until teardown or
+   * reconfiguration of the owning transport has completed.
    */
   template <typename = void>
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
@@ -2974,11 +3244,11 @@ class P2pIbgdaTransportDevice {
   }
 
   template <typename = void>
-  __device__ __forceinline__ void progress_recv_release_once(
+  [[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
       ThreadGroup& group,
       const AbortDevice& abortDevice,
       const detail::RecvChunkAcquisition& view) {
-    detail::
+    return detail::
         progress_recv_release_once<P2pIbgdaTransportDevice, protocol::Simple>(
             *this, group, abortDevice, view);
   }

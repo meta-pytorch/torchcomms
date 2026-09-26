@@ -44,6 +44,10 @@ enum class IbgdaSendRecvProgressStatus : uint8_t {
   Aborted,
 };
 
+// `Aborted` terminalizes local progress but does not prove completion of WQEs
+// published before cancellation. Their registered source must remain alive and
+// unchanged until teardown or reconfiguration of the owning transport has
+// completed.
 enum class IbgdaRegisteredSendProgressStatus : uint8_t {
   Waiting,
   Progressed,
@@ -93,8 +97,18 @@ progress_recv_acquire_once(
     const AbortDevice& abortDevice,
     RecvChunkAcquisition& out);
 
+template <typename Proto, typename Transport>
+__device__ __forceinline__ void abandon_send_progress_state(
+    Transport& transport,
+    ThreadGroup& group);
+
+template <typename Proto, typename Transport>
+__device__ __forceinline__ void abandon_recv_progress_state(
+    Transport& transport,
+    ThreadGroup& group);
+
 template <typename Transport, typename Proto>
-__device__ __forceinline__ void progress_recv_release_once(
+[[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
     Transport& transport,
     ThreadGroup& group,
     const AbortDevice& abortDevice,
@@ -215,6 +229,13 @@ struct P2pIbTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1);
 
+  [[nodiscard]] __device__ bool try_signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      IbDirection direction,
+      const AbortDevice& abortDevice);
+
   __device__ IbLocalCompletionTicket
   put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -225,6 +246,28 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
       bool signalPerLane = false);
+
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal,
+      bool signalPerLane,
+      const AbortDevice& abortDevice);
+
+  template <bool HasSignal>
+  __device__ __forceinline__ IbLocalCompletionTicket put_staged(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const AbortDevice& abortDevice);
 
   __device__ IbLocalCompletionTicket
   put(const IbgdaLocalBuffer& localBuf,
@@ -418,11 +461,24 @@ struct P2pIbTransportDevice {
       const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out);
 
+  /**
+   * Return one acquired receive chunk's credit.
+   *
+   * Returns true when no credit is needed or the credit was posted. A false
+   * result means publication was refused and the caller must not issue later
+   * peer-visible work for this operation.
+   */
   template <typename = void>
-  __device__ __forceinline__ void progress_recv_release_once(
+  [[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
       ThreadGroup& group,
       const AbortDevice& abortDevice,
       const detail::RecvChunkAcquisition& view);
+
+  template <typename Proto = protocol::Simple>
+  __device__ __forceinline__ void abandon_send_progress(ThreadGroup& group);
+
+  template <typename Proto = protocol::Simple>
+  __device__ __forceinline__ void abandon_recv_progress(ThreadGroup& group);
 
   template <
       typename CopyOp = Memcpy,

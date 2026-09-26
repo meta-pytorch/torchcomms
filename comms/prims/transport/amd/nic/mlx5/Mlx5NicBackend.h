@@ -55,6 +55,12 @@
 namespace prims_amd_gda {
 
 struct Mlx5NicBackend {
+  __device__ __forceinline__ bool qpTerminal(
+      prims_amd_gda_gpu_dev_verbs_qp* qp) const {
+    return __hip_atomic_load(
+               &qp->terminal, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) != 0;
+  }
+
   static constexpr const char* vendorPrefix() {
     return "mlx5";
   }
@@ -88,6 +94,12 @@ struct Mlx5NicBackend {
       uint64_t firstIdx,
       uint64_t lastIdx) {
     while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
+      if (qpTerminal(qp)) {
+        return;
+      }
+    }
+    if (qpTerminal(qp)) {
+      return;
     }
     // System-scope release fence: WQE data is in host memory (SQ buffer via
     // hipHostRegister). Must be visible to the NIC (a PCIe device) before the
@@ -95,6 +107,25 @@ struct Mlx5NicBackend {
     // GPU's L2 cache domain.
     amd_fence_release_system();
     amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
+  }
+
+  template <typename ContinuePolicy>
+  __device__ bool tryMarkWqesReady(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      uint64_t firstIdx,
+      uint64_t lastIdx,
+      const ContinuePolicy& shouldContinue) {
+    while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
+      if (qpTerminal(qp) || !shouldContinue()) {
+        return false;
+      }
+    }
+    if (qpTerminal(qp) || !shouldContinue()) {
+      return false;
+    }
+    amd_fence_release_system();
+    amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
+    return true;
   }
 
   // Ring the doorbell: publish the producer index to the DBR, then copy the
@@ -105,6 +136,9 @@ struct Mlx5NicBackend {
   __device__ void ringDoorbell(
       prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t nextWqeIdx) {
+    if (qpTerminal(qp)) {
+      return;
+    }
     uint32_t pi =
         static_cast<uint32_t>(nextWqeIdx) & PRIMS_AMD_GDA_VERBS_WQE_PI_MASK;
 
@@ -382,6 +416,9 @@ struct Mlx5NicBackend {
     uint16_t wqeCounter;
 
     do {
+      if (qpTerminal(qp)) {
+        return ECANCELED;
+      }
       uint64_t cqeCi = amd_load_relaxed_device(&cq->cqe_ci);
       if (consIndex < cqeCi)
         return 0;

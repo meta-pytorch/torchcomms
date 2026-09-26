@@ -1648,6 +1648,7 @@ prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_hl(
   hostQp.sq_num_shift8_be = __builtin_bswap32(hostQp.sq_num_shift8 | 3);
   hostQp.sq_rsvd_index = 0;
   hostQp.sq_ready_index = 0;
+  hostQp.terminal = 0;
   hostQp.nic_handler = PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
   hostQp.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
@@ -1964,6 +1965,7 @@ prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_hl(
   hostQp.sq_num_shift8_be = __builtin_bswap32(hostQp.sq_num_shift8 | 3);
   hostQp.sq_rsvd_index = 0;
   hostQp.sq_ready_index = 0;
+  hostQp.terminal = 0;
   hostQp.nic_handler = PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_BF;
   hostQp.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
@@ -2252,6 +2254,7 @@ prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_hl(
   hostQp.sq_num = qp->qp_num;
   hostQp.sq_rsvd_index = 0;
   hostQp.sq_ready_index = 0;
+  hostQp.terminal = 0;
   hostQp.nic_handler = PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
   hostQp.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 

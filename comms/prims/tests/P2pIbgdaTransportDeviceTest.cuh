@@ -10,6 +10,10 @@
 #include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
+namespace comms::fault_tolerance {
+class Abort;
+}
+
 namespace comms::prims::tests {
 
 // Test transport construction on device (null QP)
@@ -108,6 +112,21 @@ struct CollapsedCqPollResult {
   uint32_t aborted;
 };
 
+struct DataOnlySqAbortResult {
+  uint64_t reservedIndex;
+  uint64_t readyIndex;
+  uint64_t producerIndex;
+  uint64_t doorbell;
+  uint64_t pendingFlushLanesMask;
+  uint32_t prePutAbortClear;
+  uint32_t reservationObserved;
+  uint32_t posted;
+  uint32_t wqeUnchanged;
+  uint32_t doorbellRecord;
+  uint32_t completionId;
+  uint64_t completionValue;
+};
+
 cudaError_t runTestCollapsedCqPoll(
     const CollapsedCqPollCase& testCase,
     CollapsedCqPollResult* result);
@@ -118,6 +137,72 @@ cudaError_t runTestIbgdaSqPollWithAbort(
     bool gpuSharing,
     comms::fault_tolerance::AbortDevice abort,
     CollapsedCqPollResult* result);
+
+cudaError_t runTestDataOnlySqReservationAbort(
+    bool collapsedCq,
+    comms::fault_tolerance::Abort& abort,
+    DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlyPutWithCapacity(
+    comms::fault_tolerance::AbortDevice abort,
+    DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlySqErrorWithFt(
+    comms::fault_tolerance::Abort& abort,
+    DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlySqErrorWithoutFt();
+#endif
+
+#ifdef __HIP_PLATFORM_AMD__
+struct AmdDataOnlyAbortResult {
+  uint64_t reservedIndex{0};
+  uint64_t readyIndex{0};
+  uint64_t doorbell{0};
+  uint32_t reservationObserved{0};
+  uint32_t reservationObservationTimedOut{0};
+  uint32_t posted{0};
+  uint32_t secondPosted{0};
+  uint32_t terminal{0};
+  uint32_t completed{0};
+  uint32_t firstProducerCompleted{0};
+  uint32_t secondProducerCompleted{0};
+  uint32_t lockReleased{0};
+};
+
+cudaError_t runTestAmdDataOnlyPreAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+cudaError_t runTestAmdDataOnlyMidWaitAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+cudaError_t runTestAmdPutSignalPreAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+cudaError_t runTestAmdPutSignalMidWaitAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+cudaError_t runTestAmdSignalPreAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+cudaError_t runTestAmdSignalMidWaitAbort(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+#ifdef NIC_BNXT
+cudaError_t runTestAmdDataOnlyCqErrorWithFt(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+
+cudaError_t runTestAmdDataOnlySqCapacityTimeoutWithFt(
+    comms::fault_tolerance::Abort& abort,
+    AmdDataOnlyAbortResult* result);
+#endif
 #endif
 
 // =============================================================================
