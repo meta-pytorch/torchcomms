@@ -35,6 +35,7 @@ namespace comms::prims {
  *
  *     int myRank = transport.myRank;
  *     int nRanks = transport.nRanks;
+ *     const AbortDevice abortDevice{};
  *
  *     // Send to all peers
  *     for (int rank = 0; rank < nRanks; rank++) {
@@ -42,8 +43,8 @@ namespace comms::prims {
  *
  *       auto& p2p = transport.get(rank);
  *       auto work = p2p.put(
- *           localBufs[myRank], remoteBufs[rank], nbytes);
- *       p2p.wait_local(work);
+ *           localBufs[myRank], remoteBufs[rank], nbytes, abortDevice);
+ *       p2p.wait_local(work, abortDevice);
  *     }
  *   }
  *

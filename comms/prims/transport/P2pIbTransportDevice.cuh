@@ -35,6 +35,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     int signalId,
     uint64_t signalVal,
     int counterId,
@@ -55,6 +56,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
         localBuf,
         remoteBuf,
         nbytes,
+        abortDevice,
         signalId,
         signalVal,
         counterId,
@@ -66,6 +68,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     int signalId,
     uint64_t signalVal,
     int counterId,
@@ -84,6 +87,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
         localBuf,
         remoteBuf,
         nbytes,
+        abortDevice,
         signalId,
         signalVal,
         counterId,
@@ -261,6 +265,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
     const IbgdaRemoteBuffer& signalBuf,
+    const AbortDevice& abortDevice,
     uint64_t signalVal,
     const IbgdaLocalBuffer& counterBuf,
     uint64_t counterVal,
@@ -283,6 +288,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
         remoteBuf,
         nbytes,
         signalBuf,
+        abortDevice,
         signalVal,
         counterBuf,
         counterVal,
@@ -295,6 +301,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
     const IbgdaRemoteBuffer& signalBuf,
+    const AbortDevice& abortDevice,
     uint64_t signalVal,
     const IbgdaLocalBuffer& counterBuf,
     uint64_t counterVal) {
@@ -313,6 +320,7 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
         remoteBuf,
         nbytes,
         signalBuf,
+        abortDevice,
         signalVal,
         counterBuf,
         counterVal);
@@ -487,7 +495,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::flush(
   if (type == P2pIbBackendType::IBRC) {
     ibrc->flush(group, IbDirection::Send);
   } else {
-    ibgda->flush(group, IbDirection::Send, abortDevice);
+    ibgda->flush(group, abortDevice, IbDirection::Send);
   }
 }
 
@@ -531,15 +539,15 @@ __device__ __forceinline__ void P2pIbTransportDevice::send(
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
+    std::size_t max_signal_bytes,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->send<CopyOp>(
-        group, src, nbytes, max_signal_bytes, abortDevice, args...);
+        group, src, nbytes, abortDevice, max_signal_bytes, args...);
   } else {
     ibgda->send<CopyOp>(
-        group, src, nbytes, max_signal_bytes, abortDevice, args...);
+        group, src, nbytes, abortDevice, max_signal_bytes, args...);
   }
 }
 
@@ -548,10 +556,10 @@ __device__ __forceinline__ void P2pIbTransportDevice::send_registered(
     ThreadGroup& group,
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const AbortDevice& abortDevice) {
+    const AbortDevice& abortDevice,
+    std::size_t max_signal_bytes) {
   require_ibgda(group, "registered-source send");
-  ibgda->send_registered(group, src, nbytes, max_signal_bytes, abortDevice);
+  ibgda->send_registered(group, src, nbytes, abortDevice, max_signal_bytes);
 }
 
 template <typename CopyOp, typename... Args>
@@ -559,15 +567,15 @@ __device__ __forceinline__ void P2pIbTransportDevice::recv(
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
+    std::size_t max_signal_bytes,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->recv<CopyOp>(
-        group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+        group, dst, nbytes, abortDevice, max_signal_bytes, args...);
   } else {
     ibgda->recv<CopyOp>(
-        group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+        group, dst, nbytes, abortDevice, max_signal_bytes, args...);
   }
 }
 
@@ -577,17 +585,17 @@ __device__ __forceinline__ void P2pIbTransportDevice::forward(
     void* __restrict__ dst,
     P2pIbTransportDevice& fwd,
     std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
+    std::size_t max_signal_bytes,
     Args... args) {
   if (type == P2pIbBackendType::IBRC && fwd.type == P2pIbBackendType::IBRC) {
     ibrc->forward<CopyOp, Proto>(
-        group, dst, *fwd.ibrc, nbytes, max_signal_bytes, abortDevice, args...);
+        group, dst, *fwd.ibrc, nbytes, abortDevice, max_signal_bytes, args...);
     return;
   }
   if (type == P2pIbBackendType::IBGDA && fwd.type == P2pIbBackendType::IBGDA) {
     ibgda->forward<CopyOp, Proto>(
-        group, dst, *fwd.ibgda, nbytes, max_signal_bytes, abortDevice, args...);
+        group, dst, *fwd.ibgda, nbytes, abortDevice, max_signal_bytes, args...);
     return;
   }
   if (group.is_leader()) {

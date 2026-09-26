@@ -197,14 +197,14 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     wait_signal(group, local_signal_slot(signalId), expected, abortDevice);
   }
 
   __device__ void wait_signal(
       int signalId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalId, expected, abortDevice);
   }
@@ -213,14 +213,14 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     wait_counter(group, counter_device_slot(counterId), expected, abortDevice);
   }
 
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterId, expected, abortDevice);
   }
@@ -393,7 +393,7 @@ class P2pIbrcTransportDevice {
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     if (group.is_leader()) {
       const auto& queue = cmdQueues[queue_for_lane(
           group.group_id, IbDirection::Send, ticket.completionId)];
@@ -422,7 +422,7 @@ class P2pIbrcTransportDevice {
   __device__ __forceinline__ bool is_local_completion_ready(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
-      const AbortDevice& /*abortDevice*/ = AbortDevice()) const {
+      const AbortDevice& /*abortDevice*/) const {
     const auto& queue = cmdQueues[queue_for_lane(
         channelId, IbDirection::Send, ticket.completionId)];
     check_status(queue);
@@ -498,14 +498,14 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     wait_local(group, signalBuf.ptr, expected, abortDevice, "signal");
   }
 
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalBuf, expected, abortDevice);
   }
@@ -536,14 +536,14 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     wait_local(group, counterBuf.ptr, expected, abortDevice, "counter");
   }
 
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) const {
+      const AbortDevice& abortDevice) const {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterBuf, expected, abortDevice);
   }
@@ -676,7 +676,7 @@ class P2pIbrcTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice(),
+      const AbortDevice& abortDevice,
       Args... args) {
     return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp, Proto>(
         *this, group, abortDevice, args...);
@@ -688,7 +688,7 @@ class P2pIbrcTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice(),
+      const AbortDevice& abortDevice,
       Args... args) {
     return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp, Proto>(
         *this, group, abortDevice, args...);
@@ -727,11 +727,11 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
+      const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     detail::send<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, src, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, src, nbytes, abortDevice, max_signal_bytes, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -739,11 +739,11 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
+      const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     detail::recv<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, dst, nbytes, abortDevice, max_signal_bytes, args...);
   }
 
   template <
@@ -755,11 +755,11 @@ class P2pIbrcTransportDevice {
       void* __restrict__ dst,
       P2pIbrcTransportDevice& fwd,
       std::size_t nbytes,
+      const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     detail::forward<CopyOp, P2pIbrcTransportDevice, Proto>(
-        *this, group, dst, fwd, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, dst, fwd, nbytes, abortDevice, max_signal_bytes, args...);
   }
 
  private:
