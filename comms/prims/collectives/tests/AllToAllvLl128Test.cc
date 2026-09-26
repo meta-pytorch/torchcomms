@@ -156,7 +156,8 @@ TEST_P(AllToAllvLl128EqualSizeTest, AllToAllvLl128EqualSize) {
       send_chunk_infos,
       recv_chunk_infos,
       numBlocks,
-      blockSize);
+      blockSize,
+      AbortDevice{});
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -577,7 +578,8 @@ TEST_P(AllToAllvLl128UnequalSizeTest, AllToAllvLl128UnequalSize) {
       send_chunk_infos,
       recv_chunk_infos,
       numBlocks,
-      blockSize);
+      blockSize,
+      AbortDevice{});
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -787,7 +789,8 @@ TEST_P(AllToAllvLl128ZeroPeerTest, AllToAllvLl128ZeroPeer) {
       send_chunk_infos,
       recv_chunk_infos,
       numBlocks,
-      blockSize);
+      blockSize,
+      AbortDevice{});
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -936,7 +939,8 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCall) {
         send_chunk_infos,
         recv_chunk_infos,
         numBlocks,
-        blockSize);
+        blockSize,
+        AbortDevice{});
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -1072,7 +1076,8 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCallChunked) {
         send_chunk_infos,
         recv_chunk_infos,
         numBlocks,
-        blockSize);
+        blockSize,
+        AbortDevice{});
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -1209,7 +1214,8 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
         send_chunk_infos,
         recv_chunk_infos,
         numBlocks,
-        blockSize);
+        blockSize,
+        AbortDevice{});
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -1375,7 +1381,8 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
         send_chunk_infos,
         recv_chunk_infos,
         numBlocks,
-        blockSize);
+        blockSize,
+        AbortDevice{});
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -1512,7 +1519,8 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
         send_chunk_infos,
         recv_chunk_infos,
         numBlocks,
-        blockSize);
+        blockSize,
+        AbortDevice{});
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 

@@ -62,8 +62,8 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void sendAnsKernel(
       group,
       buffer,
       nbytes,
-      maxSignalBytes,
       abortDevice,
+      maxSignalBytes,
       /*alignedAuxBuf=*/static_cast<char*>(nullptr));
 }
 
@@ -81,7 +81,7 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void recvAnsKernel(
   // maxSignalBytes == 0 exercises the transport's 0-sentinel; a non-zero value
   // drives the explicit signaled-chunk-size path. Sender and receiver must pass
   // the same value so they derive the identical chunking.
-  transport->recv<Comp>(group, buffer, nbytes, maxSignalBytes, abortDevice);
+  transport->recv<Comp>(group, buffer, nbytes, abortDevice, maxSignalBytes);
 }
 
 } // namespace

@@ -318,7 +318,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
+        &p2pHost, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytes};
 
     ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -448,7 +448,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
   std::size_t maxSignalBytesArg = maxSignalBytes;
   AbortDevice abortDevice;
   void* args[] = {
-      &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &abortDevice};
+      &p2pHost, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytesArg};
 
   cudaStream_t stream;
   CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -543,7 +543,7 @@ static void runTileTest(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
+        &p2pHost, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytes};
 
     ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -1264,7 +1264,8 @@ TEST_F(
       maxSignalBytes,
       maxSignalBytes,
       true,
-      threadCount);
+      threadCount,
+      AbortDevice{});
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   std::vector<char> hostRecv(totalBytes);
@@ -1596,7 +1597,7 @@ TEST_F(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytesArg = maxSignalBytes;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &abortDevice};
+        &p2pHost, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytesArg};
 
     ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -1908,7 +1909,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
+        &p2pHost, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytes};
 
     ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -2710,7 +2711,7 @@ static void runTileForwardTest(
           static_cast<char*>(recvR0Buf.get()), nBytes, numSendBlocks);
       std::size_t maxSignalBytes = 0;
       void* args[] = {
-          &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
+          &p2pHost, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytes};
 
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)comms::prims::benchmark::p2pTileSendRecv,
@@ -2726,7 +2727,7 @@ static void runTileForwardTest(
       comms::prims::TiledBuffer<char> dstTiles(dstPtr, nBytes, numSendBlocks);
       std::size_t maxSignalBytes = 0;
       void* args[] = {
-          &p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &abortDevice};
+          &p2pHost, &p2pHost, &dstTiles, &abortDevice, &maxSignalBytes};
 
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)comms::prims::benchmark::p2pTileForward,
@@ -3082,7 +3083,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         static_cast<char*>(fwdR1Buf.get()), kForwardBytes, kNumBlocks);
     std::size_t maxSignalBytes = kMaxSignalBytes;
     void* args[] = {
-        &p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &abortDevice};
+        &p2pHost, &p2pHost, &dstTiles, &abortDevice, &maxSignalBytes};
 
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileForward,

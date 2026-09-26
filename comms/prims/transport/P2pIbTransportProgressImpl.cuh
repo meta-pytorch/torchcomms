@@ -146,7 +146,7 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const AbortDevice& abortDevice = AbortDevice());
+    const AbortDevice& abortDevice);
 
 /**
  * Initialize transport-owned state for one pipelined send operation.
@@ -666,12 +666,14 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           PipesTraceEventType::kAllReduceWqeSubmitBegin,
           qpLane,
           protocolBytesThis);
-      const auto completion = transport.put(
+      const auto completion = put_with_abort(
+          transport,
           solo,
           channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           chunk.wireBytes,
           sig.buf,
+          abortDevice,
           sig.val,
           /*counterBuf=*/{},
           /*counterVal=*/0,
@@ -855,12 +857,14 @@ progress_registered_send_once(
       __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      const auto completion = transport.put(
+      const auto completion = put_with_abort(
+          transport,
           solo,
           state.activeRegisteredBuf.subBuffer(chunk.dataOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           validBytes,
           remoteChannel.dataReady,
+          abortDevice,
           protocolBytesThis,
           {},
           0,
@@ -999,8 +1003,8 @@ __device__ __forceinline__ void send_registered(
     ThreadGroup& group,
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const AbortDevice& abortDevice) {
+    const AbortDevice& abortDevice,
+    std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   init_registered_send_progress(
       transport, group, src, nbytes, max_signal_bytes);

@@ -51,6 +51,15 @@ target_compile_options(prims PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-compress-all>
 )
 
+# These kernels launch enough threads to cap their callees at 64 registers.
+# Relocatable device code does not propagate their launch bounds to the
+# out-of-line IBGDA queue-capacity wait, so apply the same cap to each owner.
+set_source_files_properties(
+    collectives/SendRecvTile.cu
+    collectives/ReduceScatterDirectIbV2.cu
+    PROPERTIES COMPILE_OPTIONS "-Xptxas=-maxrregcount=64"
+)
+
 set_target_properties(prims PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON

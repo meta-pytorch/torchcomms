@@ -100,8 +100,8 @@ __device__ __forceinline__ void ibgda_send_compressed(
       group,
       src,
       nbytes,
-      effective_max_signal_bytes,
       abortDevice,
+      effective_max_signal_bytes,
       alignedAuxBuf);
 }
 
@@ -118,7 +118,7 @@ __device__ __forceinline__ void ibgda_recv_compressed(
   const std::size_t effective_max_signal_bytes =
       default_max_signal_bytes_for_compress<CopyOp>(
           max_signal_bytes, tr, active_blocks);
-  tr.recv<CopyOp>(group, dst, nbytes, effective_max_signal_bytes, abortDevice);
+  tr.recv<CopyOp>(group, dst, nbytes, abortDevice, effective_max_signal_bytes);
 }
 
 } // namespace detail

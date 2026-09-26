@@ -114,21 +114,21 @@ __device__ void zeroScratch(ThreadGroup& group, IbrcScratch& scratch) {
 
 __device__ P2pIbrcTransportDevice makeLocalIbrcTransport(
     IbrcScratch& scratch,
-    comms::fault_tolerance::AbortDevice abort = {}) {
+    comms::fault_tolerance::AbortDevice abort) {
   return P2pIbrcTransportDevice(
       DeviceSpan<IbrcCmdQueueDevice>{scratch.queues, 2},
       /*nics=*/1,
       /*maxChannels=*/1,
       /*qpsPerConnection=*/1,
       DeviceSpan<IbLocalChannel>{scratch.channels, 1},
+      abort,
       /*ownedRemoteSignalBuf=*/{},
       /*ownedLocalSignalBuf=*/{},
       /*ownedCounterDeviceBuf=*/{},
       /*ownedCounterHostBuf=*/{},
       /*numSignalSlots=*/0,
       /*numCounterSlots=*/0,
-      /*channelLayout=*/{},
-      abort);
+      /*channelLayout=*/{});
 }
 
 constexpr uint32_t kIbrcTestQueueDepth = 4;
@@ -155,7 +155,7 @@ __global__ void waitSignalKernel(
   __shared__ IbrcScratch scratch;
   zeroScratch(group, scratch);
 
-  P2pIbrcTransportDevice ibrc = makeLocalIbrcTransport(scratch);
+  P2pIbrcTransportDevice ibrc = makeLocalIbrcTransport(scratch, AbortDevice{});
   IbgdaLocalBuffer localSignal{signal, NetworkLKeys{}};
 
   abort.start();

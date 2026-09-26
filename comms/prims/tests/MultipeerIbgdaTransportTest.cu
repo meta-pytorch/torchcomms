@@ -29,9 +29,11 @@ __global__ void putAndSignalKernel(
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
-    transport.put(localBuf, remoteBuf, nbytes, signalId, signalVal);
-    transport.flush();
+    transport.put(
+        localBuf, remoteBuf, nbytes, abortDevice, signalId, signalVal);
+    transport.flush(abortDevice);
   }
 }
 
@@ -65,12 +67,13 @@ __global__ void putAndSignalGroupKernel(
     int signalId,
     uint64_t signalVal) {
   auto group = make_warp_group();
+  const AbortDevice abortDevice{};
 
   // Explicitly shard the provided buffer across warp lanes.
   transport.put_cooperative(
       group, localBuf, remoteBuf, nbytes, signalId, signalVal);
 
-  transport.flush(group);
+  transport.flush(group, abortDevice);
 }
 
 void testPutAndSignalGroup(
@@ -104,6 +107,7 @@ __global__ void putAndSignalGroupMultiWarpKernel(
     int signalId,
     uint64_t signalVal) {
   auto group = make_warp_group();
+  const AbortDevice abortDevice{};
 
   // Manually partition data across all warp groups
   std::size_t chunkSize = nbytes / group.total_groups;
@@ -116,9 +120,16 @@ __global__ void putAndSignalGroupMultiWarpKernel(
   IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(offset);
 
   // Each warp group does put + signal (each signal adds signalVal)
-  transport.put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+  transport.put(
+      group,
+      myLocalBuf,
+      myRemoteBuf,
+      myBytes,
+      abortDevice,
+      signalId,
+      signalVal);
 
-  transport.flush(group);
+  transport.flush(group, abortDevice);
 }
 
 void testPutAndSignalGroupMultiWarp(
@@ -152,6 +163,7 @@ __global__ void putAndSignalGroupBlockKernel(
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
 
   // Manually partition data across all block groups
   std::size_t chunkSize = nbytes / group.total_groups;
@@ -164,9 +176,16 @@ __global__ void putAndSignalGroupBlockKernel(
   IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(offset);
 
   // Each block group does put + signal (each signal adds signalVal)
-  transport.put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+  transport.put(
+      group,
+      myLocalBuf,
+      myRemoteBuf,
+      myBytes,
+      abortDevice,
+      signalId,
+      signalVal);
 
-  transport.flush(group);
+  transport.flush(group, abortDevice);
 }
 
 void testPutAndSignalGroupBlock(
@@ -195,8 +214,9 @@ __global__ void waitSignalKernel(
     P2pIbTransportDevice transport,
     int signalId,
     uint64_t expectedSignal) {
+  const AbortDevice abortDevice{};
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    transport.wait_signal(signalId, expectedSignal);
+    transport.wait_signal(signalId, expectedSignal, abortDevice);
   }
 }
 
@@ -227,13 +247,14 @@ __global__ void multiplePutAndSignalKernel(
     int signalId,
     int numPuts) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
     for (int i = 0; i < numPuts; i++) {
       IbgdaLocalBuffer srcBuf = localBuf.subBuffer(i * bytesPerPut);
       IbgdaRemoteBuffer dstBuf = remoteBuf.subBuffer(i * bytesPerPut);
 
-      transport.put(srcBuf, dstBuf, bytesPerPut, signalId, 1);
-      transport.flush();
+      transport.put(srcBuf, dstBuf, bytesPerPut, abortDevice, signalId, 1);
+      transport.flush(abortDevice);
     }
   }
 }
@@ -263,16 +284,18 @@ __global__ void burstPutAndFlushKernel(
     std::size_t bytesPerPut,
     int numPuts) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
     for (int i = 0; i < numPuts; ++i) {
       transport.put(
           localBuf.subBuffer(i * bytesPerPut),
           remoteBuf.subBuffer(i * bytesPerPut),
           bytesPerPut,
+          abortDevice,
           /*signalId=*/-1,
           /*signalVal=*/0);
     }
-    transport.flush();
+    transport.flush(abortDevice);
   }
 }
 
@@ -302,9 +325,10 @@ __global__ void signalOnlyKernel(
     int signalId,
     uint64_t signalVal) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
     transport.signal(signalId, signalVal);
-    transport.flush();
+    transport.flush(abortDevice);
   }
 }
 
@@ -333,9 +357,10 @@ __global__ void putOnlyKernel(
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
-    transport.put(localBuf, remoteBuf, nbytes);
-    transport.flush();
+    transport.put(localBuf, remoteBuf, nbytes, abortDevice);
+    transport.flush(abortDevice);
   }
 }
 
@@ -404,9 +429,9 @@ __global__ void sendRecvKernel(
   auto group = make_block_group();
   abortDevice.start();
   if (send) {
-    transport->send(group, buffer, nbytes, maxSignalBytes, abortDevice);
+    transport->send(group, buffer, nbytes, abortDevice, maxSignalBytes);
   } else {
-    transport->recv(group, buffer, nbytes, maxSignalBytes, abortDevice);
+    transport->recv(group, buffer, nbytes, abortDevice, maxSignalBytes);
   }
 }
 
@@ -425,9 +450,9 @@ __global__ void shardedSendRecvIbKernel(
   auto* slice = static_cast<char*>(buffer) +
       static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
   if (send) {
-    transport.send(group, slice, bytesPerBlock, maxSignalBytes, abortDevice);
+    transport.send(group, slice, bytesPerBlock, abortDevice, maxSignalBytes);
   } else {
-    transport.recv(group, slice, bytesPerBlock, maxSignalBytes, abortDevice);
+    transport.recv(group, slice, bytesPerBlock, abortDevice, maxSignalBytes);
   }
 }
 
@@ -483,12 +508,12 @@ __global__ void twoCallSendThenRecvKernel(
   auto* sendBytes = static_cast<const char*>(sendBuffer);
   auto* recvBytes = static_cast<char*>(recvBuffer);
 
-  transport.send(group, sendBytes, firstBytes, maxSignalBytes, abortDevice);
-  transport.recv(group, recvBytes, firstBytes, maxSignalBytes, abortDevice);
+  transport.send(group, sendBytes, firstBytes, abortDevice, maxSignalBytes);
+  transport.recv(group, recvBytes, firstBytes, abortDevice, maxSignalBytes);
   transport.send(
-      group, sendBytes + firstBytes, secondBytes, maxSignalBytes, abortDevice);
+      group, sendBytes + firstBytes, secondBytes, abortDevice, maxSignalBytes);
   transport.recv(
-      group, recvBytes + firstBytes, secondBytes, maxSignalBytes, abortDevice);
+      group, recvBytes + firstBytes, secondBytes, abortDevice, maxSignalBytes);
 }
 
 void testSendRecv(
@@ -809,7 +834,7 @@ __global__ void registeredSendRecvKernel(
   if (send) {
     if (blocking) {
       transport.send_registered(
-          group, source, nbytes, maxSignalBytes, abortDevice);
+          group, source, nbytes, abortDevice, maxSignalBytes);
       if (group.is_leader() && observation != nullptr) {
         ++observation->drainedCount;
       }
@@ -844,7 +869,7 @@ __global__ void registeredSendRecvKernel(
       group.sync();
     }
   } else {
-    transport.recv(group, recvBuffer, nbytes, maxSignalBytes, abortDevice);
+    transport.recv(group, recvBuffer, nbytes, abortDevice, maxSignalBytes);
   }
 }
 
@@ -873,8 +898,8 @@ __global__ void mixedRegisteredAndStagedSendRecvKernel(
         group,
         static_cast<const char*>(sendBuffer.ptr) + firstBytes,
         secondBytes,
-        maxSignalBytes,
-        abortDevice);
+        abortDevice,
+        maxSignalBytes);
     (void)postRegisteredSend(
         *transport,
         group,
@@ -888,15 +913,15 @@ __global__ void mixedRegisteredAndStagedSendRecvKernel(
   }
 
   auto* output = static_cast<char*>(recvBuffer);
-  transport->recv(group, output, firstBytes, maxSignalBytes, abortDevice);
+  transport->recv(group, output, firstBytes, abortDevice, maxSignalBytes);
   transport->recv(
-      group, output + firstBytes, secondBytes, maxSignalBytes, abortDevice);
+      group, output + firstBytes, secondBytes, abortDevice, maxSignalBytes);
   transport->recv(
       group,
       output + firstBytes + secondBytes,
       thirdBytes,
-      maxSignalBytes,
-      abortDevice);
+      abortDevice,
+      maxSignalBytes);
 }
 
 __global__ void fillTransportStagingKernel(
@@ -1345,13 +1370,15 @@ __global__ void waitReadyThenPutAndSignalKernel(
     int dataSignalId,
     uint64_t dataSignalVal) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
     // Wait for receiver to signal that its buffer is ready (local inbox)
-    transport.wait_signal(readySignalId, readySignalVal);
+    transport.wait_signal(readySignalId, readySignalVal, abortDevice);
 
     // Now put data and signal completion (remote outbox)
-    transport.put(localBuf, remoteBuf, nbytes, dataSignalId, dataSignalVal);
-    transport.flush();
+    transport.put(
+        localBuf, remoteBuf, nbytes, abortDevice, dataSignalId, dataSignalVal);
+    transport.flush(abortDevice);
   }
 }
 
@@ -1396,14 +1423,21 @@ __global__ void bidirectionalPutAndWaitKernel(
     int recvSignalId,
     uint64_t recvSignalVal) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.group_id == 0) {
     if (group.is_leader()) {
       // Send data to peer (remote outbox)
-      transport.put(localBuf, remoteBuf, nbytes, sendSignalId, sendSignalVal);
-      transport.flush();
+      transport.put(
+          localBuf,
+          remoteBuf,
+          nbytes,
+          abortDevice,
+          sendSignalId,
+          sendSignalVal);
+      transport.flush(abortDevice);
     } else if (group.thread_id_in_group == 1) {
       // Wait for data from peer (local inbox)
-      transport.wait_signal(recvSignalId, recvSignalVal);
+      transport.wait_signal(recvSignalId, recvSignalVal, abortDevice);
     }
   }
 }
@@ -1447,6 +1481,7 @@ __global__ void allToAllSendKernel(
     std::size_t nbytes,
     int numPeers) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   auto [peerId, perPeerGroup] = group.partition(numPeers);
 
   P2pIbTransportDevice transport = peerTransports[peerId];
@@ -1457,9 +1492,10 @@ __global__ void allToAllSendKernel(
         localSendBufs[peerId],
         peerRecvBufs[peerId],
         nbytes,
+        abortDevice,
         0, // signalId
         1);
-    transport.flush();
+    transport.flush(abortDevice);
   }
 }
 
@@ -1467,11 +1503,12 @@ __global__ void allToAllWaitKernel(
     P2pIbTransportDevice* peerTransports,
     int numPeers) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   auto [peerId, perPeerGroup] = group.partition(numPeers);
 
   if (perPeerGroup.is_leader()) {
     // Wait for signal from this peer (local inbox, slot 0)
-    peerTransports[peerId].wait_signal(0, 1);
+    peerTransports[peerId].wait_signal(0, 1, abortDevice);
   }
 }
 
@@ -1521,18 +1558,20 @@ __global__ void putSignalCounterKernel(
     uint64_t counterVal,
     int numIterations) {
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
   if (group.is_global_leader()) {
     for (int i = 0; i < numIterations; ++i) {
       transport.put(
           localDataBuf,
           remoteDataBuf,
           nbytes,
+          abortDevice,
           signalId,
           signalVal,
           counterId,
           counterVal);
     }
-    transport.wait_counter(counterId, counterVal * numIterations);
+    transport.wait_counter(counterId, counterVal * numIterations, abortDevice);
   }
 }
 
@@ -1573,8 +1612,9 @@ __global__ void waitCounterKernel(
     P2pIbTransportDevice transport,
     int counterId,
     uint64_t expectedVal) {
+  const AbortDevice abortDevice{};
   if (threadIdx.x == 0 && blockIdx.x == 0) {
-    transport.wait_counter(counterId, expectedVal);
+    transport.wait_counter(counterId, expectedVal, abortDevice);
   }
 }
 
@@ -1619,11 +1659,19 @@ __global__ void multiQpPutAndSignalKernel(
   IbgdaRemoteBuffer myRemoteBuf = remoteBuf.subBuffer(myOffset);
 
   auto group = make_block_group();
+  const AbortDevice abortDevice{};
 
   // QP selection is transparent — transport.active_qp() selects per blockIdx
-  transport.put(group, myLocalBuf, myRemoteBuf, myBytes, signalId, signalVal);
+  transport.put(
+      group,
+      myLocalBuf,
+      myRemoteBuf,
+      myBytes,
+      abortDevice,
+      signalId,
+      signalVal);
 
-  transport.flush(group);
+  transport.flush(group, abortDevice);
 }
 
 void testMultiQpPutAndSignal(
@@ -1668,6 +1716,7 @@ __global__ void putAndFlushWithAbortKernel(
         localBuf,
         poisonedRemoteBuf,
         nbytes,
+        abort,
         /*signalId=*/-1,
         /*signalVal=*/0);
     for (int i = 0; i < 4; ++i) {
@@ -1675,6 +1724,7 @@ __global__ void putAndFlushWithAbortKernel(
           localBuf,
           validRemoteBuf,
           nbytes,
+          abort,
           /*signalId=*/-1,
           /*signalVal=*/0);
     }
@@ -1719,7 +1769,12 @@ __global__ void registeredSendDrainAbortKernel(
   if (group.is_global_leader()) {
     for (uint32_t i = 0; i < poisonPuts; ++i) {
       transport.put(
-          source, poisonedRemote, nbytes, /*signalId=*/-1, /*signalVal=*/0);
+          source,
+          poisonedRemote,
+          nbytes,
+          abort,
+          /*signalId=*/-1,
+          /*signalVal=*/0);
     }
   }
   group.sync();
@@ -1815,6 +1870,7 @@ __global__ void prepareSendSlotBadRkeyKernel(
         localBuf,
         poisonedRemoteBuf,
         nbytes,
+        abort,
         /*signalId=*/-1,
         /*signalVal=*/0);
     detail::record_send_completion<protocol::Simple>(
