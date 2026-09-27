@@ -165,7 +165,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     if (config.use_ibrc) {
       MultipeerIbrcTransport transport(
-          globalRank, worldSize, bootstrap, transport_config);
+          globalRank, worldSize, bootstrap, transport_config, AbortDevice{});
       return run_ring_benchmark_with_transport(
           config, send_buf, recv_buf, recvcount, latency_us, transport);
     }

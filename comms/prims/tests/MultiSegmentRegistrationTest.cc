@@ -178,7 +178,7 @@ TransportHandle createTransport(
         0, 2, std::move(bootstrap), config);
   } else {
     handle.ibrc = std::make_unique<MultipeerIbrcTransport>(
-        0, 2, std::move(bootstrap), config);
+        0, 2, std::move(bootstrap), config, AbortDevice{});
   }
   return handle;
 }

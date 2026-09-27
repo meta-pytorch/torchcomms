@@ -86,7 +86,7 @@ class TestIbTransport {
       ibgda_->exchange();
     } else {
       ibrc_ = std::make_unique<MultipeerIbrcTransport>(
-          myRank, nRanks, std::move(bootstrap), config_);
+          myRank, nRanks, std::move(bootstrap), config_, AbortDevice{});
       ibrc_->exchange();
     }
   }
