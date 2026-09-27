@@ -121,14 +121,14 @@ __device__ P2pIbrcTransportDevice makeLocalIbrcTransport(
       /*maxChannels=*/1,
       /*qpsPerConnection=*/1,
       DeviceSpan<IbLocalChannel>{scratch.channels, 1},
+      abort,
       /*ownedRemoteSignalBuf=*/{},
       /*ownedLocalSignalBuf=*/{},
       /*ownedCounterDeviceBuf=*/{},
       /*ownedCounterHostBuf=*/{},
       /*numSignalSlots=*/0,
       /*numCounterSlots=*/0,
-      /*channelLayout=*/{},
-      abort);
+      /*channelLayout=*/{});
 }
 
 constexpr uint32_t kIbrcTestQueueDepth = 4;

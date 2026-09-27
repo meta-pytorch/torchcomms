@@ -135,7 +135,7 @@ class BenchIbTransport {
         INFO, "BenchIbTransport: backend={}", benchIbBackendName(backend));
     if (backend == BenchIbBackend::IBRC) {
       ibrc_ = std::make_unique<MultipeerIbrcTransport>(
-          globalRank, numRanks, bootstrap, config);
+          globalRank, numRanks, bootstrap, config, AbortDevice{});
     } else {
       ibgda_ = std::make_unique<MultipeerIbgdaTransport>(
           globalRank, numRanks, bootstrap, config);

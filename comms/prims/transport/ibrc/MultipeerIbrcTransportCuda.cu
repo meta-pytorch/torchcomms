@@ -36,6 +36,7 @@ void constructIbrcDeviceSlots(
         /*maxChannels=*/0,
         /*qpsPerConnection=*/0,
         /*localChannels=*/{},
+        /*abort=*/{},
         /*ownedRemoteSignalBuf=*/{},
         /*ownedLocalSignalBuf=*/{},
         /*ownedCounterDeviceBuf=*/{},
@@ -43,7 +44,6 @@ void constructIbrcDeviceSlots(
         /*numSignalSlots=*/0,
         /*numCounterSlots=*/0,
         /*channelLayout=*/{},
-        /*abort=*/{},
         /*myRank=*/myRank,
         /*peerRank=*/peerRank);
   }
@@ -74,6 +74,7 @@ void writeIbrcDeviceSlot(
       maxChannels,
       qpsPerConnection,
       localChannels,
+      abort,
       remoteSignalBuf,
       localSignalBuf,
       counterDeviceBuf,
@@ -81,7 +82,6 @@ void writeIbrcDeviceSlot(
       numSignalSlots,
       numCounterSlots,
       channelLayout,
-      abort,
       myRank,
       peerRank);
 }
