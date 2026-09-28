@@ -67,7 +67,7 @@ RCCL_PARAM(ForceCeAllReduce, "FORCE_CE_ALLREDUCE", 0);
 // Constraint: DdaLLThreshold <= DdaLL128Threshold <= DdaThreshold. Setting an
 // enable flag (or its threshold) to 0 disables that tier and falls through to
 // the next, so each protocol can be A/B'd in isolation at runtime.
-RCCL_PARAM(DdaEnable, "DDA_ENABLE", 0);
+RCCL_PARAM(DdaEnable, "DDA_ENABLE", 1);
 RCCL_PARAM(DdaThreshold, "DDA_THRESHOLD", (size_t)(134217728));           // 128 MiB
 RCCL_PARAM(DdaLL, "DDA_LL", 1);
 RCCL_PARAM(DdaLLThreshold, "DDA_LL_THRESHOLD", (size_t)(32768));          // 32 KiB

@@ -1171,7 +1171,7 @@ NCCL_PARAM(ChunkSize, "CHUNK_SIZE", 0);
 // previously, p2p-batching was causing regression on all node-counts for larger message sizes (64KB "per-rank")
 // we want to auto-enable only for gfx950 paired with a non-AINIC NIC, so we use
 // rcclEffectiveP2pBatchEnable helper to branch based on arch and NIC type.
-RCCL_PARAM(P2pBatchEnable, "P2P_BATCH_ENABLE", 0);
+RCCL_PARAM(P2pBatchEnable, "P2P_BATCH_ENABLE", -1);
 RCCL_PARAM(P2pBatchThreshold, "P2P_BATCH_THRESHOLD", 1 << 16); // 64k per-rank message size
 
 static int rcclEffectiveP2pBatchEnable(struct ncclComm* comm) {
