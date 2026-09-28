@@ -275,7 +275,8 @@ std::shared_ptr<TorchCommWindow> TorchCommFake::new_window(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommFake::reconfigure(
-    const ReconfigureOptions& /* opts */) {
+    const ReconfigureOptions& opts) {
+  lastReconfigureOptions_ = opts;
   if (shouldFailReconfigure_) {
     initialized_ = false;
     return c10::make_intrusive<TorchWorkFailed>();
