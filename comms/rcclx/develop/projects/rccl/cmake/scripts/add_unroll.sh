@@ -31,31 +31,33 @@ HIP_FILE=$1
 #   runRing<T, USE_ACC, COLL_UNROLL, USE_ACC, COLL_UNROLL>
 # The sed rules use address guards ("/pattern/!s/...") for the same purpose.
 if [[ "$HIP_FILE" =~ .*/src/device/.*\.h ]]; then
-  # Phase 1: Add USE_ACC, COLL_UNROLL, Pipeline to template declarations.
-  perl -pi -e 's/(template<typename T, typename RedOp(?:, (?:typename|int) Proto)?)(, bool isNetOffload.*?)?>/\1, int USE_ACC, int COLL_UNROLL, int Pipeline\2>/g' "$HIP_FILE"
-  perl -pi -e 's/(template<typename T, typename RedOp(?:, (?:typename|int) Proto)?(?:, int RCCLMetadata)?)(, bool isNetOffload.*?)?>/\1, int USE_ACC, int COLL_UNROLL, int Pipeline\2>/g' "$HIP_FILE"
-  perl -pi -e 's/(ProtoSimple<[^,]*?,[^,]+?)>/\1, USE_ACC, COLL_UNROLL>/g' "$HIP_FILE"
+  perl -pi -e 's/(template\s*<typename T, typename RedOp(?:, (?:typename|int) Proto)?)(, bool isNetOffload.*?)?>/\1, int USE_ACC, int COLL_UNROLL, int Pipeline\2>/g' "$HIP_FILE"
+  perl -pi -e 's/(template\s*<typename T, typename RedOp(?:, (?:typename|int) Proto)?(?:, int RCCLMetadata)?)(, bool isNetOffload.*?)?>/\1, int USE_ACC, int COLL_UNROLL, int Pipeline\2>/g' "$HIP_FILE"
+  perl -0777 -pi -e 's/(ProtoSimple<[^,]*?,[^,]+?)>/\1, USE_ACC, COLL_UNROLL>/g' "$HIP_FILE"
+  perl -0777 -pi -e 's/(runRing<T.*?)((,[\s\\]*(true|false))?>\()/\1, USE_ACC, COLL_UNROLL\2/sg' "$HIP_FILE"
+  perl -pi -e 's/(runTreeUpDown<T.*?)>\(/\1, USE_ACC, COLL_UNROLL>(/' "$HIP_FILE"
+  perl -pi -e 's/(runTreeSplit<T.*?)>\(/\1, USE_ACC, COLL_UNROLL>(/' "$HIP_FILE"
 
-  # Phase 2: Add USE_ACC, COLL_UNROLL to run{Ring,TreeUpDown,TreeSplit} call sites.
-  perl -pi -e 's/(runRing<T(?:(?!USE_ACC).)*)((, (true|false))?>\()/\1, USE_ACC, COLL_UNROLL\2/g' "$HIP_FILE"
-  perl -pi -e 's/(runTreeUpDown<T(?:(?!USE_ACC).)*)>\(/\1, USE_ACC, COLL_UNROLL>(/' "$HIP_FILE"
-  perl -pi -e 's/(runTreeSplit<T(?:(?!USE_ACC).)*)>\(/\1, USE_ACC, COLL_UNROLL>(/' "$HIP_FILE"
+  perl -pi -e 's/(runTreeSplit<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL.*?)>/\1, 0>/' "$HIP_FILE"
+  perl -pi -e 's/(runTreeUpDown<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL.*?)>/\1, 0>/' "$HIP_FILE"
+  perl -pi -e 's/(runRing<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL.*?)>/\1, 0>/' "$HIP_FILE"
+  perl -pi -e 's/(runRing<T, RedOp, (ProtoLL|ProtoLL128), (RCCL_ONE_NODE_RING_SIMPLE|RCCL_METADATA_EMPTY), USE_ACC, COLL_UNROLL.*?)>/\1, 0>/' "$HIP_FILE"
 
-  # Phase 3: For LL/LL128 protocols, append Pipeline=0 (no pipelining).
-  perl -pi -e 's/(runTreeSplit<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL)(?!, 0)>/\1, 0>/' "$HIP_FILE"
-  perl -pi -e 's/(runTreeUpDown<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL)(?!, 0)>/\1, 0>/' "$HIP_FILE"
-  perl -pi -e 's/(runRing<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL)(?!, 0)>/\1, 0>/' "$HIP_FILE"
-  perl -pi -e 's/(runRing<T, RedOp, (ProtoLL|ProtoLL128), (RCCL_ONE_NODE_RING_SIMPLE|RCCL_METADATA_EMPTY), USE_ACC, COLL_UNROLL)(?!, 0)>/\1, 0>/' "$HIP_FILE"
+  perl -pi -e 's/(runRing<T, RedOp, Proto, (RCCL_ONE_NODE_RING_SIMPLE|RCCL_METADATA_EMPTY), USE_ACC, COLL_UNROLL.*?)>/\1, Pipeline>/' "$HIP_FILE"
+  perl -pi -e 's/(runRing<T, RedOp, Proto, USE_ACC, COLL_UNROLL.*?)>/\1, Pipeline>/' "$HIP_FILE"
+  perl -pi -e 's/(runTreeSplit<T, RedOp, Proto, USE_ACC, COLL_UNROLL.*?)>/\1, Pipeline>/' "$HIP_FILE"
+  perl -pi -e 's/(runTreeUpDown<T, RedOp, Proto, USE_ACC, COLL_UNROLL.*?)>/\1, Pipeline>/' "$HIP_FILE"
 
-  # Phase 4: For generic Proto, append the Pipeline template argument.
-  perl -pi -e 's/(runRing<T, RedOp, Proto, (RCCL_ONE_NODE_RING_SIMPLE|RCCL_METADATA_EMPTY), USE_ACC, COLL_UNROLL)(?!, Pipeline)>/\1, Pipeline>/' "$HIP_FILE"
-  perl -pi -e 's/(runRing<T, RedOp, Proto, USE_ACC, COLL_UNROLL)(?!, Pipeline)>/\1, Pipeline>/' "$HIP_FILE"
-  perl -pi -e 's/(runTreeSplit<T, RedOp, Proto, USE_ACC, COLL_UNROLL)(?!, Pipeline)>/\1, Pipeline>/' "$HIP_FILE"
-  perl -pi -e 's/(runTreeUpDown<T, RedOp, Proto, USE_ACC, COLL_UNROLL)(?!, Pipeline)>/\1, Pipeline>/' "$HIP_FILE"
+  # AllGatherV: inject unroll/pipeline params, strip the ones setDataPtrsHelper can't deduce, add prims acc arg.
+  perl -pi -e 's/(runAllGatherV<T.*?)(>\()/\1, USE_ACC, COLL_UNROLL\2/g' "$HIP_FILE"
+  perl -pi -e 's/(runAllGatherV<T, RedOp, (ProtoLL|ProtoLL128), USE_ACC, COLL_UNROLL.*?)>/\1, 0>/' "$HIP_FILE"
+  perl -pi -e 's/(runAllGatherV<T, RedOp, Proto, USE_ACC, COLL_UNROLL.*?)>/\1, Pipeline>/' "$HIP_FILE"
+  perl -0777 -pi -e 's/(typename Proto), int USE_ACC, int COLL_UNROLL, int Pipeline(>[\s\w]*?setDataPtrsHelper)/$1$2/' "$HIP_FILE"
+  perl -0777 -pi -e 's/(int COLL_UNROLL), int Pipeline(>[\s\w]*?setDataPtrsHelper)/$1$2/' "$HIP_FILE"
+  perl -pi -e 's/(prims\.setDataPtrs\(srcBuf, dstBuf, redOpArg, nullptr, 0, 0)\)/\1, nullptr)/g' "$HIP_FILE"
 
-  # Phase 5: Add parameters to RunWorkBatch and RunWorkColl structs.
-  sed -i "/USE_ACC, COLL_UNROLL, Pipeline, UserRegMode>/!s/\\(struct RunWorkBatch<ncclFunc[^>]*\\)>*/\\1, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode>/" "$HIP_FILE"
-  sed -i "/USE_ACC, COLL_UNROLL, Pipeline, UserRegMode>/!s/\\(RunWorkColl<[^,]*,[^,]*,[^,]*,[^,]*,[^>]*\\)>/\\1, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode>/" "$HIP_FILE"
+  sed -i "s/\\(struct RunWorkBatch<ncclFunc[^>]*\\)>*/\\1, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode>/" "$HIP_FILE"
+  sed -i "s/\\(RunWorkColl<[^,]*,[^,]*,[^,]*,[^,]*,[^>]*\\)>/\\1, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode>/" "$HIP_FILE"
 
   # Declare the UserRegMode template parameter on RunWorkColl / RunWorkBatch
   # partial specialization headers (those immediately followed by a
@@ -64,13 +66,13 @@ if [[ "$HIP_FILE" =~ .*/src/device/.*\.h ]]; then
   # common.h provide the default). Must run after the USE_ACC/COLL_UNROLL/Pipeline
   # header expansion above. The optional params between RedOp and USE_ACC cover
   # specializations that carry an extra `int Proto` (e.g. AllGatherV).
-  perl -0777 -pi -e 's/(template<typename T, typename RedOp[^>]*?, int USE_ACC, int COLL_UNROLL, int Pipeline)>(\s*\nstruct RunWork)/\1, int UserRegMode>\2/g' "$HIP_FILE"
+  perl -0777 -pi -e 's/(template\s*<typename T, typename RedOp[^>]*?, int USE_ACC, int COLL_UNROLL, int Pipeline)>(\s*\nstruct RunWork)/\1, int UserRegMode>\2/g' "$HIP_FILE"
 
   # Thread a compile-time UserRegMode parameter onto runRing so LL/LL128 can select
   # their user-buffer access path (0=runtime, 1=registered, 2=non-registered)
   # without a runtime dual code path. Append it (defaulted) to every (already
   # expanded) runRing/runTree header, right after the Pipeline / isNetOffload tail.
-  perl -pi -e 's/(template<typename T, typename RedOp, typename Proto(?:(?!UserRegMode)[^>])*int Pipeline(?:(?!UserRegMode)[^>])*)>/\1, int UserRegMode = 0>/g' "$HIP_FILE"
+  perl -pi -e 's/(template\s*<typename T, typename RedOp, typename Proto[^>]*int Pipeline[^>]*)>/\1, int UserRegMode = 0>/g' "$HIP_FILE"
 
   # LL128 reg/noreg split: LL (ProtoLL) keeps the baseline single runtime path and
   # LL128 is generated as two separate kernels (see generate.py). The RunWorkColl

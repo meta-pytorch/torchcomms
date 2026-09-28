@@ -41,6 +41,22 @@
 #    include "rocprof_trace_decoder/cxx/code_printing.hpp"
 #endif
 
+static_assert(
+    sizeof(((rocprofiler_thread_trace_decoder_event_payload_t*) nullptr)->cluster_barrier) == 8,
+    "Unexpected rocprofiler_thread_trace_decoder_event_payload_t.cluster_barrier size"
+);
+static_assert(
+    sizeof(rocprofiler_thread_trace_decoder_event_payload_t) == 8,
+    "Unexpected rocprofiler_thread_trace_decoder_event_payload_t size"
+);
+static_assert(
+    sizeof(rocprofiler_thread_trace_decoder_event_t) == 40, "Unexpected rocprofiler_thread_trace_decoder_event_t size"
+);
+static_assert(
+    sizeof(rocprofiler_thread_trace_decoder_dispatch_t) == 80,
+    "Unexpected rocprofiler_thread_trace_decoder_dispatch_t size"
+);
+
 #define RADT(x) ROCPROFILER_THREAD_TRACE_DECODER_RECORD_##x
 
 // ============================================================================
@@ -552,6 +568,18 @@ ROCPROF_TRACE_DECODER_API const char* rocprof_trace_decoder_get_status_string(
     {
         return "STATUS_UNKNOWN";
     }
+}
+
+ROCPROF_TRACE_DECODER_API rocprofiler_thread_trace_decoder_status_t
+rocprof_trace_decoder_get_version(rocprof_trace_decoder_version_t* version)
+{
+    if (version == nullptr) return ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_ARGUMENT;
+
+    version->size = sizeof(rocprof_trace_decoder_version_t);
+    version->major = ROCPROF_TRACE_DECODER_VERSION_MAJOR;
+    version->minor = ROCPROF_TRACE_DECODER_VERSION_MINOR;
+    version->patch = ROCPROF_TRACE_DECODER_VERSION_PATCH;
+    return ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS;
 }
 
 } // extern "C"
