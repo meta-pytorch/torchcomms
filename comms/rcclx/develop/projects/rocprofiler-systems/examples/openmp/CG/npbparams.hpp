@@ -1,3 +1,6 @@
+// Copyright (c) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+
 /* CLASS = B */
 /*
   c  This file is generated automatically by the setparams utility.

@@ -386,7 +386,7 @@ timemory_add_option(TIMEMORY_BUILD_FORTRAN "Build the Fortran compatible library
                     ${_BUILD_FORTRAN})
 timemory_add_option(
     TIMEMORY_BUILD_PORTABLE
-    "Disable arch flags which may cause portability issues (e.g. AVX-512)" OFF)
+    "Disable arch flags which may cause portability issues (e.g. AVX-512)" ON)
 timemory_add_option(TIMEMORY_BUILD_PYTHON "Build Python bindings with internal pybind11"
                     ON)
 timemory_add_option(TIMEMORY_BUILD_PYTHON_HATCHET "Build internal Hatchet distribution"
