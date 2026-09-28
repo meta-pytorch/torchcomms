@@ -68,7 +68,7 @@ GPU runtime seam, using two mechanisms:
 `__HIP_PLATFORM_AMD__` selects the few platform-divergent code paths that hipify
 cannot translate (e.g. int→`CUdeviceptr` cast via
 `drivers/cuda/CudaDevicePtr.h::toDevicePtr`, dma-buf handle type aliases in
-`CudaDriverApi.h`).
+`CudaDriverApiHipCompat.h`).
 
 ## Implementation stack (Phabricator)
 
