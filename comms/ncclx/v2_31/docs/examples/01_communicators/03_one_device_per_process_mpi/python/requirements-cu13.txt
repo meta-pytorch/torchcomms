@@ -1,2 +1,0 @@
-nccl4py[cu13]
-mpi4py
