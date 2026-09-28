@@ -16,10 +16,9 @@ class AlgoInitTest : public ::testing::Test {
   // Brings up nRanks real comms in this process, one per device.
   //
   // Rank count is per-test rather than fixture-wide because it is itself an
-  // input to the decision under test. Four ranks exercise the rank-count
-  // guard; each case must use a layout whose guard returns before DDA
-  // construction (DDA engages only at NRANKS == 8, IpcGpuBarrier.cuh, and
-  // same-process IPC imports are invalid).
+  // input to the decision under test. Four ranks exercise the rank-count guard;
+  // eight reach DDA's fixed NRANKS == 8 configuration and exercise the
+  // same-process guard before DDA construction.
   //
   // The device count is asserted rather than skipped: coming up short means
   // num_gpus on the BUCK target is too low, which should be red rather than a
@@ -59,6 +58,19 @@ TEST_F(AlgoInitTest, RankCountOtherThanDdaNRanksDisablesDda) {
   ASSERT_NO_FATAL_FAILURE(initComms(4));
 
   ASSERT_EQ(comms_[0]->nNodes, 1);
+  EXPECT_EQ(initAlgoFactory(comms_[0]), nullptr);
+}
+
+// DDA shares peer buffers with cudaIpcOpenMemHandle, which can only import a
+// handle exported by another process. With every rank in one process the
+// import fails with hipErrorInvalidContext, so initAlgoFactory must decline to
+// build a factory rather than let the IPC setup run.
+//
+// Rank 0 alone is enough: the decision is a function of peerInfo, which is the
+// allgather result and therefore identical on every rank.
+TEST_F(AlgoInitTest, RanksSharingAProcessDisableDda) {
+  ASSERT_NO_FATAL_FAILURE(initComms(8));
+
   EXPECT_EQ(initAlgoFactory(comms_[0]), nullptr);
 }
 

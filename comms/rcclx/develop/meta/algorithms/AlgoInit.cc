@@ -57,6 +57,24 @@ std::unique_ptr<meta::comms::AlgoFactoryDev> initAlgoFactory(ncclComm_t comm) {
     return nullptr;
   }
 
+  // DDA exchanges peer buffers through IpcMemHandler, and
+  // cudaIpcOpenMemHandle rejects a handle exported by the calling process. So
+  // DDA cannot be used when one process drives several ranks.
+  //
+  // directMode is the all-pairs hostHash/pidHash scan already done for the P2P
+  // transport (ncclTransportCheckP2pType). It is only safe to consult here,
+  // below the nNodes guard: it ranges over localRanks, so on a multi-node comm
+  // separate nodes could reach different answers, and this decision must be
+  // unanimous -- AlgoFactoryDev's constructor runs bootstrap allGathers, which
+  // would hang if only some ranks entered it.
+  if (comm->directMode) {
+    INFO(
+        NCCL_INIT,
+        "Disabling DDA when one process drives multiple local ranks (localRanks=%d)",
+        comm->localRanks);
+    return nullptr;
+  }
+
   return std::make_unique<::meta::comms::AlgoFactoryDev>(
       std::make_shared<::rcclx::BaselineBootstrap>(comm),
       comm->nRanks,
