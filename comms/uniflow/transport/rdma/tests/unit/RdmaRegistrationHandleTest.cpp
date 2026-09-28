@@ -426,7 +426,7 @@ TEST_F(RdmaFactoryRegistrationTest, RegisterVramSegmentUsesDmabufMr) {
   // process when FdGuard destructor runs.
   EXPECT_CALL(*cudaDriver_, isDmaBufSupported(0))
       .WillOnce(Return(Result<bool>(true)));
-  EXPECT_CALL(*cudaDriver_, cuMemGetHandleForAddressRange(_, _, _, _, _))
+  EXPECT_CALL(*cudaDriver_, memGetHandleForAddressRange(_, _, _, _, _))
       .WillOnce([](void* handle,
                    CUdeviceptr,
                    size_t,
@@ -456,7 +456,7 @@ TEST_F(RdmaFactoryRegistrationTest, VramFallsBackToRegMrWhenDmaBufUnsupported) {
   // CUDA reports DMA-BUF not supported → should fall back to regMr.
   EXPECT_CALL(*cudaDriver_, isDmaBufSupported(0))
       .WillOnce(Return(Result<bool>(false)));
-  EXPECT_CALL(*cudaDriver_, cuMemGetHandleForAddressRange(_, _, _, _, _))
+  EXPECT_CALL(*cudaDriver_, memGetHandleForAddressRange(_, _, _, _, _))
       .Times(Exactly(0));
   EXPECT_CALL(*ibv_, regDmabufMr(_, _, _, _, _, _)).Times(Exactly(0));
   EXPECT_CALL(*ibv_, regMr(&fakePd_, buf, sizeof(buf), _))
@@ -476,11 +476,11 @@ TEST_F(RdmaFactoryRegistrationTest, VramFallsBackToRegMrWhenGetHandleFails) {
   fakeMr_.lkey = 0x7777;
   fakeMr_.rkey = 0x8888;
 
-  // DMA-BUF is supported but cuMemGetHandleForAddressRange fails →
+  // DMA-BUF is supported but memGetHandleForAddressRange fails →
   // should fall back to regMr.
   EXPECT_CALL(*cudaDriver_, isDmaBufSupported(0))
       .WillOnce(Return(Result<bool>(true)));
-  EXPECT_CALL(*cudaDriver_, cuMemGetHandleForAddressRange(_, _, _, _, _))
+  EXPECT_CALL(*cudaDriver_, memGetHandleForAddressRange(_, _, _, _, _))
       .WillOnce(Return(Err(ErrCode::DriverError, "simulated failure")));
   EXPECT_CALL(*ibv_, regDmabufMr(_, _, _, _, _, _)).Times(Exactly(0));
   EXPECT_CALL(*ibv_, regMr(&fakePd_, buf, sizeof(buf), _))

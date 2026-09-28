@@ -78,7 +78,7 @@ Result<DmaBuff> CudaDeviceAdapter::exportDmaBuff(
       (len + dmaBufOffset + pageSize_ - 1) & ~(pageSize_ - 1);
 
   DmaBuff out;
-  auto status = cudaDriverApi_->cuMemGetHandleForAddressRange(
+  auto status = cudaDriverApi_->memGetHandleForAddressRange(
       &out.fd,
       toDevicePtr(alignedAddr),
       dmaBufLen,

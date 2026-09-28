@@ -80,6 +80,7 @@ fbcode//comms/uniflow/drivers/nvml(/|:).*   # NVML / amdsmi topology seam (facto
 # clang_root, ...) is a parse-time dep of every C++ target and is NOT matched.
 .*//third-party.*/cuda(/[^:]*)?:(cuda-lazy|cuda|nvml-lazy|nvml)
 .*//third-party.*/rocm(/[^:]*)?:(amdhip64-lazy|amdhip64|amdsmi-lazy|amdsmi)
+.*//third-party.*/therock(/[^:]*)?:(amdhip64-lazy|amdhip64|amd_smi-lazy|amd_smi)
 ```
 
 Run them with:
