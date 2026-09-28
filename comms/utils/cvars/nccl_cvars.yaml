@@ -3356,15 +3356,6 @@ cvars:
      different algorithms and DEADLOCK. Read once when the communicator is
      created.
 
- - name        : MCCL_TUNER_LOG_SELECTION
-   type        : bool
-   default     : false
-   description : |-
-     Log every MCCL tuner decision at INFO -- the query (bytes, rank count,
-     requested block cap) and the resulting algorithm and protocol -- and also
-     log why the tuner was skipped when an explicit override or the envelope
-     gate suppressed it. Diagnostic only; noisy in steady state.
-
  - name        : MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS
    type        : int
    default     : 64
