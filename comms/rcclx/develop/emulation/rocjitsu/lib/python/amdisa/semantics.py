@@ -10,7 +10,7 @@ from each instruction's mnemonic name and its encoding format name.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import re
@@ -239,6 +239,35 @@ _SCC_NONE_OPS = frozenset(
 # Operations where SCC = (result == src0) i.e. "compare" semantics (min/max).
 _SCC_COMPARE_OPS = frozenset({'min', 'max'})
 
+_SOP1_SCC_NONE_OPS = frozenset(
+    {
+        'bitset0',
+        'bitset1',
+        # These SOP1 operations have no implicit SCC output in the MR ISA.
+        # Other bit/count unary operations, such as S_NOT and S_BCNT*, do.
+        'brev',
+        'ceil',
+        'clz',
+        'clz64',
+        'ctz',
+        'cvt_f16_f32',
+        'cvt_f32_f16',
+        'cvt_f32_i32',
+        'cvt_f32_u32',
+        'cvt_hi_f32_f16',
+        'cvt_i32_f32',
+        'cvt_u32_f32',
+        'ff0',
+        'ff1',
+        'flbit',
+        'flbit_i32',
+        'flbit_i32_i64',
+        'floor',
+        'rndne',
+        'trunc',
+    }
+)
+
 
 def _scalar_binop_scc(op: str, dtype: str) -> str:
     """Determine SCC semantics for a scalar binary operation."""
@@ -278,6 +307,13 @@ _CBRANCH_COND = {
     'S_CBRANCH_EXECNZ': 'execnz',
 }
 
+_NAMED_WAITCNT_COUNTERS = {
+    'S_WAITCNT_VSCNT': 'waitcnt_vscnt',
+    'S_WAITCNT_VMCNT': 'waitcnt_vmcnt',
+    'S_WAITCNT_LGKMCNT': 'waitcnt_lgkmcnt',
+    'S_WAITCNT_EXPCNT': 'waitcnt_expcnt',
+}
+
 
 def _derive_sopp(name: str) -> InstructionSemantics | None:
     """Derive semantics for an SOPP (Scalar One-operand Program) instruction."""
@@ -289,20 +325,16 @@ def _derive_sopp(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(name, 'branch', branch_condition='always')
     if name.startswith('S_ENDPGM'):
         return InstructionSemantics(name, 'endpgm')
+    if name == 'S_TRAP':
+        # S_TRAP enters the trap handler instead of continuing with the next
+        # instruction. The simulator currently treats the instruction body as a
+        # stub, but DBT/CFG construction still needs the semantic class so the
+        # generated instruction metadata can mark it as a program terminator.
+        return InstructionSemantics(name, 'trap')
     if name == 'S_WAITCNT':
         return InstructionSemantics(name, 'waitcnt')
     if name == 'S_SET_VGPR_MSB':
         return InstructionSemantics(name, 'set_vgpr_msb')
-    # RDNA3/3.5 named per-counter wait instructions (GFX11 — these coexist with
-    # S_WAITCNT; each waits on a single counter via its immediate operand).
-    _NAMED_WAIT = {
-        'S_WAITCNT_VSCNT': 'waitcnt_vscnt',
-        'S_WAITCNT_VMCNT': 'waitcnt_vmcnt',
-        'S_WAITCNT_LGKMCNT': 'waitcnt_lgkmcnt',
-        'S_WAITCNT_EXPCNT': 'waitcnt_expcnt',
-    }
-    if name in _NAMED_WAIT:
-        return InstructionSemantics(name, 'wait_counter', operation=_NAMED_WAIT[name])
     # RDNA4 split-wait instructions (GFX12 — no S_WAITCNT; each waits on a
     # single counter whose threshold is the immediate operand directly).
     _SPLIT_WAIT = {
@@ -320,9 +352,12 @@ def _derive_sopp(name: str) -> InstructionSemantics | None:
     }
     if name in _SPLIT_WAIT:
         return InstructionSemantics(name, 'wait_counter', operation=name[2:].lower())
-    # S_BARRIER: workgroup synchronization. Set WfState::BARRIER.
     if name == 'S_BARRIER':
         return InstructionSemantics(name, 'barrier')
+    if name == 'S_BARRIER_WAIT':
+        return InstructionSemantics(name, 'scalar_barrier_wait')
+    if name == 'S_BARRIER_LEAVE':
+        return InstructionSemantics(name, 'scalar_barrier_leave', sets_scc='nonzero')
 
     if name == 'S_SET_GPR_IDX_OFF':
         return InstructionSemantics(name, 'gpr_idx', operation='off')
@@ -372,22 +407,22 @@ _SOP1_SPECIAL = {
     'S_BITREPLICATE': ('scalar_bitreplicate', None),
     'S_CBRANCH_JOIN': ('true_nop', None),
     'S_BITREPL_B64_B32': ('scalar_bitreplicate', None),
-    # RDNA4-exclusive SOP1 instructions:
+    # Newer SOP1 spellings shared by RDNA3+ and gfx1250 profiles:
     'S_CTZ_I32': ('scalar_unary', 'ctz'),
     'S_CLZ_I32_U32': ('scalar_unary', 'clz'),
     'S_CLZ_I32_U64': ('scalar_unary', 'clz64', 'u64'),
-    'S_CLS_I32': ('scalar_unary', 'cls'),
-    'S_CLS_I32_I64': ('scalar_unary', 'cls64', 'i64'),
+    'S_CLS_I32': None,  # handled specially below
+    'S_CLS_I32_I64': None,
     'S_MOVRELSD2': ('scalar_movrel', 'srcdst2'),
     'S_MOVRELSD2_B32': ('scalar_movrel', 'srcdst2'),
     'S_MOVRELSD_2': ('scalar_movrel', 'srcdst2'),
     'S_MOVRELSD_2_B32': ('scalar_movrel', 'srcdst2'),
     'S_SENDMSG_RTN': ('scalar_sendmsg_rtn', None),
-    'S_BARRIER_SIGNAL': ('true_nop', None),
-    'S_BARRIER_SIGNAL_ISFIRST': ('true_nop', None),
+    'S_BARRIER_SIGNAL_ISFIRST': ('scalar_barrier_signal', 'signal_isfirst'),
+    'S_BARRIER_SIGNAL': ('scalar_barrier_signal', 'signal'),
     'S_GET_BARRIER_STATE': ('scalar_barrier_state', None, 'b32'),
-    'S_BARRIER_INIT': ('true_nop', None),
-    'S_BARRIER_JOIN': ('true_nop', None),
+    'S_BARRIER_INIT': ('scalar_barrier_init', None),
+    'S_BARRIER_JOIN': ('scalar_barrier_join', None),
     'S_WAKEUP_BARRIER': ('true_nop', None),
     'S_ALLOC_VGPR': ('true_nop', None),
     'S_SLEEP_VAR': ('true_nop', None),
@@ -408,27 +443,35 @@ _SOP1_SPECIAL = {
 def _derive_sop1(name: str) -> InstructionSemantics | None:
     """Derive semantics for an SOP1 (Scalar ALU One-operand) instruction."""
     # SAVEEXEC / WREXEC patterns (B64 on CDNA/Wave64, B32 on RDNA/Wave32)
-    m = re.match(r'S_(\w+)_SAVEEXEC_(B32|B64)', name)
+    m = re.fullmatch(r'S_(\w+)_SAVEEXEC_(B32|B64)', name)
     if m:
         op = m.group(1).lower()
         return InstructionSemantics(
-            name, 'scalar_saveexec', operation=op, data_type=m.group(2).lower()
+            name,
+            'scalar_saveexec',
+            operation=op,
+            data_type=m.group(2).lower(),
+            sets_scc='nonzero',
         )
-    m = re.match(r'S_(\w+)_WREXEC_(B32|B64)', name)
+    m = re.fullmatch(r'S_(\w+)_WREXEC_(B32|B64)', name)
     if m:
         op = m.group(1).lower()
         return InstructionSemantics(
-            name, 'scalar_wrexec', operation=op, data_type=m.group(2).lower()
+            name,
+            'scalar_wrexec',
+            operation=op,
+            data_type=m.group(2).lower(),
+            sets_scc='nonzero',
         )
 
-    # S_FLBIT_I32 (the one without further suffix) is a special case
-    if name == 'S_FLBIT_I32':
+    # S_CLS is the newer spelling of the signed S_FLBIT operation.
+    if name in ('S_FLBIT_I32', 'S_CLS_I32'):
         return InstructionSemantics(
             name,
             'scalar_unary',
             operation='flbit_i32',
             data_type='i32',
-            sets_scc='nonzero',
+            sets_scc='none',
         )
 
     # Sign-extend instructions
@@ -441,14 +484,14 @@ def _derive_sop1(name: str) -> InstructionSemantics | None:
             name, 'scalar_unary', operation='sext16', data_type='i32', sets_scc='none'
         )
 
-    # S_FLBIT_I32_I64 - special: reads 64-bit, finds leading bit of signed
-    if name == 'S_FLBIT_I32_I64':
+    # The I64 forms read a full SGPR pair and return a 32-bit count.
+    if name in ('S_FLBIT_I32_I64', 'S_CLS_I32_I64'):
         return InstructionSemantics(
             name,
             'scalar_unary',
             operation='flbit_i32_i64',
             data_type='i64',
-            sets_scc='nonzero',
+            sets_scc='none',
         )
 
     # Try matching each known stem against the name. We prefer a
@@ -475,10 +518,12 @@ def _derive_sop1(name: str) -> InstructionSemantics | None:
             dtype = entry_dtype
         scc = None
         if cls == 'scalar_unary':
-            if op in ('bitset0', 'bitset1'):
+            if op in _SOP1_SCC_NONE_OPS:
                 scc = 'none'
             else:
                 scc = 'nonzero'
+        elif cls == 'scalar_barrier_signal' and op == 'signal_isfirst':
+            scc = 'nonzero'
         return InstructionSemantics(
             name, cls, operation=op, data_type=dtype, sets_scc=scc
         )
@@ -582,7 +627,9 @@ def _derive_sop2(name: str) -> InstructionSemantics | None:
         )
     op = _SOP2_OP_MAP.get(stem)
     if op is not None and dtype is not None:
-        if stem == 'S_ADD_CO':
+        if stem in ('S_ADD_CO', 'S_SUB_CO') and dtype == 'i32':
+            scc = 'overflow'
+        elif stem == 'S_ADD_CO':
             scc = 'carry'
         elif stem == 'S_SUB_CO':
             scc = 'borrow'
@@ -604,7 +651,11 @@ def _derive_sopc(name: str) -> InstructionSemantics | None:
     if m:
         _, dtype = _split_dtype('X_' + m.group(2))  # reuse dtype parser
         return InstructionSemantics(
-            name, 'scalar_bitcmp', operation='bitcmp' + m.group(1), data_type=dtype
+            name,
+            'scalar_bitcmp',
+            operation='bitcmp' + m.group(1),
+            data_type=dtype,
+            sets_scc='compare',
         )
 
     # S_CMP_<op>_<dtype>
@@ -614,7 +665,11 @@ def _derive_sopc(name: str) -> InstructionSemantics | None:
         op = _CMP_OP_MAP.get(cmp_name)
         if op is not None:
             return InstructionSemantics(
-                name, 'scalar_cmp', operation=op, data_type=_DTYPE_MAP[dt_raw]
+                name,
+                'scalar_cmp',
+                operation=op,
+                data_type=_DTYPE_MAP[dt_raw],
+                sets_scc='compare',
             )
     if name == 'S_SET_GPR_IDX_ON':
         return InstructionSemantics(name, 'gpr_idx', operation='on')
@@ -624,6 +679,10 @@ def _derive_sopc(name: str) -> InstructionSemantics | None:
 
 def _derive_sopk(name: str) -> InstructionSemantics | None:
     """Derive semantics for an SOPK (Scalar with 16-bit Immediate) instruction."""
+    if name in _NAMED_WAITCNT_COUNTERS:
+        return InstructionSemantics(
+            name, 'wait_counter', operation=_NAMED_WAITCNT_COUNTERS[name]
+        )
     if name == 'S_VERSION':
         return InstructionSemantics(name, 'true_nop')
     if name == 'S_MOVK_I32':
@@ -631,9 +690,9 @@ def _derive_sopk(name: str) -> InstructionSemantics | None:
     if name == 'S_CMOVK_I32':
         return InstructionSemantics(name, 'scalar_cmovk')
     if name == 'S_ADDK_I32':
-        return InstructionSemantics(name, 'scalar_addk')
+        return InstructionSemantics(name, 'scalar_addk', sets_scc='overflow')
     if name == 'S_ADDK_CO_I32':
-        return InstructionSemantics(name, 'scalar_addk')
+        return InstructionSemantics(name, 'scalar_addk', sets_scc='overflow')
     if name == 'S_MULK_I32':
         return InstructionSemantics(name, 'scalar_mulk')
     if name in ('S_CALL_B64', 'S_CALL_I64'):
@@ -646,7 +705,11 @@ def _derive_sopk(name: str) -> InstructionSemantics | None:
         op = _CMP_OP_MAP.get(cmp_name)
         if op is not None:
             return InstructionSemantics(
-                name, 'scalar_cmpk', operation=op, data_type=_DTYPE_MAP[dt_raw]
+                name,
+                'scalar_cmpk',
+                operation=op,
+                data_type=_DTYPE_MAP[dt_raw],
+                sets_scc='compare',
             )
 
     if name == 'S_GETREG_B32':
@@ -666,7 +729,7 @@ _VOP1_OP_MAP = {
     'V_READFIRSTLANE': ('vector_readfirstlane', None),
     'V_NOP': ('true_nop', None),
     'V_CLREXCP': ('true_nop', None),
-    'V_SAT_PK_U8_I16': ('nop', None),
+    'V_SAT_PK_U8_I16': ('vector_sat_pack', 'u8_i16'),
     'V_SCREEN_PARTITION_4SE': ('nop', None),
     'V_ACCVGPR_MOV': ('vector_mov', None),
     'V_CVT_F32_FP8': ('vector_unary', 'cvt_f32_fp8'),
@@ -703,12 +766,12 @@ _VOP1_OP_MAP = {
     'V_PRNG': ('true_nop', None),  # PRNG not simulated
     'V_PERMLANE16_SWAP': ('vector_permlane16_swap', None),
     'V_PERMLANE32_SWAP': ('vector_permlane32_swap', None),
-    'V_SWAPREL': ('nop', None),
-    'V_S_EXP': ('vector_unary', 'exp2'),
-    'V_S_LOG': ('vector_unary', 'log2'),
-    'V_S_RCP': ('vector_unary', 'rcp'),
-    'V_S_RSQ': ('vector_unary', 'rsq'),
-    'V_S_SQRT': ('vector_unary', 'sqrt'),
+    'V_SWAPREL': ('vector_swaprel', None),
+    'V_S_EXP': ('pseudo_scalar_unary', 'exp2'),
+    'V_S_LOG': ('pseudo_scalar_unary', 'log2'),
+    'V_S_RCP': ('pseudo_scalar_unary', 'rcp'),
+    'V_S_RSQ': ('pseudo_scalar_unary', 'rsq'),
+    'V_S_SQRT': ('pseudo_scalar_unary', 'sqrt'),
     'V_FREXP_EXP_I32': ('vector_unary', 'frexp_exp_f32'),
     'V_FREXP_EXP_I16': ('vector_unary', 'frexp_exp_f16'),
     'V_FREXP_MANT': ('vector_unary', 'frexp_mant_f32'),
@@ -731,12 +794,12 @@ _VOP1_OP_MAP = {
     # Relative addressing through M0.
     'V_MOVRELD': ('vector_movrel', 'dst'),
     'V_MOVRELS': ('vector_movrel', 'src'),
-    'V_MOVRELSD': ('nop', None),
-    'V_MOVRELSD2': ('nop', None),
-    'V_MOVRELSD2_B32': ('nop', None),
-    'V_MOVRELSD_2': ('nop', None),
-    'V_MOVRELSD_2_B32': ('nop', None),
-    'V_SWAP_REL': ('nop', None),
+    'V_MOVRELSD': ('vector_movrel', 'srcdst'),
+    'V_MOVRELSD2': ('vector_movrel', 'srcdst2'),
+    'V_MOVRELSD2_B32': ('vector_movrel', 'srcdst2'),
+    'V_MOVRELSD_2': ('vector_movrel', 'srcdst2'),
+    'V_MOVRELSD_2_B32': ('vector_movrel', 'srcdst2'),
+    'V_SWAP_REL': ('vector_swaprel', None),
     'V_PERMLANE64': ('vector_permlane64', None),
 }
 
@@ -757,6 +820,12 @@ def _derive_vop1(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(
             name, 'vector_unary', operation=bf16_transcendentals[name], data_type='bf16'
         )
+    sat_pack = {
+        'V_SAT_PK4_I4_I8': 'i4_i8',
+        'V_SAT_PK4_U4_U8': 'u4_u8',
+    }
+    if name in sat_pack:
+        return InstructionSemantics(name, 'vector_sat_pack', operation=sat_pack[name])
     packed_fp8_bf8_conversions = {
         'V_CVT_PK_F32_FP8': 'f32_fp8',
         'V_CVT_PK_F32_BF8': 'f32_bf8',
@@ -878,10 +947,10 @@ def _derive_vop2(name: str) -> InstructionSemantics | None:
         )
 
     # FMAMK / FMAAK / MADMK / MADAK - FMA/MAD with inline constant
-    if name == 'V_FMAMK_F32':
-        return InstructionSemantics(name, 'vector_fmamk', data_type='f32')
-    if name == 'V_FMAAK_F32':
-        return InstructionSemantics(name, 'vector_fmaak', data_type='f32')
+    if name in ('V_FMAMK_F32', 'V_FMAMK_F64'):
+        return InstructionSemantics(name, 'vector_fmamk', data_type=name[-3:].lower())
+    if name in ('V_FMAAK_F32', 'V_FMAAK_F64'):
+        return InstructionSemantics(name, 'vector_fmaak', data_type=name[-3:].lower())
     if name in ('V_MADMK_F16', 'V_FMAMK_F16'):
         return InstructionSemantics(name, 'vector_fmamk', data_type='f16')
     if name in ('V_MADAK_F16', 'V_FMAAK_F16'):
@@ -905,11 +974,15 @@ def _derive_vop2(name: str) -> InstructionSemantics | None:
             name, 'vector_binop', operation='mul', data_type='u16'
         )
 
-    # Packed FP16 FMA and DOT2ACC VOP2 forms (nop; VOP3P forms are functional)
-    if name in ('V_PK_FMAC_F16', 'V_DOT2ACC_F32_F16'):
-        return InstructionSemantics(name, 'nop')
+    # Packed FP16 fused multiply-accumulate VOP2 form.
+    if name == 'V_PK_FMAC_F16':
+        return InstructionSemantics(name, 'pk_fmac_vop2', data_type='f16')
 
     # DOT product instructions
+    if name == 'V_DOT2ACC_F32_F16':
+        return InstructionSemantics(
+            name, 'vector_dot', operation='dot2c', data_type='f32'
+        )
     if name == 'V_DOT2C_F32_F16':
         return InstructionSemantics(
             name, 'vector_dot', operation='dot2c', data_type='f32'
@@ -1063,9 +1136,29 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
             name, 'vector_ternary', operation=_SAD_MAP[name], data_type='u32'
         )
 
-    # MQSAD (complex, rarely used) → nop
-    if name in ('V_MQSAD_PK_U16_U8', 'V_MQSAD_U32_U8', 'V_QSAD_PK_U16_U8'):
-        return InstructionSemantics(name, 'nop')
+    qsad = {
+        'V_QSAD_PK_U16_U8': 'sad_pk_u16',
+        'V_MQSAD_PK_U16_U8': 'msad_pk_u16',
+        'V_MQSAD_U32_U8': 'msad_u32',
+    }
+    if name in qsad:
+        return InstructionSemantics(name, 'vector_qsad', operation=qsad[name])
+
+    perm_pk16 = {
+        'V_PERM_PK16_B4_U4': 'b4',
+        'V_PERM_PK16_B6_U4': 'b6',
+        'V_PERM_PK16_B8_U4': 'b8',
+    }
+    if name in perm_pk16:
+        return InstructionSemantics(name, 'vector_perm_pk16', operation=perm_pk16[name])
+
+    # Bit count with accumulate: D.u32 = CountOneBits(S0.u32) + S1.u32. The MR
+    # ISA gives no pseudocode, so the generic stem table below would derive this
+    # as a plain unary popcount and silently drop S1 -- the same shape as the
+    # V_MBCNT_* pair right underneath, which is why it is classified the same
+    # way rather than as a 'vector_unary'.
+    if name == 'V_BCNT_U32_B32':
+        return InstructionSemantics(name, 'vector_bcnt', data_type='u32')
 
     # Masked bit count
     if name == 'V_MBCNT_LO_U32_B32':
@@ -1109,9 +1202,8 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
     if name == 'V_CVT_PK_I16_I32':
         return InstructionSemantics(name, 'vector_cvt_pk', operation='i16_i32')
 
-    # Trig preop → nop (internal microcode helper)
     if name == 'V_TRIG_PREOP_F64':
-        return InstructionSemantics(name, 'nop')
+        return InstructionSemantics(name, 'vector_trig_preop', data_type='f64')
 
     # ── CDNA4 / RDNA4 new conversions ─────────────────────────────────
     if name == 'V_CVT_F32_BF16':
@@ -1126,6 +1218,10 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(name, 'vector_cvt_sr_f16_f32')
     if name == 'V_CVT_SR_BF16_F32':
         return InstructionSemantics(name, 'vector_cvt_sr_bf16_f32')
+    if name == 'V_CVT_SR_PK_F16_F32':
+        return InstructionSemantics(name, 'vector_cvt_sr_pk_f16_f32')
+    if name == 'V_CVT_SR_PK_BF16_F32':
+        return InstructionSemantics(name, 'vector_cvt_sr_pk_bf16_f32')
     if name == 'V_DOT2C_F32_BF16':
         return InstructionSemantics(name, 'vector_dot2c_bf16')
     if name == 'V_MINIMUM3_F32':
@@ -1159,7 +1255,9 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
             name, 'vector_ternary', operation='fma', data_type='f32'
         )
     if name == 'V_MULLIT_F32':
-        return InstructionSemantics(name, 'nop')
+        return InstructionSemantics(
+            name, 'vector_mullit', operation='mul_legacy', data_type='f32'
+        )
 
     # MAXMIN/MINMAX/MINIMUMMAXIMUM/MAXIMUMMINIMUM variants (all types)
     _CLAMP_TERNARY = {
@@ -1210,8 +1308,10 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(name, 'vector_binop', operation=op, data_type=dt)
 
     # Dot product with F16/BF16 output
-    if name in ('V_DOT2_F16_F16', 'V_DOT2_BF16_BF16'):
-        return InstructionSemantics(name, 'nop')
+    if name == 'V_DOT2_F16_F16':
+        return InstructionSemantics(name, 'dot2_f16_f16')
+    if name == 'V_DOT2_BF16_BF16':
+        return InstructionSemantics(name, 'dot2_bf16_bf16')
 
     # Pack/convert variants
     if name == 'V_CVT_PK_I16_F32':
@@ -1222,12 +1322,12 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(name, 'vector_cvt_pkrtz_f16_f32')
     for norm_suffix in ('_I16_F16', '_U16_F16', '_I16_F32', '_U16_F32'):
         if name == f'V_CVT_PK_NORM{norm_suffix}':
-            op = norm_suffix[1:3].lower() + '16'  # i16 or u16
+            _, out_ty, in_ty = norm_suffix.split('_')
             return InstructionSemantics(
                 name,
                 'vector_cvt_pknorm',
-                operation=op[:3],
-                data_type=norm_suffix[-3:].lower(),
+                operation=out_ty.lower(),
+                data_type=in_ty.lower(),
             )
 
     # 64-bit multiply-add with carry
@@ -1244,6 +1344,16 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(name, 'vector_permlane16', operation='var')
     if name == 'V_PERMLANEX16_VAR_B32':
         return InstructionSemantics(name, 'vector_permlanex16', operation='var')
+    if name == 'V_PERMLANE_BCAST_B32':
+        return InstructionSemantics(name, 'vector_permlane_family', operation='bcast')
+    if name == 'V_PERMLANE_DOWN_B32':
+        return InstructionSemantics(name, 'vector_permlane_family', operation='down')
+    if name == 'V_PERMLANE_UP_B32':
+        return InstructionSemantics(name, 'vector_permlane_family', operation='up')
+    if name == 'V_PERMLANE_XOR_B32':
+        return InstructionSemantics(name, 'vector_permlane_family', operation='xor')
+    if name == 'V_PERMLANE_IDX_GEN_B32':
+        return InstructionSemantics(name, 'vector_permlane_idx_gen')
 
     if name == 'V_PACK_B32_F16':
         sem = InstructionSemantics(name, 'vector_pack_b32_f16')
@@ -1260,6 +1370,10 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(
             name, 'vector_cvt_pk', operation=packed_fp8_bf8_outputs[name]
         )
+    if name == 'V_CVT_SR_FP8_F16':
+        return InstructionSemantics(name, 'vector_cvt_sr_fp8_f16')
+    if name == 'V_CVT_SR_BF8_F16':
+        return InstructionSemantics(name, 'vector_cvt_sr_bf8_f16')
 
     scaled_unpack_conversions = {
         'V_CVT_SCALE_PK8_F16_FP4': 'unpack_pk8_f16_fp4',
@@ -1351,7 +1465,7 @@ def _derive_vop3(name: str) -> InstructionSemantics | None:
 
     # V_PK_FMAC_F16 VOP2 form — the VOP3P form is handled via _VOP3P_PK16_MAP.
     if name == 'V_PK_FMAC_F16':
-        return InstructionSemantics(name, 'nop')
+        return InstructionSemantics(name, 'pk_fmac_vop2', data_type='f16')
 
     # Legacy interpolation (CDNA1, RDNA1/2) — niche, not simulated
     if name.startswith('V_INTERP_P1') or name.startswith('V_INTERP_P2'):
@@ -1441,6 +1555,10 @@ _VOP3P_PK16_MAP = {
     'V_PK_MINIMUM_F16': ('pk_binop', 'min', 'f16'),
     'V_PK_MAXIMUM_F16': ('pk_binop', 'max', 'f16'),
     'V_PK_FMAC_F16': ('pk_ternary', 'fmac', 'f16'),
+    'V_PK_ADD_MAX_I16': ('pk_ternary', 'add_max_sat', 'i16'),
+    'V_PK_ADD_MAX_U16': ('pk_ternary', 'add_max_sat', 'u16'),
+    'V_PK_ADD_MIN_I16': ('pk_ternary', 'add_min_sat', 'i16'),
+    'V_PK_ADD_MIN_U16': ('pk_ternary', 'add_min_sat', 'u16'),
     'V_PK_FMA_BF16': ('pk_ternary', 'fma', 'bf16'),
     'V_PK_ADD_BF16': ('pk_binop', 'add', 'bf16'),
     'V_PK_MUL_BF16': ('pk_binop', 'mul', 'bf16'),
@@ -1481,7 +1599,7 @@ def _derive_vop3p(name: str) -> InstructionSemantics | None:
             name, 'pk_binop_f32', operation='add', data_type='f32'
         )
     if name == 'V_PK_MOV_B32':
-        return InstructionSemantics(name, 'pk_mov_b32', accvgpr_srcs=True)
+        return InstructionSemantics(name, 'pk_mov_b32')
 
     # Packed min3/max3 (CDNA4 / RDNA4)
     if name in ('V_PK_MINIMUM3_F16', 'V_PK_MAXIMUM3_F16'):
@@ -1526,9 +1644,11 @@ def _derive_vop3p(name: str) -> InstructionSemantics | None:
     if name == 'V_ACCVGPR_WRITE':
         return InstructionSemantics(name, 'accvgpr_write')
 
-    # Additional dot product variants (RDNA3/4 naming)
+    # Additional dot product variants (RDNA3/4 naming). BF16 uses the same dot2
+    # structure as F16 but a different widening (8-bit exponent, no denormal
+    # renormalization), so it gets its own class rather than reusing f32_f16.
     if name == 'V_DOT2_F32_BF16':
-        return InstructionSemantics(name, 'dot2_f32_f16')  # BF16 uses same dot2 pattern
+        return InstructionSemantics(name, 'dot2_f32_bf16')
     if name == 'V_DOT4_I32_IU8':
         return InstructionSemantics(name, 'dot4_i32_iu8')
     if name == 'V_DOT8_I32_IU4':
@@ -1700,15 +1820,18 @@ _FLAT_DATA_MAP: dict[str, tuple[int, int, bool]] = {
 _TRANSPOSE_LOAD_MAP: dict[str, tuple[str, int, int, int]] = {
     # suffix -> (semantic suffix, elem_size, num_elems, transpose kind)
     # elem_size/num_elems describe the raw VGPR result size in dwords.
+    # transpose kind is amdgpu::TransposeKind: TR_B4=1, TR_B6=2,
+    # B64_TR_B8=3 (CDNA4 MFMA layout), TR16_B128=4, B64_TR_B16=5,
+    # WMMA_TR_B8=6 (CDNA5/RDNA4 16x16 matrix layout).
     'B64_TR_B4': ('b4', 4, 2, 1),
     'B96_TR_B6': ('b6', 4, 3, 2),
     'B64_TR_B8': ('b8', 4, 2, 3),
-    'B64_TR_B16': ('b16', 4, 2, 4),
+    'B64_TR_B16': ('b16', 4, 2, 5),
     'TR4_B64': ('b4', 4, 2, 1),
     'TR6_B96': ('b6', 4, 3, 2),
-    'TR8_B64': ('b8', 4, 2, 3),
+    'TR8_B64': ('b8', 4, 2, 6),
     'TR16_B128': ('b16', 4, 4, 4),
-    'TR_B64': ('b8', 4, 2, 3),
+    'TR_B64': ('b8', 4, 2, 6),
     'TR_B128': ('b16', 4, 4, 4),
 }
 
@@ -1771,6 +1894,55 @@ _FLAT_ATOMIC_OPS: dict[str, tuple[str, int]] = {
 }
 
 
+_ATOMIC_TYPE_SUFFIXES = (
+    '_B32',
+    '_U32',
+    '_I32',
+    '_F32',
+    '_B64',
+    '_U64',
+    '_I64',
+    '_F64',
+)
+
+
+def _derive_flat_atomic_info(suffix: str, is_x2: bool) -> tuple[str, int, int] | None:
+    """Return operation, memory element bytes, and source-data dwords.
+
+    Compare-swap carries two memory elements in its source operand payload.
+    Keep that payload width separate from the memory element width so B32
+    compare-swap remains a 4-byte memory operation, while B64 compare-swap
+    copies four source dwords.
+    """
+
+    original_suffix = suffix
+    type_suffix = ''
+    info = _FLAT_ATOMIC_OPS.get(suffix)
+    if not info:
+        for tsuf in _ATOMIC_TYPE_SUFFIXES:
+            if suffix.endswith(tsuf):
+                info = _FLAT_ATOMIC_OPS.get(suffix[: len(suffix) - len(tsuf)])
+                type_suffix = tsuf
+                break
+    if not info:
+        return None
+
+    op, data_dw = info
+    is_64bit = (
+        is_x2
+        or '64' in type_suffix
+        or original_suffix.endswith(('_B64', '_U64', '_I64', '_F64'))
+    )
+    elem_size = 8 if is_64bit else 4
+    if op in ('cmpswap', 'mskor'):
+        data_dw_actual = 2 * (elem_size // 4)
+    elif data_dw == 1:
+        data_dw_actual = elem_size // 4
+    else:
+        data_dw_actual = data_dw
+    return op, elem_size, data_dw_actual
+
+
 def _derive_flat(name: str) -> InstructionSemantics | None:
     """Derive semantics for a FLAT (Flat/Global/Scratch memory) instruction."""
     upper = name.upper()
@@ -1791,31 +1963,9 @@ def _derive_flat(name: str) -> InstructionSemantics | None:
                 is_x2 = suffix.endswith('_X2')
                 if is_x2:
                     suffix = suffix[:-3]
-                # Try exact match first (handles ADD_F32, PK_ADD_F16, etc.).
-                info = _FLAT_ATOMIC_OPS.get(suffix)
-                is_64bit = False
-                if not info:
-                    # Strip type suffix (_B32, _U32, _I32, _F32, _B64, etc.).
-                    for tsuf in (
-                        '_B32',
-                        '_U32',
-                        '_I32',
-                        '_F32',
-                        '_B64',
-                        '_U64',
-                        '_I64',
-                        '_F64',
-                    ):
-                        if suffix.endswith(tsuf):
-                            info = _FLAT_ATOMIC_OPS.get(
-                                suffix[: len(suffix) - len(tsuf)]
-                            )
-                            is_64bit = '64' in tsuf
-                            break
+                info = _derive_flat_atomic_info(suffix, is_x2)
                 if info:
-                    op, data_dw = info
-                    elem_size = 8 if (is_x2 or is_64bit or data_dw >= 2) else 4
-                    data_dw_actual = data_dw * (2 if is_x2 else 1)
+                    op, elem_size, data_dw_actual = info
                     return InstructionSemantics(
                         name,
                         'flat_atomic',
@@ -1913,16 +2063,80 @@ def _derive_flat(name: str) -> InstructionSemantics | None:
     return InstructionSemantics(name, 'nop')
 
 
-_BUFFER_FORMAT_MAP: dict[str, tuple[int, int]] = {
-    'FORMAT_X': (4, 1),
-    'FORMAT_XY': (4, 2),
-    'FORMAT_XYZ': (4, 3),
-    'FORMAT_XYZW': (4, 4),
-    'FORMAT_D16_X': (2, 1),
-    'FORMAT_D16_XY': (2, 2),
-    'FORMAT_D16_XYZ': (2, 3),
-    'FORMAT_D16_XYZW': (2, 4),
+_BUFFER_FORMAT_MAP: dict[str, tuple[int, int, bool]] = {
+    'FORMAT_X': (4, 1, False),
+    'FORMAT_XY': (4, 2, False),
+    'FORMAT_XYZ': (4, 3, False),
+    'FORMAT_XYZW': (4, 4, False),
+    'FORMAT_D16_X': (2, 1, False),
+    'FORMAT_D16_XY': (2, 2, False),
+    'FORMAT_D16_XYZ': (2, 3, False),
+    'FORMAT_D16_XYZW': (2, 4, False),
+    'FORMAT_D16_HI_X': (2, 1, False),
 }
+
+
+def _normalize_buffer_format_suffix(suffix: str) -> str:
+    """Map RDNA3+ ``D16[_HI]_FORMAT_*`` ordering back to legacy ``FORMAT_D16[_HI]_*``."""
+    if suffix.startswith('D16_HI_FORMAT'):
+        return 'FORMAT_D16_HI' + suffix[len('D16_HI_FORMAT') :]
+    if suffix.startswith('D16_FORMAT'):
+        return 'FORMAT_D16' + suffix[len('D16_FORMAT') :]
+    return suffix
+
+
+def _derive_buffer_data(
+    name: str,
+    suffix: str,
+    is_store: bool,
+    typed: bool,
+    typed_format_executable: bool = True,
+) -> InstructionSemantics | None:
+    """Classify a buffer/typed-buffer LOAD/STORE data suffix.
+
+    Untyped (MUBUF) and typed (MTBUF) buffers -- and both under the unified RDNA4
+    ``ENC_VBUFFER`` -- share identical data-layout logic; only the executable
+    class prefix differs (``buffer_*`` vs ``tbuffer_*``).
+
+    D16 FORMAT loads/stores pack two 16-bit components per VGPR. That packed
+    layout is not modeled by the memory pipeline, so they are given dedicated
+    non-executable classes (``buffer_{load,store}_format_d16``) that carry the
+    partial-def metadata (num_elems/elem_size/d16 flags) for liveness without
+    activating incorrect execution. Non-D16 FORMAT (one dword per component) and
+    byte/short/dword data execute correctly and keep their normal classes; the
+    FORMAT variants are modeled as raw dword moves without DFMT/NFMT
+    (data/numeric format) conversion.
+
+    ``typed_format_executable`` gates the executable ``tbuffer_*`` class for
+    non-D16 typed FORMAT ops. Real MTBUF encodings supply mtbuf-style addressing
+    and keep it enabled; RDNA4 folds typed buffers into VBUFFER (mubuf-style
+    addressing, no ``mtbuf_calculate_addresses``), so it is disabled there,
+    leaving non-D16 typed ops unclassified (``nop``) as before -- only the D16
+    typed loads need the partial-def metadata.
+    """
+    normalized = _normalize_buffer_format_suffix(suffix)
+    flat_info = _FLAT_DATA_MAP.get(normalized)
+    fmt_info = None if flat_info else _BUFFER_FORMAT_MAP.get(normalized)
+    info = flat_info or fmt_info
+    if not info:
+        return None
+    esz, ne, se = info
+    if fmt_info is not None and esz == 2:  # D16 FORMAT: packed, metadata-only
+        cls = 'buffer_store_format_d16' if is_store else 'buffer_load_format_d16'
+    elif typed and not typed_format_executable:
+        return None  # non-D16 typed FORMAT under VBUFFER: leave as nop
+    else:
+        base = 'tbuffer' if typed else 'buffer'
+        cls = f'{base}_store' if is_store else f'{base}_load'
+    return InstructionSemantics(
+        name,
+        cls,
+        elem_size=esz,
+        num_elems=ne,
+        sign_extend=se,
+        d16_hi='D16_HI' in normalized,
+        d16_lo='D16' in normalized and 'D16_HI' not in normalized,
+    )
 
 
 def _derive_mubuf(name: str) -> InstructionSemantics | None:
@@ -1946,29 +2160,9 @@ def _derive_mubuf(name: str) -> InstructionSemantics | None:
                 is_x2 = suffix.endswith('_X2')
                 if is_x2:
                     suffix = suffix[:-3]
-                info = _FLAT_ATOMIC_OPS.get(suffix)
-                is_64bit = False
-                if not info:
-                    for tsuf in (
-                        '_B32',
-                        '_U32',
-                        '_I32',
-                        '_F32',
-                        '_B64',
-                        '_U64',
-                        '_I64',
-                        '_F64',
-                    ):
-                        if suffix.endswith(tsuf):
-                            info = _FLAT_ATOMIC_OPS.get(
-                                suffix[: len(suffix) - len(tsuf)]
-                            )
-                            is_64bit = '64' in tsuf
-                            break
+                info = _derive_flat_atomic_info(suffix, is_x2)
                 if info:
-                    op, data_dw = info
-                    elem_size = 8 if (is_x2 or is_64bit or data_dw >= 2) else 4
-                    data_dw_actual = data_dw * (2 if is_x2 else 1)
+                    op, elem_size, data_dw_actual = info
                     return InstructionSemantics(
                         name,
                         'buffer_atomic',
@@ -1979,35 +2173,20 @@ def _derive_mubuf(name: str) -> InstructionSemantics | None:
         return InstructionSemantics(name, 'buffer_atomic')
 
     is_store = '_STORE_' in upper
-    for prefix in ('BUFFER_LOAD_', 'BUFFER_STORE_'):
+    # RDNA4 folds typed buffers into ENC_VBUFFER, which routes here, so accept
+    # TBUFFER_* as well; harmless for pre-RDNA4 MUBUF, which has no such names.
+    for prefix in ('BUFFER_LOAD_', 'BUFFER_STORE_', 'TBUFFER_LOAD_', 'TBUFFER_STORE_'):
         if upper.startswith(prefix):
-            suffix = upper[len(prefix) :]
-            info = _FLAT_DATA_MAP.get(suffix)
-            if info:
-                esz, ne, se = info
-                cls = 'buffer_store' if is_store else 'buffer_load'
-                return InstructionSemantics(
-                    name,
-                    cls,
-                    elem_size=esz,
-                    num_elems=ne,
-                    sign_extend=se,
-                    d16_hi='D16_HI' in suffix,
-                    d16_lo='D16' in suffix and 'D16_HI' not in suffix,
-                )
+            sem = _derive_buffer_data(
+                name,
+                upper[len(prefix) :],
+                is_store,
+                typed=prefix.startswith('TBUFFER'),
+                typed_format_executable=False,
+            )
+            if sem:
+                return sem
     return InstructionSemantics(name, 'nop')
-
-
-_MTBUF_FORMAT_MAP: dict[str, tuple[int, int, bool]] = {
-    'FORMAT_X': (4, 1, False),
-    'FORMAT_XY': (4, 2, False),
-    'FORMAT_XYZ': (4, 3, False),
-    'FORMAT_XYZW': (4, 4, False),
-    'FORMAT_D16_X': (2, 1, False),
-    'FORMAT_D16_XY': (2, 2, False),
-    'FORMAT_D16_XYZ': (2, 3, False),
-    'FORMAT_D16_XYZW': (2, 4, False),
-}
 
 
 def _derive_mtbuf(name: str) -> InstructionSemantics | None:
@@ -2016,20 +2195,9 @@ def _derive_mtbuf(name: str) -> InstructionSemantics | None:
     is_store = '_STORE_' in upper
     for prefix in ('TBUFFER_LOAD_', 'TBUFFER_STORE_'):
         if upper.startswith(prefix):
-            suffix = upper[len(prefix) :]
-            info = _FLAT_DATA_MAP.get(suffix) or _MTBUF_FORMAT_MAP.get(suffix)
-            if info:
-                esz, ne, se = info
-                cls = 'tbuffer_store' if is_store else 'tbuffer_load'
-                return InstructionSemantics(
-                    name,
-                    cls,
-                    elem_size=esz,
-                    num_elems=ne,
-                    sign_extend=se,
-                    d16_hi='D16_HI' in suffix,
-                    d16_lo='D16' in suffix and 'D16_HI' not in suffix,
-                )
+            sem = _derive_buffer_data(name, upper[len(prefix) :], is_store, typed=True)
+            if sem:
+                return sem
     return InstructionSemantics(name, 'nop')
 
 
@@ -2474,6 +2642,9 @@ def derive_all_semantics(isa_spec: IsaSpec) -> SemanticsSpec:
         SemanticsSpec containing all derivable instructions.
     """
     overrides = isa_spec.profile.semantic_overrides if isa_spec.profile else {}
+    class_overrides = (
+        isa_spec.profile.semantic_class_overrides if isa_spec.profile else {}
+    )
     instructions: dict[str, InstructionSemantics] = {}
     for enc in isa_spec.inst_encodings:
         for inst in enc.insts:
@@ -2491,5 +2662,8 @@ def derive_all_semantics(isa_spec: IsaSpec) -> SemanticsSpec:
                 continue
             sem = derive_semantics(inst.name, enc.enc_name)
             if sem is not None:
+                semantic_class = class_overrides.get(inst.name)
+                if semantic_class is not None:
+                    sem = replace(sem, semantic_class=semantic_class)
                 instructions[inst.name] = sem
     return SemanticsSpec(instructions)

@@ -394,6 +394,23 @@ class AMDSMIHelpers:
             outputformat = "csv"
         return outputformat
 
+    @staticmethod
+    def _query_or_na(query, device_handle):
+        """Run a device query, returning "N/A" if the library reports an error."""
+        try:
+            return query(device_handle)
+        except amdsmi_exception.AmdSmiLibraryException:
+            return "N/A"
+
+    def get_gpu_cuid_or_uuid(self, device_handle):
+        """Return the device CUID when available, falling back to the UUID."""
+        identifier = self._query_or_na(amdsmi_interface.amdsmi_get_gpu_device_cuid, device_handle)
+        if identifier == "N/A":
+            identifier = self._query_or_na(
+                amdsmi_interface.amdsmi_get_gpu_device_uuid, device_handle
+            )
+        return identifier
+
     def get_gpu_choices(self):
         """Return dictionary of possible GPU choices and string of the output:
             Dictionary will be in format: gpus[ID] : (BDF, UUID, Device Handle)
@@ -431,11 +448,13 @@ class AMDSMIHelpers:
             max_padding = int(math.log10(len(device_handles))) + 1
 
             for gpu_id, device_handle in enumerate(device_handles):
-                bdf = amdsmi_interface.amdsmi_get_gpu_device_bdf(device_handle)
-                uuid = amdsmi_interface.amdsmi_get_gpu_device_uuid(device_handle)
+                bdf = self._query_or_na(amdsmi_interface.amdsmi_get_gpu_device_bdf, device_handle)
+                uuid = self._query_or_na(amdsmi_interface.amdsmi_get_gpu_device_uuid, device_handle)
+                cuid = self._query_or_na(amdsmi_interface.amdsmi_get_gpu_device_cuid, device_handle)
                 gpu_choices[str(gpu_id)] = {
                     "bdf": bdf,
                     "UUID": uuid,
+                    "CUID": cuid,
                     "Device Handle": device_handle,
                 }
 
@@ -443,7 +462,9 @@ class AMDSMIHelpers:
                     id_padding = max_padding
                 else:
                     id_padding = max_padding - int(math.log10(gpu_id))
-                gpu_choices_str += f"ID: {gpu_id}{' ' * id_padding}| BDF: {bdf} | UUID: {uuid}\n"
+                gpu_choices_str += (
+                    f"ID: {gpu_id}{' ' * id_padding}| BDF: {bdf} | UUID: {uuid} | CUID: {cuid}\n"
+                )
 
             # Add the all option to the gpu_choices
             gpu_choices["all"] = "all"
@@ -617,10 +638,15 @@ class AMDSMIHelpers:
                 bdf = gpu_info["bdf"]
                 is_bdf = True
                 uuid = gpu_info["UUID"]
+                cuid = gpu_info["CUID"]
                 device_handle = gpu_info["Device Handle"]
 
                 # Check if passed gpu is a gpu ID or UUID
-                if gpu_selection == gpu_id or gpu_selection.lower() == uuid:
+                if (
+                    gpu_selection == gpu_id
+                    or gpu_selection.lower() == uuid
+                    or gpu_selection.lower() == cuid
+                ):
                     selected_device_handles.append(device_handle)
                     valid_gpu_choice = True
                     break
@@ -3152,6 +3178,8 @@ class AMDSMIHelpers:
             current_power_cap = self.convert_SI_unit(
                 power_cap_info["power_cap"], AMDSMIHelpers.SI_Unit.MICRO
             )
+            # Setting power cap to 0 reads back the current cap, so the technical minimum is 1
+            min_power_cap = max(min_power_cap, 1)
 
             # Return structured data for JSON/CSV or formatted string for human-readable
             if requested_power_cap == current_power_cap:
@@ -3174,18 +3202,13 @@ class AMDSMIHelpers:
                         "message": f"Unable to set {power_type_key} power cap to {requested_power_cap}W, current value is {current_power_cap}W",
                     }
                 return f"Unable to set {power_type_key} power cap to {requested_power_cap}W, current value is {current_power_cap}W"
-            elif not (
-                min_power_cap < requested_power_cap <= max_power_cap and requested_power_cap > 0
-            ):
-                # setting power cap to 0 will return the current power cap so the technical minimum value is 1
-                min_cap_display = 1 if min_power_cap == 0 else min_power_cap
-
+            elif not min_power_cap <= requested_power_cap <= max_power_cap:
                 # Raise so the caller exits with a non-zero return code
                 raise amdsmi_cli_exceptions.AmdSmiInvalidParameterValueException(
                     sys.argv[1] if len(sys.argv) > 1 else "unknown",
                     f"{requested_power_cap}W",
                     self.get_output_format(),
-                    hint=f"Power cap must be between {min_cap_display}W and {max_power_cap}W",
+                    hint=f"Power cap must be between {min_power_cap}W and {max_power_cap}W",
                 )
             # Set the power cap
             new_power_cap = self.convert_SI_unit(
