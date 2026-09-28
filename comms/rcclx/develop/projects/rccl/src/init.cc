@@ -50,7 +50,6 @@
 #include "archinfo.h"
 #include "param.h"
 #include "nvtx_payload_schemas.h"
-#include "AlgoInit.h"
 #include "rccl_common.h"
 #include "meta/lpcoll/low_precision_common.h"
 #include "utils.h"
@@ -553,7 +552,6 @@ static ncclResult_t commFree(ncclComm_t comm) {
 
   if (comm->memPool) CUDACHECK(cudaMemPoolDestroy(comm->memPool));
 
-  if (comm->algoFactory) comm->algoFactory.reset();
 
   delete[] comm->userRedOps;
 
@@ -2877,10 +2875,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       NCCLCHECKGOTO(ncclDdaIpcCommInit(comm), res, fail);
     }
   }
-
-  // SET A (Meta AlgoFactory) and SET B (AMD in-tree DDA) are mutually exclusive:
-  // RCCL_DDA_ENABLE selects SET B, otherwise SET A handles the DDA collectives.
-  comm->algoFactory = rcclParamDdaEnable() ? nullptr : initAlgoFactory(comm);
 
   // Build the sharded-relay one-shot region now, if it was asked for. Creation
   // is collective, so doing it here is what lets a captured call use the path:

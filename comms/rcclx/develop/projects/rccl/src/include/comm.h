@@ -31,7 +31,6 @@
 #include "recorder.h"
 #include "dda_init_detail.h"
 #include "mem_manager.h"
-#include "comms/common/algorithms/AlgoFactory.cuh"
 #include "meta/lpcoll/low_precision_common.h"
 
 // Meta Ctran lib. Device passes only need the pointer member declaration;
@@ -931,8 +930,6 @@ struct ncclComm {
   struct ncclCeColl ceColl;
   struct ncclIntruQueue<struct ncclCeInitTask, &ncclCeInitTask::next> ceInitTaskQueue;
 
-  // Choose custom collective algorithms
-  std::unique_ptr<meta::comms::AlgoFactoryDev> algoFactory{nullptr};
   // buffer registration cache
   struct ncclRegCache regCache;
   int isAllNvlink;
@@ -1008,8 +1005,8 @@ struct ncclComm {
 };
 
 // These assertions are disabled because ncclComm is no longer a standard-layout type.
-// The addition of C++ standard library types like std::unique_ptr (e.g., ctranComm_,
-// algoFactory, and ctrace) makes offsetof invalid and causes compiler errors (-Winvalid-offsetof).
+// The addition of C++ standard library types like std::unique_ptr (e.g., ctranComm_
+// and ctrace) makes offsetof invalid and causes compiler errors (-Winvalid-offsetof).
 // static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
 // static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t), "endMagic must be the last field of ncclComm");
 

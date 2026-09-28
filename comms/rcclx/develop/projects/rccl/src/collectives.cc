@@ -11,7 +11,6 @@
 #include "graph/topo.h"
 #include "nccl.h"
 #include "api_trace.h"
-#include "AlgoUtils.h"
 #include "nvtx_payload_schemas.h"
 #include "device/hierarchical_shuffle.h"
 #include "dda_all_reduce.h"
@@ -340,26 +339,6 @@ ncclResult_t ncclAllGather_impl(const void* sendbuff, void* recvbuff, size_t sen
     }
   }
 
-#ifdef BUILD_META_INTERNAL
-  if (comm->algoFactory) {
-    auto algo = comm->algoFactory->getAllGatherAlgo(
-        sendbuff,
-        recvbuff,
-        sendcount,
-        meta::comms::ncclToMetaComm(datatype),
-        stream);
-    if (algo) {
-      try {
-        algo->allGather();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom all gather: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
-  }
-#endif
-
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype), datatype));
     // RCCL update slice steps for AllGather if single node
@@ -455,26 +434,6 @@ ncclResult_t ncclAlltoAll_impl(const void* sendbuff, void* recvbuff, size_t coun
           sendbuff, recvbuff, count, datatype, comm, stream);
     }
   }
-
-#ifdef BUILD_META_INTERNAL
-  if (comm->algoFactory) {
-    auto algo = comm->algoFactory->getAllToAllAlgo(
-        sendbuff,
-        recvbuff,
-        count,
-        meta::comms::ncclToMetaComm(datatype),
-        stream);
-    if (algo) {
-      try {
-        algo->allToAll();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom all-to-all: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
-  }
-#endif
 
   NVTX3_FUNC_WITH_PARAMS(AlltoAll, NcclNvtxParamsAlltoAll,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), datatype));
@@ -711,24 +670,6 @@ if (isLowPrecisionFp8E4M3AllReduceEnabled() && (datatype == ncclFloat32 || datat
       sendbuff, recvbuff, count, datatype, op, comm, stream);
 }
 
-  if (comm->algoFactory && op == ncclSum) {
-    auto algo = comm->algoFactory->getAllReduceAlgo(
-        sendbuff,
-        recvbuff,
-        count,
-        meta::comms::ncclToMetaComm(datatype),
-        stream);
-    if (algo) {
-      try {
-        algo->allReduce();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom all reduce: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
-  }
-
   NVTX3_FUNC_WITH_PARAMS(AllReduce, NcclNvtxParamsAllReduce,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), op, datatype));
 
@@ -804,26 +745,6 @@ ncclResult_t ncclAllReduceWithBias_impl(const void* sendbuff, void* recvbuff, si
   if (acc == nullptr) {
     WARN("ncclAllReduceWithBias : acc cannot be nullptr");
     return ncclInvalidArgument;
-  }
-  // The external DDA implementation orders bias accumulation differently from
-  // RCCL. Keep biased reductions on the RCCL kernel path.
-  if (comm->algoFactory && op == ncclSum && acc == nullptr) {
-    auto algo = comm->algoFactory->getAllReduceAlgo(
-        sendbuff,
-        recvbuff,
-        count,
-        meta::comms::ncclToMetaComm(datatype),
-        stream,
-        acc);
-    if (algo) {
-      try {
-        algo->allReduce();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom all reduce: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
   }
   // RCCL update slice steps for AllReduceBias if single node
   // similar to changes made to AllReduce earlier
@@ -1433,26 +1354,6 @@ ncclResult_t ncclReduceScatter_impl(const void* sendbuff, void* recvbuff, size_t
           sendbuff, recvbuff, totalCount, datatype, op, comm, stream);
     }
   }
-
-#ifdef BUILD_META_INTERNAL
-  if (comm->algoFactory && op == ncclSum) {
-    auto algo = comm->algoFactory->getReduceScatterAlgo(
-        sendbuff,
-        recvbuff,
-        recvcount,
-        meta::comms::ncclToMetaComm(datatype),
-        stream);
-    if (algo) {
-      try {
-        algo->reduceScatter();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom reduce scatter: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
-  }
-#endif
 
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op, datatype));
