@@ -336,7 +336,7 @@ resolve_schema_config(const nlohmann::json& config)
                 if(runtimes.contains("shmem") && runtimes["shmem"].contains("enabled") &&
                    runtimes["shmem"]["enabled"].get<bool>())
                 {
-                    result[std::string{ env_vars::USE_SHMEM }] = "true";
+                    result[std::string{ env_vars::USE_OPENSHMEM }] = "true";
                 }
                 if(runtimes.contains("ucx") && runtimes["ucx"].contains("enabled") &&
                    runtimes["ucx"]["enabled"].get<bool>())
@@ -352,6 +352,8 @@ resolve_schema_config(const nlohmann::json& config)
     {
         const auto& output = config["output"];
         resolve_value(result, output, "path", env_vars::OUTPUT_PATH);
+        resolve_value(result, output, "unified_memory_output_path",
+                      env_vars::UNIFIED_MEMORY_OUTPUT_PATH);
         if(output.contains("time_output"))
             resolve_enabled(result, output["time_output"], "enabled",
                             env_vars::TIME_OUTPUT);
@@ -488,7 +490,7 @@ std::string
 expand_rocm_domain_shorthand(const std::string& shorthand)
 {
     using entry = std::pair<std::string_view, std::string_view>;
-    static constexpr std::array<entry, 12> shortcuts = { {
+    static constexpr std::array<entry, 13> shortcuts = { {
         { "hip", "hip_runtime_api" },
         { "hip_runtime", "hip_runtime_api" },
         { "hip_compiler", "hip_compiler_api" },
@@ -501,6 +503,7 @@ expand_rocm_domain_shorthand(const std::string& shorthand)
         { "marker", "marker_api" },
         { "roctx", "marker_api" },
         { "rccl", "rccl_api" },
+        { "hipfile", "hipfile_api" },
     } };
 
     auto it = std::find_if(shortcuts.begin(), shortcuts.end(),
@@ -824,7 +827,7 @@ export_domain_parallel(nlohmann::json&                           config,
         { env_vars::USE_OMPT, "openmp" },
         { env_vars::USE_KOKKOSP, "kokkos" },
         { env_vars::USE_RCCLP, "rccl" },
-        { env_vars::USE_SHMEM, "shmem" },
+        { env_vars::USE_OPENSHMEM, "shmem" },
         { env_vars::USE_UCX, "ucx" },
     } };
 
@@ -880,6 +883,8 @@ env_vars_to_json_schema(const std::map<std::string, std::string>& env_map)
     export_domain_parallel(config, env_map);
 
     export_string_value(config, env_map, env_vars::OUTPUT_PATH, "output", "path");
+    export_string_value(config, env_map, env_vars::UNIFIED_MEMORY_OUTPUT_PATH, "output",
+                        "unified_memory_output_path");
     export_enabled(config, env_map, env_vars::TIME_OUTPUT, "output", "time_output");
     export_enabled(config, env_map, env_vars::FILE_OUTPUT, "output", "file_output");
     export_enabled(config, env_map, env_vars::USE_ROCPD, "output", "rocpd_output");
