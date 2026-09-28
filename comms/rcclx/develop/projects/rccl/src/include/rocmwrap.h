@@ -73,7 +73,9 @@
 
 // HIP: implemented in rma_proxy_launch.cc (hipStreamBatchMemOp + old-HIP fallback).
 // CUDA: implemented in cudawrap.cc (cuStreamBatchMemOp).
+#if ROCM_VERSION >= 60400
 ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps, CUstreamBatchMemOpParams* batchParams);
+#endif
 
 // Re-declare the DMA-BUF export entry as a weak reference. hsa_init,
 // hsa_system_get_info and hsa_status_string are required and resolve as hard

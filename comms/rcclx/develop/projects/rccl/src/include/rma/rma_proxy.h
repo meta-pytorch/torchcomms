@@ -258,6 +258,7 @@ ncclResult_t ncclRmaProxyWaitBuildDesc(struct ncclComm* comm, struct ncclRmaProx
                                        struct ncclRmaProxyDesc* desc);
 
 // Stream-batch memop param builders for put descriptors.
+#if ROCM_VERSION >= 60400
 int ncclRmaProxyPutStartNumOps(bool persistent);
 ncclResult_t ncclRmaProxyPutStartParams(struct ncclRmaProxyDesc* desc, CUstreamBatchMemOpParams* params);
 int ncclRmaProxyPutDoneNumOps(bool persistent);
@@ -273,6 +274,7 @@ ncclResult_t ncclRmaProxyPutGroupDoneParams(struct ncclRmaProxyDesc* desc, CUstr
 int ncclRmaProxyWaitNumStreamOps(const struct ncclRmaProxyDesc* desc);
 ncclResult_t ncclRmaProxyWaitParams(struct ncclRmaProxyCtx* rmaProxyCtx, struct ncclRmaProxyDesc* desc,
                                     CUstreamBatchMemOpParams* params);
+#endif
 
 // Descriptor enqueue dispatcher.
 ncclResult_t ncclRmaProxyEnqueueDesc(struct ncclRmaProxyCtx* rmaProxyCtx, struct ncclRmaProxyDesc** desc);
