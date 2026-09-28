@@ -399,6 +399,32 @@ void validatePeerReachability(
   }
 }
 
+/// An NVL domain is a clique of mutually peer-accessible devices, and the
+/// multicast object backing it admits each device exactly once, so a
+/// communicator cannot place two ranks on one GPU. Say so directly: the domain
+/// builders would otherwise report it as a broken adjacency relation, which
+/// describes the symptom rather than the cause.
+void rejectSharedDevices(
+    const std::vector<CanonicalRankTopologyInfo>& rankInfo) {
+  const int nRanks = static_cast<int>(rankInfo.size());
+  for (int first = 0; first < nRanks; ++first) {
+    const auto& firstInfo = rankInfo[static_cast<std::size_t>(first)];
+    for (int second = first + 1; second < nRanks; ++second) {
+      const auto& secondInfo = rankInfo[static_cast<std::size_t>(second)];
+      if (firstInfo.cudaDevice == secondInfo.cudaDevice &&
+          fixedStringView(firstInfo.hostname) ==
+              fixedStringView(secondInfo.hostname)) {
+        throw std::runtime_error(
+            "TopologyDiscovery: ranks " + std::to_string(first) + " and " +
+            std::to_string(second) + " both use CUDA device " +
+            std::to_string(firstInfo.cudaDevice) + " on host " +
+            std::string{fixedStringView(firstInfo.hostname)} +
+            "; a communicator requires one rank per GPU");
+      }
+    }
+  }
+}
+
 template <typename AdjacentFn>
 std::vector<std::vector<int>> buildValidatedDomains(
     int nRanks,
@@ -864,11 +890,14 @@ CanonicalTopologyResult TopologyDiscovery::classifyCanonical(
   if (topoConfig.p2pDisable ||
       topoConfig.domainMode == TopologyDomainMode::kNoLocal) {
     baseDomains = buildSingletonDomains(nRanks);
-  } else if (fabricActive) {
-    baseDomains = buildFabricDomains(
-        rankInfo, peerReachability, topoConfig.mnnvlTrunkDisable);
   } else {
-    baseDomains = buildPhysicalDomains(rankInfo, peerReachability);
+    rejectSharedDevices(rankInfo);
+    if (fabricActive) {
+      baseDomains = buildFabricDomains(
+          rankInfo, peerReachability, topoConfig.mnnvlTrunkDisable);
+    } else {
+      baseDomains = buildPhysicalDomains(rankInfo, peerReachability);
+    }
   }
 
   auto ranksByDomain = applyDomainMode(baseDomains, nRanks, topoConfig);

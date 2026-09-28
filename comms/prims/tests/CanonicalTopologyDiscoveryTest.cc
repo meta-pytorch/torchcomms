@@ -22,6 +22,7 @@ namespace {
 
 using meta::comms::testing::MockBootstrap;
 using ::testing::_;
+using ::testing::HasSubstr;
 using ::testing::InSequence;
 
 CanonicalTopologyPolicyWire makePolicy(const CanonicalTopologyConfig& config) {
@@ -736,6 +737,47 @@ TEST(CanonicalTopologyDiscoveryTest, NoLocalSkipsPeerAccessProbe) {
 
   EXPECT_EQ(result.ranksByDomain, (std::vector<std::vector<int>>{{0}, {1}}));
   EXPECT_TRUE(result.mptTopology.nvlPeerRanks.empty());
+}
+
+TEST(CanonicalTopologyDiscoveryTest, RejectsTwoRanksOnOneDevice) {
+  constexpr int kNRanks = 2;
+  const CanonicalTopologyConfig config;
+  auto first = makeCanonicalRank(0, "host-a", config);
+  auto second = makeCanonicalRank(1, "host-a", config);
+  second.cudaDevice = first.cudaDevice;
+  auto reachability = identityReachability(kNRanks);
+  connect(reachability, kNRanks, 0, 1);
+  TopologyDiscovery discovery;
+
+  try {
+    discovery.classifyCanonical(
+        /*myRank=*/0, kNRanks, {first, second}, reachability, config);
+    FAIL() << "expected two ranks on one device to be rejected";
+  } catch (const std::runtime_error& error) {
+    EXPECT_THAT(error.what(), HasSubstr("one rank per GPU"));
+    EXPECT_THAT(error.what(), HasSubstr("ranks 0 and 1"));
+  }
+}
+
+// Without local domains there is no clique to satisfy, so sharing a GPU is
+// none of topology discovery's business.
+TEST(CanonicalTopologyDiscoveryTest, NoLocalPermitsTwoRanksOnOneDevice) {
+  constexpr int kNRanks = 2;
+  const CanonicalTopologyConfig config{
+      .domainMode = TopologyDomainMode::kNoLocal};
+  auto first = makeCanonicalRank(0, "host-a", config);
+  auto second = makeCanonicalRank(1, "host-a", config);
+  second.cudaDevice = first.cudaDevice;
+  TopologyDiscovery discovery;
+
+  const auto result = discovery.classifyCanonical(
+      /*myRank=*/0,
+      kNRanks,
+      {first, second},
+      identityReachability(kNRanks),
+      config);
+
+  EXPECT_EQ(result.ranksByDomain, (std::vector<std::vector<int>>{{0}, {1}}));
 }
 
 } // namespace
