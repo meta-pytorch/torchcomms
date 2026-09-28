@@ -1322,6 +1322,85 @@ TEST(SpdlogLoggerTest, ShutdownWaitsForActiveLeaseAndRejectsNewLeases) {
       "synchronous log while shutdown waits for lease");
 }
 
+/*
+ * Production exits with the async pool live and worker threads still logging:
+ * NCCL proxy, CollTrace, and watchdog threads outlive into __cxa_atexit. The
+ * exit-time CommsLoggingStopper must then drain and join the pool without
+ * tripping over in-flight posts. Explicit-shutdown tests cannot cover this:
+ * they destroy the pool before exit handlers run, so the stopper finds
+ * nothing to do. Regression test for mccl_e2e-mfvsq1sv, where every rank
+ * died at exit with "free(): invalid size" inside ~thread_pool.
+ */
+TEST(SpdlogLoggerTest, ExitTimeShutdownWithLivePoolAndActiveLoggers) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  constexpr char kLogPathEnvironmentVariable[] =
+      "COMMS_SPDLOG_EXIT_SHUTDOWN_LOG_PATH";
+  const bool isDeathTestChild =
+      !GTEST_FLAG_GET(internal_run_death_test).empty();
+  std::optional<ScopedTestFile> logFile;
+  std::optional<ScopedEnvironmentVariable> logPathEnvironment;
+  if (!isDeathTestChild) {
+    logFile.emplace("comms_spdlog_exit_shutdown.log");
+    logPathEnvironment.emplace(
+        kLogPathEnvironmentVariable, logFile->path().string());
+  }
+  const char* logPathValue = std::getenv(kLogPathEnvironmentVariable);
+  ASSERT_NE(logPathValue, nullptr);
+  const std::string logPath{logPathValue};
+
+  EXPECT_EXIT(
+      {
+        // A live error callback so ERR records exercise the callback path
+        // during the exit drain (delivery itself is covered by other tests).
+        meta::comms::logger::configureSpdlogLogger(
+            meta::comms::logger::kCommsLoggerName,
+            "EXIT",
+            logPath,
+            []() { return 0; },
+            [](std::string_view) {},
+            true);
+        getSpdlogLogger().set_level(spdlog::level::info);
+
+        // Background loggers left running at exit, like NCCL threads that
+        // outlive into __cxa_atexit. They are intentionally never joined:
+        // exit handlers must race their in-flight async posts.
+        std::atomic<bool> keepLogging{true};
+        std::vector<std::thread> backgroundLoggers;
+        for (int index = 0; index < 4; ++index) {
+          backgroundLoggers.emplace_back([&, index]() {
+            int count = 0;
+            while (keepLogging.load(std::memory_order_relaxed)) {
+              COMMS_LOG(INFO, "background record {} {}", index, count++);
+              if ((count % 100) == 0) {
+                COMMS_LOG(WARN, "background warning {} {}", index, count);
+              }
+              if ((count % 500) == 0) {
+                COMMS_LOG(ERR, "background error {} {}", index, count);
+              }
+            }
+          });
+        }
+        // Flush churn: production flushes around teardown; race it with exit.
+        std::thread flusher{[&]() {
+          while (keepLogging.load(std::memory_order_relaxed)) {
+            getSpdlogLogger().flush();
+          }
+        }};
+        flusher.detach();
+        // Burst from the main thread so the pool is draining at exit.
+        for (int index = 0; index < 500; ++index) {
+          COMMS_LOG(INFO, "main burst record {}", index);
+        }
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0),
+      "");
+  // The exit-time drain must have delivered records, not merely survived.
+  // overrun_oldest may drop individual burst records under the background
+  // flood, so this only guards against a vacuous pass, not exact delivery.
+  EXPECT_NE(readFile(logPath).find("record"), std::string::npos);
+}
+
 TEST(SpdlogLoggerTest, FileOpenFailureIncludesPath) {
   constexpr std::string_view kLogPath = "/proc/comms_spdlog_missing/logger.log";
 
