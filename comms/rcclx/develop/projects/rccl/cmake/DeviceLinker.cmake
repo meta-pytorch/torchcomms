@@ -708,7 +708,7 @@ add_custom_command(
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
     ${DL_INHERITED_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALL_REDUCE_FABRIC_FAT_OBJ}
@@ -730,7 +730,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALL_REDUCE_FABRIC_LL_FAT_OBJ}
@@ -749,7 +749,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALL_REDUCE_FABRIC_LL128_FAT_OBJ}
@@ -779,7 +779,7 @@ add_custom_command(
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
     ${DL_INHERITED_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_REDUCE_SCATTER_FABRIC_FAT_OBJ}
@@ -799,7 +799,7 @@ add_custom_command(
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
     ${DL_INHERITED_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALL_GATHER_FABRIC_FAT_OBJ}
@@ -818,7 +818,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALL_GATHER_FABRIC_LL_FAT_OBJ}
@@ -837,7 +837,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALL_GATHER_FABRIC_LL128_FAT_OBJ}
@@ -857,7 +857,7 @@ add_custom_command(
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
     ${DL_INHERITED_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALLTOALL_FABRIC_FAT_OBJ}
@@ -876,7 +876,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALLTOALL_FABRIC_LL_FAT_OBJ}
@@ -895,7 +895,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_ALLTOALL_FABRIC_LL128_FAT_OBJ}
@@ -914,7 +914,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_REDUCE_SCATTER_FABRIC_LL_FAT_OBJ}
@@ -933,7 +933,7 @@ add_custom_command(
     ${_link_def_flags}
     ${_host_inc_flags}
     ${DL_OPT_FLAGS}
-    -std=c++17
+    -std=c++${CMAKE_CXX_STANDARD}
     -fPIC
     -w
     -c -o ${DDA_REDUCE_SCATTER_FABRIC_LL128_FAT_OBJ}
@@ -971,7 +971,7 @@ foreach(_ce_reduce_src IN LISTS _ce_reduce_srcs)
       ${_link_def_flags}
       ${_host_inc_flags}
       ${DL_OPT_FLAGS}
-      -std=c++17
+      -std=c++${CMAKE_CXX_STANDARD}
       -fPIC
       -w
       -c -o ${_ce_reduce_obj}
