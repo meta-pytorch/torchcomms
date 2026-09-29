@@ -9,9 +9,6 @@
 
 using namespace ctran::ibvwrap;
 
-// extern ncclResult_t ncclIbGetGidIndex(struct ibv_context *context, uint8_t
-// portNum, int gidTblLen, int *gidIndex);
-
 namespace ctran::ib {
 
 LocalVirtualConn::LocalVirtualConn(
@@ -58,7 +55,7 @@ LocalVirtualConn::LocalVirtualConn(
       union ibverbx::ibv_gid gid;
 
       auto maybeGid = devices[device].ibvDevice->queryGid(
-          devices[device].port, static_cast<int>(NCCL_IB_GID_INDEX));
+          devices[device].port, devices[device].gidIndex);
       FOLLY_EXPECTED_CHECKTHROW_EX(maybeGid, commLogData_);
       gid = std::move(*maybeGid);
       remoteQpInfo.u.eth.spn = gid.global.subnet_prefix;
@@ -88,7 +85,7 @@ LocalVirtualConn::LocalVirtualConn(
             remoteQpInfo,
             ibvQps_[device],
             NCCL_IB_TC,
-            NCCL_IB_GID_INDEX,
+            devices_[device].gidIndex,
             NCCL_IB_SL),
         commLogData_);
 

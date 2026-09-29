@@ -50,6 +50,8 @@ struct CtranIbDevice {
   ibverbx::IbvCq* ibvCq;
   uint8_t port{0};
   std::string devName;
+  // Resolved per-port source GID index for RoCE QPs; not used for InfiniBand.
+  int gidIndex{-1};
 
   // Max recv WRs the mlx5 provider will place out-of-order per RC QP when
   // MLX5DV_QP_CREATE_OOO_DP is set. Populated from mlx5dv_query_device's
