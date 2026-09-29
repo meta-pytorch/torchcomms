@@ -125,6 +125,29 @@ void testPartitionInterleaved(
     int blockSize,
     SyncScope scope);
 
+// Tests split(first_group_size). Each group's leader records its partition_id
+// and the subgroup's group_id, total_groups and block_id, indexed by the
+// original group_id.
+void testSplit(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t* subgroupBlockIds_d,
+    uint32_t firstGroupSize,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope);
+
+// Tests reduce_sum(). Every thread contributes a distinct 64-bit value and
+// records the sum it gets back, for two back-to-back reductions, indexed by
+// global thread index.
+void testReduceSum(
+    uint64_t* firstSums_d,
+    uint64_t* secondSums_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope);
+
 // =============================================================================
 // Multiwarp Tests (4 warps = 128 threads per group)
 // =============================================================================

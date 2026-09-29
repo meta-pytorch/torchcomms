@@ -26,6 +26,7 @@
 #endif
 #include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyOp.cuh"
+#include "comms/prims/core/CopyOpFeedback.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
@@ -3658,6 +3659,56 @@ class P2pIbgdaTransportDevice {
     }
     return pipeline_window() /
         static_cast<std::size_t>(channelLayout_.pipelineDepth);
+  }
+
+  /**
+   * nic_send_backlog - RDMA bytes posted through the send ring that the NIC
+   * has not yet completed, summed over every channel of this transport.
+   *
+   * Derived from the existing CQ completion tickets, so it needs no companion
+   * QPs: every recorded put adds its write length to its channel's
+   * `sendPostedBytes`, and a ring slot's bytes move to `sendCompletedBytes`
+   * when all its lanes have completed. A channel's completed count only
+   * advances when its own block checks completion (slot reuse, or this call),
+   * so other channels' values may lag and the sum can overstate the backlog.
+   * To keep the caller's own channel exact, the leader first retires any of
+   * `group.group_id`'s slots whose lanes have completed, without blocking.
+   *
+   * Group-collective: every thread of `group` must call it, and all receive
+   * the same value. `group.group_id` must be the channel this group sends on.
+   */
+  __device__ __forceinline__ NicSendBacklog
+  nic_send_backlog(ThreadGroup& group) {
+    const uint32_t numChannels = static_cast<uint32_t>(localChannels_.size());
+    if (numChannels == 0) {
+      return NicSendBacklog{};
+    }
+    if (group.is_leader() && group.group_id < numChannels) {
+      IbLocalChannel& own = localChannels_[group.group_id];
+      ib_refresh_send_slots(
+          own,
+          own.protos[0].sendCompletionSlots,
+          channelLayout_.pipelineDepth,
+          send_completion_lane_count(),
+          [&](uint32_t lane, uint64_t ticket) {
+            return is_local_completion_ready(
+                group.group_id,
+                IbLocalCompletionTicket{.completionId = lane, .value = ticket});
+          });
+    }
+    group.sync();
+    uint64_t pending = 0;
+    for (uint32_t c = group.thread_id_in_group; c < numChannels;
+         c += group.group_size) {
+      const uint64_t posted =
+          ib_read_send_bytes(localChannels_[c].sendPostedBytes);
+      const uint64_t completed =
+          ib_read_send_bytes(localChannels_[c].sendCompletedBytes);
+      pending += posted > completed ? posted - completed : 0;
+    }
+    return NicSendBacklog{
+        .pending_bytes = static_cast<std::size_t>(group.reduce_sum(pending)),
+        .valid = true};
   }
 
  private:

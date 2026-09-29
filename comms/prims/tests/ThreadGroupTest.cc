@@ -2,7 +2,9 @@
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "comms/common/CudaWrap.h"
@@ -1130,6 +1132,153 @@ INSTANTIATE_TEST_SUITE_P(
             .testName = "Cluster_SmallConfig_TwoPartitions"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
+    });
+
+// =============================================================================
+// Split / reduce_sum Tests
+// =============================================================================
+
+namespace {
+
+template <typename T>
+std::vector<T> copyToHost(const T* src_d, std::size_t count) {
+  std::vector<T> out(count);
+  CUDACHECK_TEST(
+      cudaMemcpy(out.data(), src_d, count * sizeof(T), cudaMemcpyDeviceToHost));
+  return out;
+}
+
+struct SplitTestParams {
+  uint32_t firstGroupSize;
+  SyncScope scope;
+  std::string testName;
+};
+
+} // namespace
+
+class ThreadGroupSplitTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<SplitTestParams> {};
+
+// Groups [0, firstGroupSize) form partition 0 and the rest partition 1, each
+// renumbered from 0. Every subgroup keeps the physical block it runs on, which
+// is what IBGDA QP selection keys on; with 8 blocks both halves include
+// groups from nonzero blocks.
+TEST_P(ThreadGroupSplitTest, Split) {
+  const auto& params = GetParam();
+  constexpr int kNumBlocks = 8;
+  constexpr int kBlockSize = 256;
+  const uint32_t groupsPerBlock = params.scope == SyncScope::WARP
+      ? kBlockSize / comms::device::kWarpSize
+      : 1;
+  const uint32_t totalGroups = kNumBlocks * groupsPerBlock;
+
+  DeviceBuffer partitionIds(totalGroups * sizeof(uint32_t));
+  DeviceBuffer subgroupIds(totalGroups * sizeof(uint32_t));
+  DeviceBuffer subgroupTotals(totalGroups * sizeof(uint32_t));
+  DeviceBuffer subgroupBlocks(totalGroups * sizeof(uint32_t));
+  auto* partitionIds_d = static_cast<uint32_t*>(partitionIds.get());
+  auto* subgroupIds_d = static_cast<uint32_t*>(subgroupIds.get());
+  auto* subgroupTotals_d = static_cast<uint32_t*>(subgroupTotals.get());
+  auto* subgroupBlocks_d = static_cast<uint32_t*>(subgroupBlocks.get());
+
+  test::testSplit(
+      partitionIds_d,
+      subgroupIds_d,
+      subgroupTotals_d,
+      subgroupBlocks_d,
+      params.firstGroupSize,
+      kNumBlocks,
+      kBlockSize,
+      params.scope);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const uint32_t first = std::min(params.firstGroupSize, totalGroups);
+  std::vector<uint32_t> expectedPartitionIds(totalGroups);
+  std::vector<uint32_t> expectedSubgroupIds(totalGroups);
+  std::vector<uint32_t> expectedTotals(totalGroups);
+  std::vector<uint32_t> expectedBlocks(totalGroups);
+  for (uint32_t g = 0; g < totalGroups; ++g) {
+    const bool inFirst = g < first;
+    expectedPartitionIds[g] = inFirst ? 0 : 1;
+    expectedSubgroupIds[g] = inFirst ? g : g - first;
+    expectedTotals[g] = inFirst ? first : totalGroups - first;
+    expectedBlocks[g] = g / groupsPerBlock;
+  }
+
+  EXPECT_EQ(copyToHost(partitionIds_d, totalGroups), expectedPartitionIds);
+  EXPECT_EQ(copyToHost(subgroupIds_d, totalGroups), expectedSubgroupIds);
+  EXPECT_EQ(copyToHost(subgroupTotals_d, totalGroups), expectedTotals);
+  EXPECT_EQ(copyToHost(subgroupBlocks_d, totalGroups), expectedBlocks);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    SplitConfigs,
+    ThreadGroupSplitTest,
+    ::testing::Values(
+        SplitTestParams{0, SyncScope::BLOCK, "Block_AllSecond"},
+        SplitTestParams{3, SyncScope::BLOCK, "Block_Middle"},
+        SplitTestParams{8, SyncScope::BLOCK, "Block_AllFirst"},
+        SplitTestParams{100, SyncScope::BLOCK, "Block_Clamped"},
+        SplitTestParams{21, SyncScope::WARP, "Warp_MidBlock"}),
+    [](const ::testing::TestParamInfo<SplitTestParams>& info) {
+      return info.param.testName;
+    });
+
+class ThreadGroupReduceSumTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<SyncScope> {};
+
+// Every thread must get its own group's total, for values wider than 32 bits,
+// with neighbouring groups in one block (WARP / MULTIWARP) not mixing, and a
+// second reduction right after the first must not read a stale shared slot.
+TEST_P(ThreadGroupReduceSumTest, EveryThreadGetsGroupSum) {
+  const SyncScope scope = GetParam();
+  constexpr int kNumBlocks = 4;
+  constexpr int kBlockSize = 512;
+  constexpr std::size_t kThreads = kNumBlocks * kBlockSize;
+  const std::size_t groupSize = scope == SyncScope::WARP
+      ? comms::device::kWarpSize
+      : (scope == SyncScope::MULTIWARP ? kMultiwarpSize : kBlockSize);
+
+  DeviceBuffer firstSums(kThreads * sizeof(uint64_t));
+  DeviceBuffer secondSums(kThreads * sizeof(uint64_t));
+  auto* firstSums_d = static_cast<uint64_t*>(firstSums.get());
+  auto* secondSums_d = static_cast<uint64_t*>(secondSums.get());
+
+  test::testReduceSum(firstSums_d, secondSums_d, kNumBlocks, kBlockSize, scope);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> expectedFirst(kThreads);
+  std::vector<uint64_t> expectedSecond(kThreads);
+  for (std::size_t base = 0; base < kThreads; base += groupSize) {
+    uint64_t first = 0;
+    uint64_t second = 0;
+    for (uint64_t t = base; t < base + groupSize; ++t) {
+      first += (t << 33) + 1;
+      second += t + 7;
+    }
+    std::fill_n(expectedFirst.begin() + base, groupSize, first);
+    std::fill_n(expectedSecond.begin() + base, groupSize, second);
+  }
+
+  EXPECT_EQ(copyToHost(firstSums_d, kThreads), expectedFirst);
+  EXPECT_EQ(copyToHost(secondSums_d, kThreads), expectedSecond);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceSumScopes,
+    ThreadGroupReduceSumTest,
+    ::testing::Values(SyncScope::WARP, SyncScope::MULTIWARP, SyncScope::BLOCK),
+    [](const ::testing::TestParamInfo<SyncScope>& info) {
+      switch (info.param) {
+        case SyncScope::WARP:
+          return std::string("Warp");
+        case SyncScope::MULTIWARP:
+          return std::string("Multiwarp");
+        default:
+          return std::string("Block");
+      }
     });
 
 // =============================================================================

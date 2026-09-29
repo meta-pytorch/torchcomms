@@ -17,6 +17,7 @@ namespace {
 
 struct PrepareSendSlotProbeChannel {
   IbSendCompletionSlot sendCompletionSlots[1];
+  IbLocalChannel channel;
 };
 
 class PrepareSendSlotProbeTransport {
@@ -53,6 +54,10 @@ class PrepareSendSlotProbeTransport {
       const comms::fault_tolerance::AbortDevice& abort) {
     observation_->confirmationReason = static_cast<uint32_t>(abort.reason());
     return false;
+  }
+
+  __device__ IbLocalChannel& local_channel(uint32_t /*channelId*/) {
+    return slot_->channel;
   }
 
   __device__ const PrepareSendSlotProbeChannel& slot() const {
