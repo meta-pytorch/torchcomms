@@ -491,6 +491,52 @@ __global__ void twoCallSendThenRecvKernel(
       group, recvBytes + firstBytes, secondBytes, maxSignalBytes, abortDevice);
 }
 
+__global__ void readSendBacklogKernel(
+    P2pIbgdaTransportDevice* transport,
+    uint64_t* out,
+    int numChannels,
+    bool refresh) {
+  auto group = make_block_group();
+  NicSendBacklog backlog{};
+  if (refresh) {
+    constexpr int kMaxPolls = 5'000'000;
+    for (int i = 0; i < kMaxPolls; ++i) {
+      backlog = transport->nic_send_backlog(group);
+      if (!backlog.valid || backlog.pending_bytes == 0) {
+        break;
+      }
+    }
+  }
+  if (blockIdx.x != 0 || !group.is_leader()) {
+    return;
+  }
+  out[0] = backlog.valid ? 1 : 0;
+  out[1] = backlog.pending_bytes;
+  for (int c = 0; c < numChannels; ++c) {
+    const IbLocalChannel& channel = transport->local_channel(c);
+    out[2 + c] = ib_read_send_bytes(channel.sendPostedBytes);
+    out[2 + numChannels + c] = ib_read_send_bytes(channel.sendCompletedBytes);
+  }
+}
+
+void readSendBacklog(
+    P2pIbgdaTransportDevice* transport,
+    uint64_t* out,
+    int numChannels,
+    bool refresh) {
+  cudaError_t err =
+      cudaMemset(out, 0, (2 + 2 * numChannels) * sizeof(uint64_t));
+  if (err == cudaSuccess) {
+    readSendBacklogKernel<<<refresh ? numChannels : 1, 128>>>(
+        transport, out, numChannels, refresh);
+    err = cudaGetLastError();
+  }
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("readSendBacklog failed: ") + cudaGetErrorString(err));
+  }
+}
+
 void testSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,

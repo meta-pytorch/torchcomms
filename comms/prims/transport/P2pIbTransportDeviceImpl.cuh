@@ -233,7 +233,8 @@ __device__ __forceinline__ void record_send_completion(
     uint32_t channelId,
     uint32_t slotId,
     uint64_t generation,
-    const IbLocalCompletionTicket& ticket);
+    const IbLocalCompletionTicket& ticket,
+    std::size_t bytes = 0);
 
 template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_send_progress(
@@ -1397,7 +1398,8 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint32_t>(groupId),
             ringSlot,
             pipelineCycle,
-            completion);
+            completion,
+            copyResult);
       }
       if (group.broadcast<uint32_t>(putPosted) == 0U) {
         break;
@@ -1594,7 +1596,8 @@ __device__ __forceinline__ void send_impl(
               static_cast<uint32_t>(groupId),
               slot,
               pipelineCycle,
-              completion);
+              completion,
+              bytesThis);
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceBookkeepingEnd,
@@ -2877,6 +2880,10 @@ template <typename P, typename Transport>
       slot.laneMask = pending;
       if (pending == 0) {
         slot.generation = generation;
+        if (slot.bytes != 0) {
+          ib_credit_retired_send_slot(
+              transport.local_channel(group.group_id), slot);
+        }
       } else {
         unretired = 1U;
       }
@@ -2885,13 +2892,16 @@ template <typename P, typename Transport>
   return group.broadcast<uint32_t>(unretired) != 0U;
 }
 
+// `bytes` is the put's RDMA write length, counted by nic_send_backlog(). Only
+// native send() passes it; other producers leave it 0 and do no extra work.
 template <typename P, typename Transport>
 __device__ __forceinline__ void record_send_completion(
     Transport& transport,
     uint32_t channelId,
     uint32_t slotId,
     uint64_t generation,
-    const IbLocalCompletionTicket& ticket) {
+    const IbLocalCompletionTicket& ticket,
+    std::size_t bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if (!ticket.posted) {
     return;
@@ -2901,12 +2911,16 @@ __device__ __forceinline__ void record_send_completion(
   slot.generation = generation;
   slot.values[ticket.completionId] = ticket.value;
   slot.laneMask |= 1ULL << ticket.completionId;
+  if (bytes != 0) {
+    ib_record_send_bytes(transport.local_channel(channelId), slot, bytes);
+  }
 #else
   (void)transport;
   (void)channelId;
   (void)slotId;
   (void)generation;
   (void)ticket;
+  (void)bytes;
 #endif
 }
 
@@ -2927,9 +2941,10 @@ __device__ __forceinline__ void record_send_completion(
     uint32_t channelId,
     uint32_t slotId,
     uint64_t generation,
-    const IbLocalCompletionTicket& ticket) {
+    const IbLocalCompletionTicket& ticket,
+    std::size_t bytes = 0) {
   record_send_completion<protocol::Simple>(
-      transport, channelId, slotId, generation, ticket);
+      transport, channelId, slotId, generation, ticket, bytes);
 }
 } // namespace detail
 
