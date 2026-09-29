@@ -1871,6 +1871,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
     } else {
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, expected.size()));
     }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 0) {
@@ -1885,6 +1886,48 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
     }
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      std::vector<uint8_t> actual(expected.size());
+      CUDACHECK_TEST(cudaMemcpy(
+          actual.data(),
+          localDataBuf.ptr,
+          actual.size(),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(actual, expected);
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, expected.size()));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    comms::fault_tolerance::Abort abort(/*enabled=*/true);
+    std::unique_ptr<DeviceBuffer> postedCountBuffer;
+    if (globalRank == 0) {
+      postedCountBuffer = std::make_unique<DeviceBuffer>(sizeof(uint32_t));
+      CUDACHECK_TEST(cudaMemset(postedCountBuffer->get(), 0, sizeof(uint32_t)));
+      test::testBurstPutAndFlushWithAbort(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          kBytesPerPut,
+          numBurstPuts,
+          abort.getDeviceHandle(),
+          static_cast<uint32_t*>(postedCountBuffer->get()));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      uint32_t postedCount = 0U;
+      CUDACHECK_TEST(cudaMemcpy(
+          &postedCount,
+          postedCountBuffer->get(),
+          sizeof(postedCount),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(postedCount, static_cast<uint32_t>(numBurstPuts));
+      EXPECT_FALSE(abort.isAborted());
+      EXPECT_FALSE(abort.isTimedOut());
+    }
 
     if (globalRank == 1) {
       std::vector<uint8_t> actual(expected.size());
