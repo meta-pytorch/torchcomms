@@ -572,9 +572,18 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   });
 
   if (!ibv_path.empty()) {
+    // No fallback when a caller named a provider explicitly.
     ibvhandle = dlopen(ibv_path.c_str(), RTLD_NOW);
-  }
-  if (!ibvhandle) {
+    if (!ibvhandle) {
+      const char* dlErr = dlerror();
+      CTRAN_LOG(
+          ERR,
+          "Failed to open requested libibverbs {} - {}",
+          ibv_path,
+          dlErr ? dlErr : "unknown");
+      return 1;
+    }
+  } else {
     ibvhandle = dlopen("libibverbs.so.1", RTLD_NOW);
     if (!ibvhandle) {
       CTRAN_LOG(ERR, "Failed to open libibverbs.so.1");
