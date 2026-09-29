@@ -2858,6 +2858,9 @@ cvars:
      cthierarchical_ring - MCCL-owned hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
      ctmdirect - MCCL-native direct algorithm (Prims-native): NVL ReduceScatter + flat rail-based inter-node IB + NVL AllGather
 
+     MUST be identical on every rank and is read once when the communicator is
+     created; later changes do not affect an existing communicator.
+
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum
    default     : orig
@@ -3366,10 +3369,11 @@ cvars:
      collective always outranks the tuner for it, so setting this alone leaves
      the tuner unreachable. MCCL_ALGO=none is what yields the selection to it.
 
-     Even then the tuner decides only for communicators that reach it:
-     NCCL_ALLREDUCE_ALGO left at `orig`, and ppn == 1 (the shape every table was
-     swept in). Anything else is untouched, and off is not a degraded mode --
-     it is today's behaviour.
+     The tuner chooses the algorithm only when NCCL_ALLREDUCE_ALGO remains
+     `orig` and ppn == 1 (the shape every table was swept in). A legacy Tree or
+     Ring selection keeps its pinned algorithm but may accept a matching tuner
+     protocol. Other legacy selections are untouched, and off is not a degraded
+     mode -- it is today's behaviour.
 
      MUST be identical on every rank -- ranks that disagree would select
      different algorithms and DEADLOCK. Read once when the communicator is
