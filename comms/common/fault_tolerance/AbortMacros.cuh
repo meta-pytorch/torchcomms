@@ -51,7 +51,7 @@ namespace comms::fault_tolerance::detail {
  * argument and is consumed by the trailing `%s`.
  *
  * This no longer emits the first-writer marker. `abort.check()` reaches
- * `markTimedOutIfExpired`, which records the reason through
+ * `deviceCheckExpiredSlow`, which records the reason through
  * `detail::deviceTrySetAbort` and logs the transition from inside it, so by the
  * time `flippedHere` comes back true the line has already been printed. All
  * this adds is where the abort was noticed.
