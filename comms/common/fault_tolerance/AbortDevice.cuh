@@ -204,13 +204,24 @@ deviceCompareExchangeSystem(int* value, int* expected, int desired) {
 #endif
 }
 
+template <typename T>
+__device__ __forceinline__ void deviceStoreRelaxedSystem(T* value, T desired) {
+#ifdef __HIP_PLATFORM_AMD__
+  __atomic_store_n(value, desired, __ATOMIC_RELAXED);
+#else
+  cuda::atomic_ref<T, cuda::thread_scope_system>{*value}.store(
+      desired, cuda::memory_order_relaxed);
+#endif
+}
+
 __device__ __forceinline__ void publishContextReady(AbortState* state) {
   int expected = 0;
   (void)deviceCompareExchangeSystem(&state->contextReady, &expected, 1);
 }
 
 /**
- * Emits the device first-writer line for a transition this call just won.
+ * Records the origin of a transition this call just won, publishes readiness,
+ * and emits the device first-writer line.
  *
  * Every device path that takes `AbortState::abort` from `NONE` to a terminal
  * reason ends here -- `AbortDevice::setAbort`, `AbortFlag::setAbort`, and the
@@ -218,17 +229,37 @@ __device__ __forceinline__ void publishContextReady(AbortState* state) {
  * `deviceTrySetAbort`. There is no second emitter, so the marker has one
  * spelling and one field list, and counting it counts transitions.
  *
+ * The origin stores live here rather than in `deviceTrySetAbort` because that
+ * function is `__forceinline__` and sits under `checkExpired()`, which is
+ * inlined into every FT wait loop. See the linkage comment above: cold code
+ * that leaks into this path is paid for in registers across the whole kernel.
+ * Folding `publishContextReady` in as well leaves the caller's CAS-win branch
+ * as a single out-of-line call, which is less inlined footprint than before.
+ *
  * `FT_ABORT_CHECK` adds a separate `FT_ABORT_SITE_` line carrying the caller's
  * message and source location. That is an observation, not a transition, so it
  * deliberately does not reuse this marker.
  */
-COMMS_FT_ABORT_LOG_LINKAGE void deviceLogFirstWriter(
+COMMS_FT_ABORT_LOG_LINKAGE void deviceRecordOriginAndLog(
+    AbortState* state,
     AbortReason reason,
-    const char* context) {
+    const char* context,
+    AbortSite site,
+    int originPeer) {
+  // Ordered ahead of `publishContextReady`: that is the release a host reader
+  // gates on, so origin stored after it would be readable while still holding
+  // its constructor default.
+  deviceStoreRelaxedSystem(&state->originSite, static_cast<int>(site));
+  deviceStoreRelaxedSystem(&state->originPeer, originPeer);
+  publishContextReady(state);
+  // `context` stays last: it is free-form and may contain spaces, so anything
+  // after it is unparseable.
   // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
   printf(
-      FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
+      FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d site=%d peer=%d context=%s\n",
       static_cast<int>(reason),
+      static_cast<int>(site),
+      originPeer,
       context == nullptr ? "" : context);
 }
 
@@ -251,11 +282,20 @@ COMMS_FT_ABORT_LOG_LINKAGE void deviceLogFirstWriter(
  * mapped pinned state, which is the one read this whole path exists to avoid.
  * It is written on every path that returns, including the two that never reach
  * the CAS, so the caller does not have to pre-initialize it to read it safely.
+ *
+ * `site` and `originPeer` deliberately have no defaults, unlike their
+ * counterparts on `AbortDevice::setAbort` and `AbortFlag::setAbort`. All three
+ * callers already pass them, so defaults would buy nothing, and their absence
+ * is what keeps `observed` safe to leave last: a caller that forgets them and
+ * passes `&observed` in the wrong slot fails to compile rather than shifting
+ * the argument list. Add a default here and that protection is gone.
  */
 __device__ __forceinline__ bool deviceTrySetAbort(
     AbortState* state,
     AbortReason newReason,
     const char* context,
+    AbortSite site,
+    int originPeer,
     AbortReason* observed = nullptr) {
   if (observed != nullptr) {
     *observed = AbortReason::NONE;
@@ -273,10 +313,11 @@ __device__ __forceinline__ bool deviceTrySetAbort(
   const bool won = deviceCompareExchangeSystem(
       &state->abort, &expected, static_cast<int>(newReason));
   if (won) {
-    // Device context is intentionally not persisted in mapped host state, so
-    // the winner completes the readiness protocol immediately.
-    publishContextReady(state);
-    deviceLogFirstWriter(newReason, context);
+    // Device context is intentionally not persisted in mapped host state;
+    // `site` and `originPeer` are, and are the structured origin a device
+    // abort carries in its place. The callee also completes the readiness
+    // protocol, keeping this branch a single out-of-line call.
+    deviceRecordOriginAndLog(state, newReason, context, site, originPeer);
   } else if (observed != nullptr) {
     // The CAS wrote back what it found, so this costs no extra read.
     *observed = static_cast<AbortReason>(expected);
@@ -545,14 +586,20 @@ struct AbortDevice final {
    * only transitions the shared state from `NONE`, so later writers cannot
    * overwrite the first terminal reason. `context` matches the host API but is
    * never persisted in shared state; device-side diagnostics may consume it at
-   * the winning callsite without adding mapped-memory traffic.
+   * the winning callsite without adding mapped-memory traffic. `site` and
+   * `originPeer` are persisted, and are what a host reader sees in `AbortInfo`
+   * for a device-originated abort. A wait that knows which rank it is blocked
+   * on should pass it; `kNoAbortPeer` is for waits that genuinely have none.
    *
    * Returns whether this call performed the `NONE` to terminal transition.
    */
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
-      const char* context = nullptr) const {
-    return detail::deviceTrySetAbort(state_, newReason, context);
+      const char* context = nullptr,
+      AbortSite site = AbortSite::DEVICE,
+      int originPeer = kNoAbortPeer) const {
+    return detail::deviceTrySetAbort(
+        state_, newReason, context, site, originPeer);
   }
 
  private:
@@ -646,6 +693,8 @@ struct AbortDevice final {
             state_,
             AbortReason::TIMED_OUT,
             kDeadlineExpiredContext,
+            AbortSite::DEVICE_DEADLINE,
+            kNoAbortPeer,
             &observed)) {
       if (flippedHere != nullptr) {
         *flippedHere = true;
@@ -762,8 +811,11 @@ struct AbortFlag final {
    */
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
-      const char* context = nullptr) const {
-    return detail::deviceTrySetAbort(state_, newReason, context);
+      const char* context = nullptr,
+      AbortSite site = AbortSite::DEVICE,
+      int originPeer = kNoAbortPeer) const {
+    return detail::deviceTrySetAbort(
+        state_, newReason, context, site, originPeer);
   }
 
   /**
