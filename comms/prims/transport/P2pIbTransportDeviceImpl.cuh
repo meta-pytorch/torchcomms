@@ -3,7 +3,6 @@
 #pragma once
 
 #include <type_traits>
-#include <utility>
 
 #include "comms/common/fault_tolerance/AbortMacros.cuh"
 #include "comms/prims/core/LLImpl.cuh"
@@ -15,6 +14,7 @@
 namespace comms::prims {
 
 namespace detail {
+
 // Query whether a CopyOp policy is variable-size (e.g. AnsCompress, which
 // produces a data-dependent compressed payload and needs the variable-size
 // transport protocol). Policies that don't declare `kVariableSize` (Memcpy,
@@ -111,6 +111,7 @@ struct Simple {
   static constexpr int kProtoSlot = 0;
   static constexpr std::size_t kData = 16; // protocol alignment quantum
   static constexpr std::size_t kPacketBytes = 16; // wire == payload
+  static constexpr bool kUsesDataReadySignal = true;
   __host__ __device__ static constexpr std::size_t max_payload(
       std::size_t wireBytes) {
     return wireBytes;
@@ -139,6 +140,7 @@ struct LL {
   using Packet = LlxPacket<4, 4>;
   static constexpr std::size_t kData = Packet::kData;
   static constexpr std::size_t kPacketBytes = Packet::kPacketBytes;
+  static constexpr bool kUsesDataReadySignal = false;
   __host__ __device__ static std::size_t max_payload(std::size_t wireBytes) {
     return Packet::max_payload(wireBytes);
   }
@@ -345,8 +347,10 @@ __device__ __forceinline__ void wait_recv_data_ready(
     ThreadGroup solo{
         0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
     transport.wait_signal(solo, laneBuf, expected, abortDevice);
-    protoSlot.recvLaneExpected[lane] = expected;
-    ++localChannel.recvDataReadyLaneCursor;
+    if (!abortDevice.checkExpired()) {
+      protoSlot.recvLaneExpected[lane] = expected;
+      ++localChannel.recvDataReadyLaneCursor;
+    }
   }
   group.sync();
 #else
@@ -670,7 +674,9 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* recvTraceContext,
     const PipesTraceAllReduceContext* sendTraceContext,
+    bool& abandoned,
     Args... args) {
+  abandoned = false;
   (void)recvFlagVal;
   (void)fwdFlagVal;
 #if PIPES_IS_DEVICE_COMPILE
@@ -702,6 +708,10 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
       recvDataReady,
       recvWaitCredit,
       abortDevice);
+  if (groupAborted(group, abortDevice)) {
+    abandoned = true;
+    return SendSignal{};
+  }
   if (group.is_leader()) {
     trace_allreduce_event(
         recvTraceContext,
@@ -723,14 +733,9 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     // still be reading this staging. Staging over it is the memory hazard the
     // retirement guard exists to prevent, so stop before CopyOp::forward.
     //
-    // An empty signal is the "nothing to piggyback" value -- the same one the
-    // host-compile arm below returns. On this Simple overload the success path
-    // always returns a real `fwdRemoteChannel.dataReady`, so an empty `buf` is
-    // an unambiguous "this chunk was abandoned" marker for the caller; on LL it
-    // is the normal case, which is why the caller tests it only for Simple.
-    //
     // `prepare_send_slot()` broadcasts its verdict, so this return is
     // group-uniform and barrier-safe.
+    abandoned = true;
     return SendSignal{};
   }
   if (group.is_leader()) {
@@ -828,7 +833,9 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* recvTraceContext,
     const PipesTraceAllReduceContext* sendTraceContext,
+    bool& abandoned,
     Args... args) {
+  abandoned = false;
   using P = LlxPacket<4, 4>;
   static_assert(
       has_forwardLL_v<CopyOp, P>,
@@ -861,7 +868,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
         static_cast<unsigned long long>(recvFlagVal),
         static_cast<unsigned long long>(payloadBytes));
     if (group.all(stop)) {
-      break;
+      abandoned = true;
+      return SendSignal{};
     }
   }
   if (group.is_leader()) {
@@ -887,27 +895,7 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     // Slot not retired -- same memory hazard the Simple overload guards
     // against: the NIC may still be reading this staging, so stop before
     // CopyOp::forwardLL writes over it.
-    //
-    // KNOWN GAP, deferred to a follow-up: this abandonment is not reported
-    // precisely to the caller. Simple marks it with an empty SendSignal, but
-    // LL's success path returns an empty signal too (the inline flag IS the
-    // readiness mark), so forward_impl's `if constexpr (Simple)` test cannot
-    // cover us. That leaves only its `groupAborted()` break, which is amortized
-    // behind `nextPollCycles_` and so can answer false on the very iteration
-    // this guard fired -- exactly the staleness the Simple empty-signal test
-    // exists to close.
-    //
-    // The consequence is worse than a stall and is FAULT_TOLERANCE.md
-    // principle 4: continuing would ACK the predecessor for a chunk we never
-    // consumed and hand the successor a fused DATA_READY for data we never
-    // wrote, releasing two correctly-blocked peers and stopping them reaching
-    // their own deadlines -- one rank's abort silently suppressing fault
-    // detection on the rest.
-    //
-    // The guard still belongs here: dropping it would stage over live NIC
-    // reads, which is silent data corruption rather than a detection gap. The
-    // fix is a precise out-param (the `bool& abandoned` idiom LLImpl already
-    // uses in load_ready_payload) plus an LL arm in forward_impl's test.
+    abandoned = true;
     return SendSignal{};
   }
   if (group.is_leader()) {
@@ -1365,6 +1353,9 @@ __device__ __forceinline__ void send_impl(
             protocolStreamEnd - pipelineBytes,
             abortDevice);
       }
+      if (groupAborted(group, abortDevice)) {
+        break;
+      }
 
       // (4) Leader-only RDMA put with fused signal. The put length is the
       //     compressed size; DATA_READY advances by the reserved wire stride so
@@ -1374,6 +1365,7 @@ __device__ __forceinline__ void send_impl(
       //     system scope before the WQE is posted (only the leader pays the
       //     system fence).
       group.sync();
+      uint32_t putPosted = 1U;
       if (group.is_leader()) {
         __threadfence_system();
         if (copyResult > chunkStride) {
@@ -1389,16 +1381,17 @@ __device__ __forceinline__ void send_impl(
         }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-        const auto completion = transport.put(
-            solo,
-            channelLayout.sendStagingBuf.subBuffer(stagingOff),
-            remoteChannel.recvStaging.subBuffer(stagingOff),
-            copyResult,
-            remoteChannel.dataReady,
-            protocolBytesThis,
-            /*counterBuf=*/{},
-            /*counterVal=*/0,
-            /*signalPerLane=*/true);
+        const auto completion =
+            transport
+                .template put_staged<protocol::Simple::kUsesDataReadySignal>(
+                    solo,
+                    channelLayout.sendStagingBuf.subBuffer(stagingOff),
+                    remoteChannel.recvStaging.subBuffer(stagingOff),
+                    copyResult,
+                    remoteChannel.dataReady,
+                    protocolBytesThis,
+                    abortDevice);
+        putPosted = completion.posted ? 1U : 0U;
         record_send_completion<Proto>(
             transport,
             static_cast<uint32_t>(groupId),
@@ -1406,7 +1399,9 @@ __device__ __forceinline__ void send_impl(
             pipelineCycle,
             completion);
       }
-      group.sync();
+      if (group.broadcast<uint32_t>(putPosted) == 0U) {
+        break;
+      }
     }
 
     if (group.is_leader()) {
@@ -1516,6 +1511,7 @@ __device__ __forceinline__ void send_impl(
           ? protocolStreamEnd - pipelineBytesWire
           : 0;
       if constexpr (std::is_void_v<IbOps>) {
+        uint32_t putPosted = 1U;
         // (3) Backpressure: wait for receiver to free this byte range's
         //     recvStaging offset. Symmetric with DATA_READY.
         if (slotFreeExpected != 0) {
@@ -1573,16 +1569,16 @@ __device__ __forceinline__ void send_impl(
               PipesTraceEventType::kAllReduceWqeSubmitBegin,
               qpLane,
               bytesThis);
-          const auto completion = transport.put(
-              solo,
-              channelLayout.sendStagingBuf.subBuffer(stagingOff),
-              remoteChannel.recvStaging.subBuffer(stagingOff),
-              bytesThis,
-              sig.buf,
-              sig.val,
-              /*counterBuf=*/{},
-              /*counterVal=*/0,
-              /*signalPerLane=*/true);
+          const auto completion =
+              transport.template put_staged<Proto::kUsesDataReadySignal>(
+                  solo,
+                  channelLayout.sendStagingBuf.subBuffer(stagingOff),
+                  remoteChannel.recvStaging.subBuffer(stagingOff),
+                  bytesThis,
+                  sig.buf,
+                  sig.val,
+                  abortDevice);
+          putPosted = completion.posted ? 1U : 0U;
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceWqeSubmitEnd,
@@ -1605,7 +1601,9 @@ __device__ __forceinline__ void send_impl(
               qpLane,
               protocolBytesThis);
         }
-        group.sync();
+        if (group.broadcast<uint32_t>(putPosted) == 0U) {
+          break;
+        }
       } else {
         if (group.is_leader()) {
           __threadfence_system();
@@ -1908,6 +1906,9 @@ __device__ __forceinline__ void recv_impl(
           localDataReady,
           protocolBytesThis,
           abortDevice);
+      if (groupAborted(group, abortDevice)) {
+        break;
+      }
 
       // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
       CopyOp::recv(
@@ -1920,8 +1921,14 @@ __device__ __forceinline__ void recv_impl(
       group.sync();
 
       // (3) Signal SLOT_FREE to sender (same reserved wire stride).
-      transport.signal(
-          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+      if (!transport.try_signal(
+              group,
+              remoteChannel.slotFree,
+              protocolBytesThis,
+              IbDirection::Recv,
+              abortDevice)) {
+        break;
+      }
     }
 
     if (group.is_leader()) {
@@ -2003,17 +2010,21 @@ __device__ __forceinline__ void recv_impl(
               qpLane,
               protocolBytesThis);
         }
-        transport.signal(
+        const bool posted = transport.try_signal(
             group,
             remoteChannel.slotFree,
             protocolBytesThis,
-            IbDirection::Recv);
+            IbDirection::Recv,
+            abortDevice);
         if (group.is_leader()) {
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceBookkeepingEnd,
               qpLane,
               protocolBytesThis);
+        }
+        if (!posted) {
+          break;
         }
       } else {
         const auto recvToken =
@@ -2322,6 +2333,7 @@ __device__ __forceinline__ void forward_impl(
       // readiness
       //     + fused transform recvStaging -> dst + fwdStaging, returning the
       //     relay SendSignal for the put. Tag-dispatched on Proto.
+      bool abandoned = false;
       const SendSignal sig = prepareForwardBuf<CopyOp>(
           Proto{},
           transport,
@@ -2345,6 +2357,7 @@ __device__ __forceinline__ void forward_impl(
           abortDevice,
           recvTraceContext,
           sendTraceContext,
+          abandoned,
           args...);
       // The DATA_READY wait inside prepareForwardBuf may have given up, or the
       // fwd slot may not have retired, so this chunk was never written. Forward
@@ -2353,25 +2366,23 @@ __device__ __forceinline__ void forward_impl(
       // successor data that never arrived, releasing two correctly-blocked
       // peers at once.
       //
-      // The empty-signal test is not redundant with `groupAborted()`. That read
-      // is amortized behind `nextPollCycles_`, so it can still answer false on
-      // the iteration where slot preparation gave up; the signal is derived
-      // from the broadcast verdict itself and cannot be stale. Simple only --
-      // LL returns an empty signal on its success path.
-      if constexpr (std::is_same_v<Proto, protocol::Simple>) {
-        if (sig.buf.ptr == nullptr) {
-          break;
-        }
+      // LL success legitimately carries no out-of-band signal, so slot
+      // retirement refusal needs a result independent of `SendSignal`.
+      if (abandoned) {
+        break;
       }
       if (groupAborted(group, abortDevice)) {
         break;
       }
 
-      transport.signal(
-          group,
-          recvRemoteChannel.slotFree,
-          recvProtocolBytesThis,
-          IbDirection::Recv);
+      if (!transport.try_signal(
+              group,
+              recvRemoteChannel.slotFree,
+              recvProtocolBytesThis,
+              IbDirection::Recv,
+              abortDevice)) {
+        break;
+      }
 
       // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
       //     recvStaging).
@@ -2401,6 +2412,7 @@ __device__ __forceinline__ void forward_impl(
       }
 
       // (6) Leader-only RDMA put via the forwarding transport.
+      uint32_t putPosted = 1U;
       if (group.is_leader()) {
         trace_allreduce_event(
             sendTraceContext,
@@ -2427,16 +2439,16 @@ __device__ __forceinline__ void forward_impl(
             PipesTraceEventType::kAllReduceWqeSubmitBegin,
             qpLane,
             bytesThis);
-        const auto completion = fwdTransport.put(
-            solo,
-            fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
-            fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
-            bytesThis,
-            sig.buf,
-            sig.val,
-            /*counterBuf=*/{},
-            /*counterVal=*/0,
-            /*signalPerLane=*/true);
+        const auto completion =
+            fwdTransport.template put_staged<Proto::kUsesDataReadySignal>(
+                solo,
+                fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+                fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
+                bytesThis,
+                sig.buf,
+                sig.val,
+                abortDevice);
+        putPosted = completion.posted ? 1U : 0U;
         trace_allreduce_event(
             sendTraceContext,
             PipesTraceEventType::kAllReduceWqeSubmitEnd,
@@ -2459,7 +2471,9 @@ __device__ __forceinline__ void forward_impl(
             qpLane,
             fwdProtocolBytesThis);
       }
-      group.sync();
+      if (group.broadcast<uint32_t>(putPosted) == 0U) {
+        break;
+      }
     } else {
       const auto recvToken = ibOps->wait_recv(
           transport, group, recvProtocolBytesThis, abortDevice);
