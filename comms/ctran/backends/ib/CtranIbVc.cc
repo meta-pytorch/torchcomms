@@ -565,7 +565,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
     if (this->linkLayer_ == ibverbx::IBV_LINK_LAYER_ETHERNET) {
       union ibverbx::ibv_gid gid;
       auto maybeGid = devices_[device].ibvDevice->queryGid(
-          devices_[device].port, NCCL_IB_GID_INDEX);
+          devices_[device].port, devices_[device].gidIndex);
       FOLLY_EXPECTED_CHECK(maybeGid);
       gid = std::move(*maybeGid);
       busCard->u.eth.spns[device] = gid.global.subnet_prefix;
@@ -710,21 +710,21 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
       remoteQpInfo,
       *ibvControlQp_,
       NCCL_CTRAN_IB_CTRL_TC,
-      NCCL_IB_GID_INDEX,
+      devices_[ctrlDevice].gidIndex,
       NCCL_IB_SL));
   remoteQpInfo.qpn = remoteBusCardStruct->notifQpn;
   FOLLY_EXPECTED_CHECK(rtrQp(
       remoteQpInfo,
       *ibvNotifyQp_,
       NCCL_CTRAN_IB_CTRL_TC,
-      NCCL_IB_GID_INDEX,
+      devices_[ctrlDevice].gidIndex,
       NCCL_IB_SL));
   remoteQpInfo.qpn = remoteBusCardStruct->atomicQpn;
   FOLLY_EXPECTED_CHECK(rtrQp(
       remoteQpInfo,
       *ibvAtomicQp_,
       NCCL_CTRAN_IB_CTRL_TC,
-      NCCL_IB_GID_INDEX,
+      devices_[ctrlDevice].gidIndex,
       NCCL_IB_SL));
   /* Then, set QP to RTR state for data QPs*/
   for (int i = 0; i < maxNumQps_; i++) {
@@ -745,7 +745,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
         remoteQpInfo,
         ibvDataQps_.at(i),
         trafficClass_,
-        NCCL_IB_GID_INDEX,
+        devices_[device].gidIndex,
         NCCL_IB_SL));
   }
 

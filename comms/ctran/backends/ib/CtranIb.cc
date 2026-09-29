@@ -449,7 +449,6 @@ void CtranIb::init(
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
-  bool foundPort = false;
   this->comm = comm;
   this->rank = rank;
   this->abortCtrl_ = comm ? comm->getAbort() : abortCtrl;
@@ -503,7 +502,16 @@ void CtranIb::init(
         this->commDesc);
   }
 
+  if (NCCL_IB_GID_INDEX == -1 &&
+      (NCCL_IB_ROCE_VERSION_NUM != 2 ||
+       (!NCCL_IB_ADDR_FAMILY.empty() && NCCL_IB_ADDR_FAMILY != "AF_INET"))) {
+    CTRAN_LOG(
+        WARN,
+        "CTRAN-IB: auto GID selection prefers RoCE v2 and IPv4; NCCL_IB_ROCE_VERSION_NUM and NCCL_IB_ADDR_FAMILY do not control this path. Set NCCL_IB_GID_INDEX explicitly for a different policy.");
+  }
+
   for (int device = 0; device < numNics; ++device) {
+    bool foundPort = false;
     const size_t singletonDevIdx = firstIbvDevice + device;
     devices[device].ibvDevice = &s->ibvDevices[singletonDevIdx];
     devices[device].ibvPd = &s->getIbvPd(singletonDevIdx);
@@ -537,6 +545,14 @@ void CtranIb::init(
           port == s->ibvDevices[singletonDevIdx].port()) {
         devices[device].port = port;
         devices[device].devName = s->ibvDevices[singletonDevIdx].device()->name;
+        if (portAttr.link_layer == ibverbx::IBV_LINK_LAYER_ETHERNET) {
+          auto gidIndex = devices[device].ibvDevice->resolveRoceGidIndex(
+              devices[device].port,
+              portAttr,
+              static_cast<int>(NCCL_IB_GID_INDEX));
+          FOLLY_EXPECTED_CHECKTHROW_EX(gidIndex, ncclLogData);
+          devices[device].gidIndex = *gidIndex;
+        }
         foundPort = true;
         break;
       }
@@ -584,9 +600,10 @@ void CtranIb::init(
       CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
-          "CTRAN-IB: using device {}, port {} commHash {:x} commDesc {}",
+          "CTRAN-IB: using device {}, port {}, gidIndex {} commHash {:x} commDesc {}",
           s->ibvDevices[singletonDevIdx].device()->name,
           devices[device].port,
+          devices[device].gidIndex,
           commHash,
           commDesc);
     } else {
