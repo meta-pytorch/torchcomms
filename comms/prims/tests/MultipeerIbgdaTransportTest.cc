@@ -3851,6 +3851,135 @@ TEST_F(
 }
 
 // =============================================================================
+// Send backlog from CQ completion tickets (nic_send_backlog)
+//
+// Companion QPs stay off (the default). Every native send() put adds its RDMA
+// write length to its channel's posted bytes, and a ring slot's bytes move to
+// completed bytes once all its lanes' CQ tickets have completed. Right after
+// an op, the last ring slots are still recorded but not retired, so completed
+// trails posted. One nic_send_backlog() call per channel retires them, after
+// which completed must equal posted, posted must equal the payload sent (not
+// the flow-control stream, which pads every op to a slot boundary), and the
+// backlog must read 0. 2 QP lanes per NIC exercise multi-lane slots.
+// =============================================================================
+
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    SendBacklogTracksCompletedRdmaBytes) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+  // Not a multiple of perBlockSlot, so each op carries tail padding.
+  constexpr std::size_t nbytes = 3ULL * 1024 * 1024 + 48;
+  constexpr int kIterations = 3;
+  constexpr std::size_t maxSignalBytes = 64 * 1024;
+  constexpr std::size_t dataBufferSize = 4ULL * 1024 * 1024;
+  constexpr int numBlocks = 4;
+  constexpr int blockSize = 128;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const bool isSender = globalRank == 0;
+
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = dataBufferSize / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = 2,
+        .qpsPerConnection = 2,
+    };
+    ASSERT_FALSE(config.enableCompanionQP);
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    auto transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+    DeviceBuffer buffer(nbytes);
+    DeviceBuffer errorCountBuf(sizeof(int));
+    DeviceBuffer snapshotBuf((2 + 2 * numBlocks) * sizeof(uint64_t));
+    auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+    auto* d_snapshot = static_cast<uint64_t*>(snapshotBuf.get());
+    auto readSnapshot = [&](bool refresh) {
+      test::readSendBacklog(peerTransportPtr, d_snapshot, numBlocks, refresh);
+      std::vector<uint64_t> snapshot(2 + 2 * numBlocks);
+      CUDACHECK_TEST(cudaMemcpy(
+          snapshot.data(),
+          d_snapshot,
+          snapshot.size() * sizeof(uint64_t),
+          cudaMemcpyDeviceToHost));
+      return snapshot;
+    };
+
+    for (int iter = 0; iter < kIterations; ++iter) {
+      SCOPED_TRACE(::testing::Message() << "iteration=" << iter);
+      const uint8_t testPattern = static_cast<uint8_t>(0x21 + iter);
+      if (isSender) {
+        test::fillBufferWithPattern(
+            buffer.get(), nbytes, testPattern, numBlocks, blockSize);
+      } else {
+        CUDACHECK_TEST(cudaMemset(buffer.get(), 0, nbytes));
+      }
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testSendRecv(
+          peerTransportPtr,
+          buffer.get(),
+          nbytes,
+          maxSignalBytes,
+          isSender,
+          numBlocks,
+          blockSize);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+      if (isSender) {
+        const uint64_t sentPerChannel = (iter + 1) * nbytes;
+        const std::vector<uint64_t> expectedPosted(numBlocks, sentPerChannel);
+
+        const auto before = readSnapshot(/*refresh=*/false);
+        EXPECT_EQ(
+            std::vector<uint64_t>(
+                before.begin() + 2, before.begin() + 2 + numBlocks),
+            expectedPosted);
+        for (int c = 0; c < numBlocks; ++c) {
+          EXPECT_LT(before[2 + numBlocks + c], sentPerChannel)
+              << "channel " << c << ": the op's last slots should be unretired";
+        }
+
+        const auto after = readSnapshot(/*refresh=*/true);
+        EXPECT_EQ(after[0], 1) << "backlog must be valid";
+        EXPECT_EQ(after[1], 0) << "backlog must drain";
+        EXPECT_EQ(
+            std::vector<uint64_t>(
+                after.begin() + 2, after.begin() + 2 + numBlocks),
+            expectedPosted);
+        EXPECT_EQ(
+            std::vector<uint64_t>(after.begin() + 2 + numBlocks, after.end()),
+            expectedPosted);
+      } else {
+        CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+        test::verifyBufferPattern(
+            buffer.get(),
+            nbytes,
+            testPattern,
+            d_errorCount,
+            numBlocks,
+            blockSize);
+        int h_errorCount = 0;
+        CUDACHECK_TEST(cudaMemcpy(
+            &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+        EXPECT_EQ(h_errorCount, 0);
+      }
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+// =============================================================================
 // Reset Signal Test - Tests resetting signals for reuse
 // =============================================================================
 
