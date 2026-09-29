@@ -20,6 +20,10 @@ class IbvVirtualQp;
 // ctranx, prims and uniflow-light, none of which populate ncclx cvars before
 // this runs. Point it at //comms/ctran/ibverbx/ib_injection to inject verbs
 // failures or completion skew.
+//
+// A set-but-unloadable path is an ERROR, not a fallback to libibverbs.so.1:
+// loading a different provider than the caller named and still succeeding is
+// indistinguishable from never having asked for one.
 Status ibvInit();
 
 // Get a completion event from the completion channel
