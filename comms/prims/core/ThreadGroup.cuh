@@ -5,6 +5,7 @@
 #include <cooperative_groups.h>
 #include <cuda_runtime.h>
 #include <cstdint>
+#include <type_traits>
 
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/DeviceConstants.cuh"
@@ -374,6 +375,84 @@ struct ThreadGroup {
   }
 
   /**
+   * reduce_sum - Sum one value per thread across the group
+   *
+   * Returns the total to EVERY thread in the group (no separate broadcast
+   * needed), so callers can branch on it without diverging.
+   *
+   * Mechanism per scope:
+   * - THREAD:    returns val
+   * - WARP:      warp shuffle butterfly (register-level, no shared memory)
+   * - MULTIWARP / BLOCK: warp shuffle, then one shared slot per warp-in-block,
+   *   then every thread re-adds this group's slice of those slots. The shared
+   *   array is indexed by warp-in-BLOCK id, so several MULTIWARP groups in one
+   *   block use disjoint slots and a BLOCK group simply owns all of them.
+   * - CLUSTER:   not supported (traps), matching broadcast().
+   *
+   * Requires `group_size` to be a multiple of the warp size for the
+   * MULTIWARP/BLOCK path (true for every factory here except THREAD).
+   *
+   * The trailing sync() mirrors broadcast()'s double-sync: it stops a thread
+   * racing ahead into a subsequent reduce_sum() and overwriting a slot others
+   * have not read yet.
+   *
+   * NOTE: the __shared__ variable uses a fixed name for the same reason
+   * broadcast()'s does — CUDA deduplicates __shared__ variables in inline
+   * functions by name, so all call sites in a kernel share one allocation.
+   *
+   * @param val This thread's contribution
+   * @return The group-wide sum, identical on every thread
+   */
+  template <typename T>
+  __device__ inline T reduce_sum(T val) {
+    static_assert(
+        std::is_integral_v<T> && sizeof(T) <= sizeof(uint64_t),
+        "reduce_sum accumulates in uint64_t; only integral T up to 64 bits");
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    if (scope == SyncScope::THREAD) {
+      return val;
+    }
+    if (scope == SyncScope::CLUSTER) {
+      printf("ThreadGroup::reduce_sum: CLUSTER scope not yet supported\n");
+      __trap();
+      return val;
+    }
+    // Intra-warp butterfly: every lane ends up with the warp's total.
+    uint64_t v = static_cast<uint64_t>(val);
+    for (unsigned offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+      v += shfl_xor(v, offset);
+    }
+    if (scope == SyncScope::WARP) {
+      return static_cast<T>(v);
+    }
+
+    // Max warps per block = 2048 / 32 (see kMaxMultiwarpsPerBlock's rationale).
+    constexpr uint32_t kMaxWarpsPerBlock = 2048 / kWarpSize;
+    __shared__ uint64_t __tg_reduce_scratch[kMaxWarpsPerBlock];
+    const uint32_t tid_in_block = threadIdx.x + threadIdx.y * blockDim.x +
+        threadIdx.z * blockDim.x * blockDim.y;
+    const uint32_t lane = thread_id_in_group % kWarpSize;
+    const uint32_t warp_in_block = tid_in_block / kWarpSize;
+    // First warp-in-block belonging to THIS group, derived from the group's
+    // own thread numbering so MULTIWARP subgroups stay disjoint.
+    const uint32_t first_warp = (tid_in_block - thread_id_in_group) / kWarpSize;
+    const uint32_t num_warps = (group_size + kWarpSize - 1) / kWarpSize;
+    if (lane == 0) {
+      __tg_reduce_scratch[warp_in_block] = v;
+    }
+    sync();
+    uint64_t total = 0;
+    for (uint32_t w = 0; w < num_warps; ++w) {
+      total += __tg_reduce_scratch[first_warp + w];
+    }
+    sync(); // Prevent a later reduce_sum() overwriting before all threads read
+    return static_cast<T>(total);
+#else
+    return val;
+#endif
+  }
+
+  /**
    * for_each_item_contiguous - Distribute work items using CONTIGUOUS
    * assignment
    *
@@ -515,6 +594,8 @@ struct ThreadGroup {
       DeviceSpan<const uint32_t> weights) const;
   __device__ inline struct PartitionResult partition_interleaved(
       uint32_t num_partitions) const;
+  __device__ inline struct PartitionResult split(
+      uint32_t first_group_size) const;
 
  private:
 #ifdef __CUDACC__
@@ -524,6 +605,23 @@ struct ThreadGroup {
     return __shfl(static_cast<int>(val), srcLane, kWarpSize);
 #else
     return __shfl_sync(0xFFFFFFFFU, val, srcLane);
+#endif
+  }
+
+  // Butterfly (XOR) shuffle for reduce_sum: leaves every lane with the same
+  // reduced value, unlike a down-shuffle which only fills lane 0.
+  __device__ static __forceinline__ uint64_t
+  shfl_xor(uint64_t val, unsigned laneMask) {
+#ifdef __HIP_PLATFORM_AMD__
+    return static_cast<uint64_t>(
+        __shfl_xor(static_cast<long long>(val), laneMask, kWarpSize));
+#else
+    constexpr unsigned kFullWarpMask = 0xFFFFFFFFU;
+    uint32_t low = static_cast<uint32_t>(val);
+    uint32_t high = static_cast<uint32_t>(val >> 32);
+    low = __shfl_xor_sync(kFullWarpMask, low, laneMask);
+    high = __shfl_xor_sync(kFullWarpMask, high, laneMask);
+    return (static_cast<uint64_t>(high) << 32) | low;
 #endif
   }
 
@@ -842,6 +940,42 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
 #else
   return PartitionResult{};
 #endif
+}
+
+/**
+ * split - Divide groups into two parts at a fixed boundary
+ *
+ * Groups [0, first_group_size) become partition 0.
+ * Groups [first_group_size, total_groups) become partition 1.
+ *
+ * Lighter than partition(weights) — no proportional distribution,
+ * just a comparison and subtraction.
+ *
+ * If first_group_size == 0, all groups go to partition 1.
+ * If first_group_size >= total_groups, all groups go to partition 0.
+ *
+ * @param first_group_size Number of groups in partition 0
+ * @return {partition_id, subgroup} for this group
+ */
+__device__ inline PartitionResult ThreadGroup::split(
+    uint32_t first_group_size) const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  uint32_t clamped =
+      first_group_size < total_groups ? first_group_size : total_groups;
+  uint32_t pid = (group_id < clamped) ? 0u : 1u;
+  uint32_t new_group_id = (pid == 0) ? group_id : group_id - clamped;
+  uint32_t new_total = (pid == 0) ? clamped : total_groups - clamped;
+  return PartitionResult{
+      .partition_id = pid,
+      .subgroup = ThreadGroup{
+          .thread_id_in_group = thread_id_in_group,
+          .group_size = group_size,
+          .group_id = new_group_id,
+          .block_id = block_id,
+          .total_groups = new_total,
+          .scope = scope}};
+#endif
+  return PartitionResult{};
 }
 
 /**

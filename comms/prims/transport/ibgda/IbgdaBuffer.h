@@ -610,6 +610,9 @@ struct IbSendCompletionSlot {
   uint64_t generation{0};
   uint64_t laneMask{0};
   uint64_t values[kIbMaxQpLanesPerChannelDirection]{};
+  // RDMA bytes of the puts recorded here and not yet retired; credited to
+  // IbLocalChannel::sendCompletedBytes once every lane has completed.
+  uint64_t bytes{0};
 };
 
 struct IbQpState {
@@ -682,12 +685,90 @@ struct IbLocalChannel {
   IbQpState recvQp;
   uint64_t recvDataReadyLaneCursor{0};
 
+  // Send-side byte accounting behind nic_send_backlog(): bytes posted by puts
+  // recorded in the ring-slot completion records, and bytes of those records
+  // since retired. Both are channel-level because every protocol on a channel
+  // shares one set of records. Written only by the channel's owning leader
+  // (one plain 64-bit store each) and read by other blocks.
+  unsigned long long sendPostedBytes{0};
+  unsigned long long sendCompletedBytes{0};
+
   IbChannelProtoSlot protos[kNumProtoSlots];
 };
 
 // Built on the host and cudaMemcpy'd to the device, so it must stay trivially
 // copyable.
 static_assert(std::is_trivially_copyable_v<IbLocalChannel>);
+
+#if defined(__CUDACC__) || defined(__HIPCC__)
+// Single-writer publish of a byte count other blocks read with
+// ib_read_send_bytes(). An aligned 64-bit store cannot tear, and unlike
+// atomicExch it does not stall the leader on a round trip, which is
+// measurable per small put.
+__device__ __forceinline__ void ib_publish_send_bytes(
+    unsigned long long& counter,
+    unsigned long long value) {
+  *reinterpret_cast<volatile unsigned long long*>(&counter) = value;
+}
+
+__device__ __forceinline__ unsigned long long ib_read_send_bytes(
+    const unsigned long long& counter) {
+  return *reinterpret_cast<const volatile unsigned long long*>(&counter);
+}
+
+// Leader-only: a put of `bytes` was recorded in `slot`.
+__device__ __forceinline__ void ib_record_send_bytes(
+    IbLocalChannel& channel,
+    IbSendCompletionSlot& slot,
+    uint64_t bytes) {
+  slot.bytes += bytes;
+  ib_publish_send_bytes(
+      channel.sendPostedBytes, channel.sendPostedBytes + bytes);
+}
+
+// Leader-only: every lane of `slot` has completed.
+__device__ __forceinline__ void ib_credit_retired_send_slot(
+    IbLocalChannel& channel,
+    IbSendCompletionSlot& slot) {
+  if (slot.bytes != 0) {
+    ib_publish_send_bytes(
+        channel.sendCompletedBytes, channel.sendCompletedBytes + slot.bytes);
+    slot.bytes = 0;
+  }
+}
+
+// Leader-only, non-blocking: retire every ring slot of `channel` whose
+// recorded lanes have all completed, and credit slots another retirement path
+// (e.g. the progress API) already cleared without crediting.
+// `laneReady(lane, ticketValue)` polls one lane's completion. Leaves
+// `generation` alone, so a later prepare_send_slot() just finds an empty mask.
+template <typename LaneReady>
+__device__ __forceinline__ void ib_refresh_send_slots(
+    IbLocalChannel& channel,
+    IbSendCompletionSlot* slots,
+    int pipelineDepth,
+    uint32_t numLanes,
+    LaneReady laneReady) {
+  for (int s = 0; slots != nullptr && s < pipelineDepth; ++s) {
+    IbSendCompletionSlot& slot = slots[s];
+    uint64_t pending = slot.laneMask;
+    if (pending == 0) {
+      ib_credit_retired_send_slot(channel, slot);
+      continue;
+    }
+    for (uint32_t lane = 0; lane < numLanes; ++lane) {
+      const uint64_t laneBit = 1ULL << lane;
+      if ((pending & laneBit) != 0 && laneReady(lane, slot.values[lane])) {
+        pending &= ~laneBit;
+      }
+    }
+    slot.laneMask = pending;
+    if (pending == 0) {
+      ib_credit_retired_send_slot(channel, slot);
+    }
+  }
+}
+#endif
 
 struct IbRemoteChannel {
   IbgdaRemoteBuffer dataReady;

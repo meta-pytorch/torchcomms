@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <type_traits>
 
+#include "comms/prims/core/CopyOpFeedback.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/core/SmemTile.cuh"
@@ -259,11 +260,27 @@ __host__ __device__ __forceinline__ constexpr std::size_t alignInputBufferSize(
       ~(kNvcompInputAlignment - 1ULL);
 }
 
+// Top bit of header[0], set by `AnsCompress::send` when it shipped a sub-chunk
+// as a plain copy instead of ANS (see `AnsCompress::SendArgs`). A real
+// compressed piece size is bounded by `max_comp_chunk_size()` (~1.3x a
+// 256 KiB piece), so bit 63 is free. The receiver picks its decode path from
+// this bit alone, so the sender may decide per sub-chunk.
+inline constexpr unsigned long long kAnsPlainChunkFlag = 1ULL << 63;
+static_assert(
+    sizeof(AnsChunkSizeT) == sizeof(unsigned long long),
+    "kAnsPlainChunkFlag (bit 63) must survive the store into an AnsChunkSizeT header slot");
+
 #ifdef PIPES_ANS_COLLECT_STATS
-// Running totals of uncompressed/compressed bytes seen by AnsCompress::send
-// across all kernel launches since the last fetch-and-reset call.
+// Running byte totals fed by AnsCompress::send / ::recv across all kernel
+// launches since the last fetch-and-reset call.
 //
-// OWNED PER DEVICE-LINK UNIT, via `StatsTag`. These used to be two plain
+// The uncomp/comp pair counts ONLY sub-chunks that actually went through ANS,
+// so `uncomp / comp` stays a true compression ratio of the compressed traffic.
+// Sub-chunks `SendArgs` shipped plain are counted separately in the
+// `plain_bytes` totals; `plain / (plain + uncomp)` is the plain share of the
+// payload.
+//
+// OWNED PER DEVICE-LINK UNIT, via `StatsTag`. These used to be plain
 // `inline __device__` globals shared by every consumer, and that is only safe
 // while exactly one device-link unit in the process defines them. It is not a
 // theoretical limit: each `--device-c` + `nvcc -dlink` target is its own
@@ -296,6 +313,14 @@ template <typename StatsTag>
 __device__ unsigned long long uncomp_bytes = 0;
 template <typename StatsTag>
 __device__ unsigned long long comp_bytes = 0;
+template <typename StatsTag>
+__device__ unsigned long long plain_bytes = 0;
+template <typename StatsTag>
+__device__ unsigned long long recv_uncomp_bytes = 0;
+template <typename StatsTag>
+__device__ unsigned long long recv_comp_bytes = 0;
+template <typename StatsTag>
+__device__ unsigned long long recv_plain_bytes = 0;
 
 } // namespace ans_counters
 #endif
@@ -760,6 +785,42 @@ struct AnsCompress {
 
  public:
   /**
+   * SendArgs - everything `send()` needs beyond the buffers, forwarded
+   * verbatim by the transport's `args...` pack.
+   *
+   * Adaptive encoding: when `minPendingBytes` is nonzero and `feedback`
+   * reports a NIC send backlog (`query_nic_send_backlog`) below it, the NIC is
+   * about to run dry, so the sub-chunk is shipped as a plain copy to refill it
+   * at memcpy speed; otherwise it is compressed. `minPendingBytes == 0` (the
+   * default), a null `feedback`, or a transport without a backlog measurement
+   * always compresses.
+   */
+  template <typename Feedback = NoTransportFeedback>
+  struct SendArgs {
+    // Per-block 16-byte-aligned scratch (>= MaxUncompBytes), used only to
+    // realign a misaligned `src`. May be null when every `src` is aligned.
+    char* alignedAuxBuf{nullptr};
+    // Transport driving this send; only handed to query_nic_send_backlog().
+    Feedback* feedback{nullptr};
+    // NIC backlog, in bytes, below which a sub-chunk is shipped plain.
+    std::size_t minPendingBytes{0};
+  };
+
+ private:
+  // Group-uniform: args are uniform and the backlog query is group-collective.
+  template <typename Feedback>
+  __device__ __forceinline__ static bool use_plain_copy(
+      const SendArgs<Feedback>& args,
+      ThreadGroup& group) {
+    if (args.minPendingBytes == 0) {
+      return false;
+    }
+    const NicSendBacklog backlog = query_nic_send_backlog(args.feedback, group);
+    return backlog.valid && backlog.pending_bytes < args.minPendingBytes;
+  }
+
+ public:
+  /**
    * Block-cooperative ANS compression of one transport sub-chunk into
    * the sender staging slot. Mirrors `Memcpy::send` signature so it slots
    * straight into `tr.send<>()`. Now accepts arbitrary `nbytes` — when
@@ -780,7 +841,7 @@ struct AnsCompress {
    * The same scratch region is reused across the inner per-piece
    * compress calls.
    *
-   * `char* alignedAuxBuf` is a per-block 16-byte-aligned global-memory
+   * `args.alignedAuxBuf` is a per-block 16-byte-aligned global-memory
    * scratch region (size >= MaxUncompBytes) used ONLY when the per-call
    * `src` pointer is not 16-byte aligned. nvcompdx requires the input
    * pointer to be 16-byte aligned (see
@@ -790,19 +851,37 @@ struct AnsCompress {
    * detect this at runtime and, when needed, cooperatively memcpy each
    * sub-piece of `src` into `alignedAuxBuf` (one piece at a time,
    * MaxUncompBytes max) and feed the aligned copy to
-   * `compressor.execute`. Pass `nullptr` if every caller is guaranteed
+   * `compressor.execute`. Leave it null if every caller is guaranteed
    * to provide a 16-byte-aligned `src`; the fast-path is identical to
-   * the previous behaviour.
+   * the previous behaviour. The `char*` overload below is shorthand for
+   * exactly that case.
+   *
+   * When `SendArgs` selects a plain copy for this sub-chunk, the wire layout
+   * is
+   *
+   *   [ size_t * numChunks ]           // [0] = kAnsPlainChunkFlag | nbytes
+   *   [ pad to kNvcompInputAlignment ]
+   *   [ nbytes raw payload ]
+   *   [ pad to kNvcompInputAlignment ]
+   *
+   * i.e. the SAME header-table position and payload alignment as the
+   * compressed layout, so `recv()` picks its decode path off header[0] with
+   * no side channel and no agreement protocol with the sender. That total
+   * never exceeds the compressed worst case (`worst_case_chunk_stride`)
+   * because the per-piece worst-case compressed size is already larger than
+   * `MaxUncompBytes`, so a plain sub-chunk always fits the staging region the
+   * transport reserved for it.
    */
-  template <typename... Args>
+  template <typename Feedback, typename... Args>
   __device__ __forceinline__ static std::size_t send(
       char* staging,
       const char* src,
       std::size_t nbytes,
       ThreadGroup& group,
       std::size_t /*byte_offset*/,
-      char* alignedAuxBuf,
+      SendArgs<Feedback> args,
       Args...) {
+    char* const alignedAuxBuf = args.alignedAuxBuf;
     // Per-block compressor scratch. Sized at compile time from
     // nvcompdx's constexpr `shmem_size_group()`, but overlaid with
     // the matching `recv` `s_decompress_shmem` allocation via the
@@ -830,6 +909,28 @@ struct AnsCompress {
 
     AnsChunkSizeT* const sizeHeaders =
         reinterpret_cast<AnsChunkSizeT*>(staging);
+
+    // Plain bypass, ahead of the realign checks: a plain copy has no 16-byte
+    // input-alignment requirement, so it must not trap on a null
+    // `alignedAuxBuf`. The decision must be group-uniform (the two paths have
+    // different barrier counts), which holds because it runs in convergent
+    // control flow on uniform inputs.
+    if (use_plain_copy(args, group)) {
+      memcpy_vectorized(staging + writeOffset, src, nbytes, group);
+      if (group.is_leader()) {
+        sizeHeaders[0] = static_cast<AnsChunkSizeT>(
+            kAnsPlainChunkFlag | static_cast<unsigned long long>(nbytes));
+#ifdef PIPES_ANS_COLLECT_STATS
+        atomicAdd(
+            &ans_counters::plain_bytes<StatsTag>,
+            static_cast<unsigned long long>(nbytes));
+#endif
+      }
+      // No trailing group.sync() — the transport syncs immediately after
+      // CopyOp::send returns, and only the leader's return value sizes the
+      // RDMA put (the same contract as the compressed path below).
+      return writeOffset + alignInputBufferSize(nbytes);
+    }
 
     // Misalignment detection — done once for the base src pointer.
     // For typical MaxUncompBytes that is a multiple of 16, every
@@ -963,6 +1064,32 @@ struct AnsCompress {
   }
 
   /**
+   * Shorthand for callers that drive the CopyOp without a transport (the
+   * standalone microbench, unit tests, hand-staged kernels): only the aux
+   * buffer is relevant, and every feedback-driven decision falls back to its
+   * static default. Keeps `Comp::send(dst, src, n, group, off, nullptr)`
+   * compiling exactly as before.
+   */
+  template <typename... Args>
+  __device__ __forceinline__ static std::size_t send(
+      char* staging,
+      const char* src,
+      std::size_t nbytes,
+      ThreadGroup& group,
+      std::size_t byte_offset,
+      char* alignedAuxBuf,
+      Args... args) {
+    return send(
+        staging,
+        src,
+        nbytes,
+        group,
+        byte_offset,
+        SendArgs<>{.alignedAuxBuf = alignedAuxBuf},
+        args...);
+  }
+
+  /**
    * Block-cooperative ANS decompression of one transport sub-chunk from
    * the receiver staging slot into `dst`. The leading
    * `numChunks * sizeof(size_t)` bytes of `staging` are the per-piece
@@ -1006,6 +1133,26 @@ struct AnsCompress {
     // 16-byte aligned (nvCOMPDx decompress input requirement).
     std::size_t readOffset = alignInputBufferSize(headerBytes);
 
+    // Plain sub-chunk: header[0] carries `kAnsPlainChunkFlag` and the payload
+    // is `nbytes` raw bytes where a compressed chunk[0] would start. Every
+    // thread loads the same committed header line (the transport's wait is
+    // the acquire edge, `__ldcv` bypasses L1), so the branch is group-uniform.
+    if ((__ldcv(reinterpret_cast<const unsigned long long*>(staging)) &
+         kAnsPlainChunkFlag) != 0ULL) {
+      memcpy_vectorized(dst, staging + readOffset, nbytes, group);
+#ifdef PIPES_ANS_COLLECT_STATS
+      if (group.is_leader()) {
+        atomicAdd(
+            &ans_counters::recv_plain_bytes<StatsTag>,
+            static_cast<unsigned long long>(nbytes));
+      }
+#endif
+      return readOffset + alignInputBufferSize(nbytes);
+    }
+
+#ifdef PIPES_ANS_COLLECT_STATS
+    std::size_t recvCompPayload = 0;
+#endif
     __shared__ AnsChunkSizeT ans_out_size;
     for (std::size_t i = 0; i < numChunks; ++i) {
       const std::size_t pieceOffset = i * MaxUncompBytes;
@@ -1078,7 +1225,22 @@ struct AnsCompress {
       (void)pieceBytes;
 #endif
       readOffset += alignInputBufferSize(compSize);
+#ifdef PIPES_ANS_COLLECT_STATS
+      recvCompPayload += compSize;
+#endif
     }
+#ifdef PIPES_ANS_COLLECT_STATS
+    // Leader-only totalise. Every thread already holds its own `__ldcv` copy
+    // of each header, so the leader's running sum needs no extra barrier.
+    if (group.is_leader()) {
+      atomicAdd(
+          &ans_counters::recv_uncomp_bytes<StatsTag>,
+          static_cast<unsigned long long>(nbytes));
+      atomicAdd(
+          &ans_counters::recv_comp_bytes<StatsTag>,
+          static_cast<unsigned long long>(recvCompPayload));
+    }
+#endif
     // No trailing group.sync() here: the caller
     // (`P2pIbgdaTransportDevice::recv`) does its own `group.sync()`
     // immediately after `CopyOp::recv` returns.
@@ -1127,6 +1289,20 @@ struct AnsCompress {
         (nbytes + MaxUncompBytes - 1ULL) / MaxUncompBytes;
     const std::size_t headerBytes = ans_header_bytes(numChunks);
     const std::size_t firstChunkOffset = alignInputBufferSize(headerBytes);
+
+    // Plain sub-chunk: forward the tagged
+    // header + raw payload verbatim, and copy rather than decompress into
+    // `dst`. Mirrors the same header[0] test as `recv()`.
+    if ((__ldcv(reinterpret_cast<const unsigned long long*>(staging)) &
+         kAnsPlainChunkFlag) != 0ULL) {
+      const std::size_t plainTotal =
+          firstChunkOffset + alignInputBufferSize(nbytes);
+      memcpy_vectorized(fwd_staging, staging, plainTotal, group);
+      if (dst != nullptr) {
+        memcpy_vectorized(dst, staging + firstChunkOffset, nbytes, group);
+      }
+      return plainTotal;
+    }
 
     // Walk the header table first so we know the total compressed
     // region size for the verbatim forward. Per-thread `__ldcv` loads —

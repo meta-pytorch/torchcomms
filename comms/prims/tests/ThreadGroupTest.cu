@@ -455,6 +455,81 @@ void testPartitionInterleaved(
 }
 
 // =============================================================================
+// Split / reduce_sum Tests
+// =============================================================================
+
+template <SyncScope Scope>
+__global__ void testSplitKernel(
+    uint32_t* partitionIds,
+    uint32_t* subgroupIds,
+    uint32_t* subgroupTotalGroups,
+    uint32_t* subgroupBlockIds,
+    uint32_t firstGroupSize) {
+  auto group = make_thread_group(Scope);
+  auto [partition_id, subgroup] = group.split(firstGroupSize);
+  if (group.is_leader()) {
+    partitionIds[group.group_id] = partition_id;
+    subgroupIds[group.group_id] = subgroup.group_id;
+    subgroupTotalGroups[group.group_id] = subgroup.total_groups;
+    subgroupBlockIds[group.group_id] = subgroup.block_id;
+  }
+}
+
+template <SyncScope Scope>
+__global__ void testReduceSumKernel(uint64_t* firstSums, uint64_t* secondSums) {
+  auto group = make_thread_group(Scope);
+  const uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  firstSums[tid] = group.reduce_sum((tid << 33) + 1);
+  secondSums[tid] = group.reduce_sum(tid + 7);
+}
+
+void testSplit(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t* subgroupBlockIds_d,
+    uint32_t firstGroupSize,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testSplitKernel<SyncScope::WARP><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        subgroupBlockIds_d,
+        firstGroupSize);
+  } else {
+    testSplitKernel<SyncScope::BLOCK><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        subgroupBlockIds_d,
+        firstGroupSize);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testReduceSum(
+    uint64_t* firstSums_d,
+    uint64_t* secondSums_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testReduceSumKernel<SyncScope::WARP>
+        <<<numBlocks, blockSize>>>(firstSums_d, secondSums_d);
+  } else if (scope == SyncScope::MULTIWARP) {
+    testReduceSumKernel<SyncScope::MULTIWARP>
+        <<<numBlocks, blockSize>>>(firstSums_d, secondSums_d);
+  } else {
+    testReduceSumKernel<SyncScope::BLOCK>
+        <<<numBlocks, blockSize>>>(firstSums_d, secondSums_d);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
 // Weighted Partition Tests
 // =============================================================================
 

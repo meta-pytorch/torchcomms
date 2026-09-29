@@ -245,6 +245,21 @@ void testSendRecv(
     int blockSize);
 
 /**
+ * Send-side byte accounting of one transport. `out` receives
+ * 2 + 2 * numChannels words: [0] backlog valid, [1] backlog pending bytes,
+ * then sendPostedBytes and sendCompletedBytes per channel.
+ *
+ * refresh=true launches one block per channel, each calling
+ * nic_send_backlog() (which retires its own channel's completed slots) until
+ * the total reads 0 or ~5 s pass. refresh=false reads the values as they are.
+ */
+void readSendBacklog(
+    P2pIbgdaTransportDevice* transport,
+    uint64_t* out,
+    int numChannels,
+    bool refresh);
+
+/**
  * Test kernel: Blocking pipelined send or recv driving the variable-size
  * `AnsCompress` CopyOp — the compressed transport path added in D111967119.
  * `maxSignalBytes == 0` exercises the transport's 0-sentinel (which derives a
