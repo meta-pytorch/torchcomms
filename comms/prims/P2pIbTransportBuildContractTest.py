@@ -100,6 +100,23 @@ class P2pIbTransportBuildContractTest(unittest.TestCase):
         )
         self.assertIn('":p2p_ib_transport_device_impl"', progress_target)
 
+    def test_outlined_progress_post_has_tu_local_value_abi(self) -> None:
+        progress = (self.transport / "P2pIbTransportProgressImpl.cuh").read_text()
+        helper = re.search(
+            r"\[\[nodiscard\]\]\s+static __device__ __noinline__\s+"
+            r"IbLocalCompletionTicket\s+progress_post_staged_send\s*"
+            r"\((.*?)\)\s*\{",
+            progress,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(helper)
+        assert helper is not None
+        params = helper.group(1)
+        self.assertIn("Transport* transport", params)
+        self.assertIn("IbgdaLocalBuffer localBuf", params)
+        self.assertEqual(params.count("IbgdaRemoteBuffer"), 2)
+        self.assertNotRegex(params, r"const Ibgda(?:Local|Remote)Buffer&")
+
     def test_cta_cq_acquire_scope_implies_no_rdma_read(self) -> None:
         """Guards the CTA-scope CQ acquire fence.
 
