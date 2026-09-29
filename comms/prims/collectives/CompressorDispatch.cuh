@@ -83,6 +83,8 @@ __device__ __forceinline__ std::size_t default_max_signal_bytes_for_compress(
 // Compile-time-typed send dispatcher. Templated on the concrete
 // `CopyOp = AnsCompress<NumWarps, MaxUncomp>` so the caller's kernel
 // instantiation picks exactly one `AnsCompress<...>::send` instantiation.
+// `minPendingBytes` opts into adaptive plain/compressed encoding (see
+// `AnsCompress::SendArgs`); 0 always compresses.
 template <typename CopyOp>
 __device__ __forceinline__ void ibgda_send_compressed(
     P2pIbgdaTransportDevice& tr,
@@ -92,7 +94,8 @@ __device__ __forceinline__ void ibgda_send_compressed(
     int active_blocks,
     std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
-    char* alignedAuxBuf) {
+    char* alignedAuxBuf,
+    std::size_t minPendingBytes = 0) {
   const std::size_t effective_max_signal_bytes =
       default_max_signal_bytes_for_compress<CopyOp>(
           max_signal_bytes, tr, active_blocks);
@@ -102,7 +105,10 @@ __device__ __forceinline__ void ibgda_send_compressed(
       nbytes,
       effective_max_signal_bytes,
       abortDevice,
-      alignedAuxBuf);
+      typename CopyOp::template SendArgs<P2pIbgdaTransportDevice>{
+          .alignedAuxBuf = alignedAuxBuf,
+          .feedback = &tr,
+          .minPendingBytes = minPendingBytes});
 }
 
 // Compile-time-typed recv dispatcher. Mirror of `ibgda_send_compressed`.
