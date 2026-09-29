@@ -115,7 +115,7 @@ class CtranComm {
   }
 
   inline void setAbort(const comms::fault_tolerance::AbortInfo& info = {}) {
-    abort_->setAbort(info.reason, info.context);
+    abort_->setAbort(info.reason, info.context, info.site, info.originPeer);
   }
 
   // This query may materialize an expired timeout as TIMED_OUT.
@@ -129,6 +129,11 @@ class CtranComm {
       return "comm aborted";
     }
     auto message = "comm aborted reason=" + std::string{info->reasonString()};
+    message += " site=" + std::string{info->siteString()};
+    if (info->originPeer != comms::fault_tolerance::kNoAbortPeer) {
+      message += " peer=" + std::to_string(info->originPeer);
+    }
+    // `context` stays last: it is free-form and may contain spaces.
     if (!info->context.empty()) {
       message +=
           " context=\"" + folly::cEscape<std::string>(info->context) + "\"";

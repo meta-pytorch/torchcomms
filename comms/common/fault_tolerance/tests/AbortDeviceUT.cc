@@ -103,9 +103,13 @@ DeviceCapture captureDeviceStdoutWithStatus(Launch&& launch) {
 // left a stale expectation that still compiled.
 std::string expectedDeviceFirstWriterLine(
     AbortReason reason,
-    std::string_view context) {
+    std::string_view context,
+    AbortSite site = AbortSite::DEVICE,
+    int originPeer = kNoAbortPeer) {
   return std::string{kFirstWriterMarker} +
       "device reason=" + std::to_string(static_cast<int>(reason)) +
+      " site=" + std::to_string(static_cast<int>(site)) +
+      " peer=" + std::to_string(originPeer) +
       " context=" + std::string{context};
 }
 
@@ -178,6 +182,7 @@ TEST(AbortDeviceTest, deviceObservesDetailedHostReasonWithoutContext) {
       (AbortInfo{
           .reason = AbortReason::BOOTSTRAP_POLL,
           .context = "socket health poll",
+          .site = AbortSite::HOST,
       }));
 }
 
@@ -331,6 +336,7 @@ TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
       (AbortInfo{
           .reason = AbortReason::NETWORK_ERROR,
           .context = "",
+          .site = AbortSite::DEVICE,
       }));
 
   // The winner's line, in full. Asserting the rendered text rather than only
@@ -371,6 +377,7 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
       (AbortInfo{
           .reason = AbortReason::INTERNAL_ERROR,
           .context = "",
+          .site = AbortSite::DEVICE,
       }));
 
   // The log belongs to the CAS win, not to whether a diagnostic string was
@@ -601,6 +608,7 @@ TEST(AbortDeviceTest, abortFlagPublishesEmptyContext) {
       (AbortInfo{
           .reason = AbortReason::INTERNAL_ERROR,
           .context = "",
+          .site = AbortSite::DEVICE,
       }));
 }
 
@@ -647,6 +655,7 @@ TEST(AbortDeviceTest, deviceWinnerDoesNotExposeLosingHostContext) {
       (AbortInfo{
           .reason = AbortReason::INTERNAL_ERROR,
           .context = "",
+          .site = AbortSite::DEVICE,
       }));
 }
 
@@ -667,6 +676,34 @@ TEST(AbortDeviceTest, hostWinnerPreservesContextAgainstDeviceAbort) {
       (AbortInfo{
           .reason = AbortReason::NETWORK_ERROR,
           .context = "winning host context",
+          .site = AbortSite::HOST,
+      }));
+}
+
+// The reason a device abort carries origin at all. `context` is a `const
+// char*` consumed at the winning callsite and never persisted, so before
+// `site` and `originPeer` a device-originated abort reached the host as a
+// reason and nothing else.
+TEST(AbortDeviceTest, deviceSetAbortPersistsSiteAndPeer) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_EQ(
+      launchDeviceSetAbortWithOrigin(
+          abort.getDeviceHandle(),
+          AbortReason::NETWORK_ERROR,
+          AbortSite::DEVICE,
+          /*originPeer=*/4217,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "",
+          .site = AbortSite::DEVICE,
+          .originPeer = 4217,
       }));
 }
 
@@ -802,7 +839,11 @@ TEST(AbortDeviceTest, deviceTimeoutProducerHostAndDeviceConsumer) {
   EXPECT_TRUE(abort.isTimedOut());
   EXPECT_EQ(
       abort.getAbortInfo(),
-      (AbortInfo{.reason = AbortReason::TIMED_OUT, .context = ""}));
+      (AbortInfo{
+          .reason = AbortReason::TIMED_OUT,
+          .context = "",
+          .site = AbortSite::DEVICE_DEADLINE,
+      }));
 }
 
 TEST(AbortDeviceTest, hostAbortWinsOverDeviceTimeout) {
@@ -949,7 +990,9 @@ TEST(AbortDeviceTest, directTimeoutViaIsAbortedEmitsTheMarker) {
   EXPECT_THAT(
       out,
       ::testing::HasSubstr(expectedDeviceFirstWriterLine(
-          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+          AbortReason::TIMED_OUT,
+          kDeadlineExpiredContext,
+          AbortSite::DEVICE_DEADLINE)))
       << "captured: " << out;
   // Exactly one, even though the kernel polls in a loop: the line is gated on
   // the CAS, and only one iteration can perform the transition.
@@ -980,7 +1023,9 @@ TEST(AbortDeviceTest, directTimeoutViaCheckExpiredEmitsTheMarker) {
   EXPECT_THAT(
       out,
       ::testing::HasSubstr(expectedDeviceFirstWriterLine(
-          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+          AbortReason::TIMED_OUT,
+          kDeadlineExpiredContext,
+          AbortSite::DEVICE_DEADLINE)))
       << "captured: " << out;
   EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
 }
@@ -1516,7 +1561,9 @@ TEST(AbortMacrosTest, TimeoutFirstWriterEmitsTheMarker) {
   EXPECT_THAT(
       out,
       ::testing::HasSubstr(expectedDeviceFirstWriterLine(
-          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+          AbortReason::TIMED_OUT,
+          kDeadlineExpiredContext,
+          AbortSite::DEVICE_DEADLINE)))
       << "captured: " << out;
   // The observation, carrying what only the callsite knows.
   EXPECT_THAT(

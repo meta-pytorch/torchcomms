@@ -20,6 +20,7 @@ namespace comms::fault_tolerance::testing {
 
 using ::comms::fault_tolerance::Abort;
 using ::comms::fault_tolerance::AbortReason;
+using ::comms::fault_tolerance::AbortSite;
 
 namespace {
 
@@ -494,7 +495,11 @@ TEST(AbortTest, reasonOnlySetAbortIsPreserved) {
 
   EXPECT_EQ(
       abort.getAbortInfo(),
-      (AbortInfo{.reason = AbortReason::NETWORK_ERROR, .context = ""}));
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "",
+          .site = AbortSite::HOST,
+      }));
 }
 
 TEST(AbortTest, setAbortRejectsNone) {
@@ -555,7 +560,11 @@ TEST(AbortTest, abortInfoRecordsEveryTerminalReasonAndContext) {
     EXPECT_TRUE(abort.setAbort(reason, "details"));
     EXPECT_EQ(
         abort.getAbortInfo(),
-        (AbortInfo{.reason = reason, .context = "details"}));
+        (AbortInfo{
+            .reason = reason,
+            .context = "details",
+            .site = AbortSite::HOST,
+        }));
   }
 }
 
@@ -569,6 +578,7 @@ TEST(AbortTest, abortInfoPreservesEmbeddedNullInContext) {
       (AbortInfo{
           .reason = AbortReason::INTERNAL_ERROR,
           .context = context,
+          .site = AbortSite::HOST,
       }));
 }
 
@@ -583,6 +593,7 @@ TEST(AbortTest, firstTerminalReasonAndContextWinTogether) {
       (AbortInfo{
           .reason = AbortReason::BOOTSTRAP_POLL,
           .context = "first",
+          .site = AbortSite::HOST,
       }));
 }
 
@@ -593,7 +604,10 @@ TEST(AbortTest, expiredTimeoutRecordsContext) {
   EXPECT_EQ(
       abort.getAbortInfo(),
       (AbortInfo{
-          .reason = AbortReason::TIMED_OUT, .context = "timeout expired"}));
+          .reason = AbortReason::TIMED_OUT,
+          .context = "timeout expired",
+          .site = AbortSite::HOST_DEADLINE,
+      }));
 }
 
 TEST(AbortTest, concurrentWinnerKeepsMatchingContext) {
@@ -680,7 +694,9 @@ TEST(AbortTest, hostFirstWriterEmitsTheMarker) {
           std::string{kFirstWriterMarker} + "host reason=" +
           std::to_string(static_cast<int>(AbortReason::NETWORK_ERROR)) + "(" +
           std::string{abortReasonToString(AbortReason::NETWORK_ERROR)} +
-          ") context=host callsite"))
+          ") site=" + std::to_string(static_cast<int>(AbortSite::HOST)) + "(" +
+          std::string{abortSiteToString(AbortSite::HOST)} +
+          ") peer=" + std::to_string(kNoAbortPeer) + " context=host callsite"))
       << "captured: " << out;
 }
 
@@ -720,6 +736,96 @@ TEST(AbortTest, abortInfoReasonStringIsComputedFromReason) {
   };
 
   EXPECT_EQ(info.reasonString(), "network_error");
+}
+
+TEST(AbortTest, originDefaultsToUnknownAndNoPeer) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_TRUE(abort.setAbort(AbortReason::ABORTED, "ctx", AbortSite::UNKNOWN));
+
+  const auto info = abort.getAbortInfo();
+  ASSERT_TRUE(info.has_value());
+  EXPECT_EQ(info->site, AbortSite::UNKNOWN);
+  EXPECT_EQ(info->originPeer, kNoAbortPeer);
+}
+
+TEST(AbortTest, originSiteAndPeerRoundTrip) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_TRUE(abort.setAbort(
+      AbortReason::NETWORK_ERROR, "ctx", AbortSite::HOST, /*originPeer=*/4217));
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "ctx",
+          .site = AbortSite::HOST,
+          .originPeer = 4217,
+      }));
+}
+
+// The origin has to win or lose with the reason it describes. An origin that a
+// later writer could overwrite would name a rank that had nothing to do with
+// the fault being reported, which is worse than recording nothing.
+TEST(AbortTest, losingWriterDoesNotOverwriteOrigin) {
+  Abort abort{/*enabled=*/true};
+
+  ASSERT_TRUE(abort.setAbort(
+      AbortReason::BOOTSTRAP_POLL, "first", AbortSite::HOST, 11));
+  EXPECT_FALSE(abort.setAbort(
+      AbortReason::INTERNAL_ERROR, "second", AbortSite::HOST_DEADLINE, 22));
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "first",
+          .site = AbortSite::HOST,
+          .originPeer = 11,
+      }));
+}
+
+TEST(AbortTest, hostDeadlineRecordsHostDeadlineSite) {
+  Abort abort{/*enabled=*/true};
+  abort.startTimeout(std::chrono::milliseconds{0});
+
+  const auto info = abort.getAbortInfo();
+  ASSERT_TRUE(info.has_value());
+  EXPECT_EQ(info->reason, AbortReason::TIMED_OUT);
+  EXPECT_EQ(info->site, AbortSite::HOST_DEADLINE);
+  EXPECT_EQ(info->originPeer, kNoAbortPeer);
+}
+
+// The FT-disabled path, for symmetry with `abortInfoDisabledRemainsEmpty`. A
+// disabled controller has no shared state to write origin into, so passing one
+// must stay a no-op rather than dereferencing a null `state_`.
+TEST(AbortTest, originIgnoredWhenDisabled) {
+  Abort abort{/*enabled=*/false};
+
+  EXPECT_FALSE(abort.setAbort(
+      AbortReason::NETWORK_ERROR, "ignored", AbortSite::HOST, 4217));
+
+  EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+}
+
+TEST(AbortTest, abortSiteToString) {
+  EXPECT_EQ(abortSiteToString(AbortSite::UNKNOWN), "unknown");
+  EXPECT_EQ(abortSiteToString(AbortSite::HOST), "host");
+  EXPECT_EQ(abortSiteToString(AbortSite::HOST_DEADLINE), "host_deadline");
+  EXPECT_EQ(abortSiteToString(AbortSite::DEVICE), "device");
+  EXPECT_EQ(abortSiteToString(AbortSite::DEVICE_DEADLINE), "device_deadline");
+  EXPECT_EQ(abortSiteToString(static_cast<AbortSite>(99)), "unknown");
+}
+
+TEST(AbortTest, abortInfoSiteStringIsComputedFromSite) {
+  const AbortInfo info{
+      .reason = AbortReason::TIMED_OUT,
+      .context = "",
+      .site = AbortSite::DEVICE_DEADLINE,
+  };
+
+  EXPECT_EQ(info.siteString(), "device_deadline");
 }
 
 TEST(AbortTest, timeRemainingNoTimeout) {
