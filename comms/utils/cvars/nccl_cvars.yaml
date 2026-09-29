@@ -2022,15 +2022,34 @@ cvars:
 
  - name        : MCCL_ALLREDUCE_ZERO_COPY_MODE
    type        : enum
-   default     : "force"
-   choices     : off, force
+   default     : "enabled"
+   choices     : off, enabled, force
    description : |-
      Select zero-copy for MCCL-native AllReduce.
-     off - Preserve the existing copy-based registration and collective paths.
-     force - Use zero-copy when every rank is eligible during CUDA graph
-             capture. Eager calls and graph captures where any rank is
-             ineligible or registration fails collectively use the copy path.
-             Invalid or rank-mismatched requests return an error.
+     off - Always use the copy path.
+     enabled - Use zero-copy when every rank is eligible during CUDA graph
+               capture; otherwise use the copy path.
+     force - Require zero-copy during CUDA graph capture and return an error
+             instead of falling back to the copy path. Eager calls use the
+             copy path. Invalid or rank-mismatched requests return an error.
+
+ - name        : MCCL_ALLREDUCE_ROUTE_EVIDENCE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Emit MCCL_ROUTE_EVIDENCE_V1 records for MCCL Ring AllReduce. Records
+     identify the communicator generation, rank, message shape, datatype,
+     buffer placement, selected route, and engagement decision. This is an
+     opt-in benchmark/test signal and does not alter collective routing.
+
+ - name        : MCCL_ALLREDUCE_ROUTE_EVIDENCE_CONTEXT
+   type        : string
+   default     : ""
+   description : |-
+     Identify the benchmark execution associated with MCCL AllReduce route
+     evidence. The launcher supplies a stable, versioned sweep context so
+     repeated rounds cannot suppress or consume one another's evidence. Empty
+     preserves existing behavior outside evidence-enabled benchmark runs.
 
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
