@@ -4,6 +4,14 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/utils/CtranLogger.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <algorithm>
+#include <array>
+#include <cerrno>
+
+#include <fmt/core.h>
+
 namespace ibverbx {
 
 extern IbvSymbols ibvSymbols;
@@ -314,6 +322,131 @@ Expected<ibv_gid> IbvDevice::queryGid(uint8_t portNum, int gidIndex) const {
     return makeUnexpected(Error(rc));
   }
   return gid;
+}
+
+Expected<int> detail::selectRoceGidIndex(
+    int gidTableLength,
+    int requestedIndex,
+    const std::function<Expected<ibv_gid>(int)>& queryGid,
+    const std::function<Expected<std::string>(int)>& queryGidType) {
+  if (requestedIndex < -1 || requestedIndex >= gidTableLength) {
+    return makeUnexpected(Error(
+        EINVAL,
+        fmt::format(
+            "Invalid RoCE GID index {} (GID table length {})",
+            requestedIndex,
+            gidTableLength)));
+  }
+  if (requestedIndex >= 0) {
+    auto gid = queryGid(requestedIndex);
+    if (gid.hasError()) {
+      return makeUnexpected(gid.error());
+    }
+    return requestedIndex;
+  }
+
+  int v2Index = -1;
+  int untypedIndex = -1;
+  for (int index = 0; index < gidTableLength; ++index) {
+    auto gid = queryGid(index);
+    if (gid.hasError() ||
+        std::all_of(
+            gid->raw,
+            gid->raw + sizeof(gid->raw),
+            [](uint8_t byte) { return byte == 0; }) ||
+        (gid->raw[0] == 0xfe && (gid->raw[1] & 0xc0) == 0x80)) {
+      continue;
+    }
+
+    auto type = queryGidType(index);
+    if (type.hasError()) {
+      if (type.error().errNum == EINVAL) {
+        // Container sysfs may expose a GID but not its type at this index.
+        continue;
+      }
+      return makeUnexpected(type.error());
+    }
+    const bool ipv4Mapped =
+        std::all_of(
+            gid->raw, gid->raw + 10, [](uint8_t byte) { return byte == 0; }) &&
+        gid->raw[10] == 0xff && gid->raw[11] == 0xff;
+    if (type->find("RoCE v2") != std::string::npos) {
+      if (ipv4Mapped) {
+        return index;
+      }
+      if (v2Index == -1) {
+        v2Index = index;
+      }
+    } else if (type->empty() && ipv4Mapped) {
+      // The kernel lists the RoCE v1 entry before the v2 entry for each IP.
+      // If type files are unavailable, retain the last matching entry to
+      // avoid choosing the earlier, non-routable v1 GID.
+      untypedIndex = index;
+    }
+  }
+  if (v2Index >= 0) {
+    return v2Index;
+  }
+  if (untypedIndex >= 0) {
+    CTRAN_LOG(
+        WARN,
+        "IBVERBX: GID types unavailable; selecting index {} from configured IPv4 GIDs. Specify an explicit index if this is not RoCE v2.",
+        untypedIndex);
+    return untypedIndex;
+  }
+  return makeUnexpected(
+      Error(ENOENT, "No usable RoCE v2 GID; specify an explicit GID index"));
+}
+
+Expected<int> IbvDevice::resolveRoceGidIndex(
+    uint8_t portNum,
+    const ibv_port_attr& portAttr,
+    int requestedIndex) const {
+  if (portAttr.link_layer != IBV_LINK_LAYER_ETHERNET) {
+    return makeUnexpected(Error(EINVAL, "RoCE GID requires an Ethernet port"));
+  }
+  auto result = detail::selectRoceGidIndex(
+      portAttr.gid_tbl_len,
+      requestedIndex,
+      [this, portNum](int index) { return queryGid(portNum, index); },
+      [this, portNum](int index) -> Expected<std::string> {
+        const std::string path = fmt::format(
+            "/sys/class/infiniband/{}/ports/{}/gid_attrs/types/{}",
+            device_->name,
+            portNum,
+            index);
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+          const int openError = errno;
+          if (openError == ENOENT) {
+            // Some containers expose GIDs but do not mount their type files.
+            return std::string{};
+          }
+          return makeUnexpected(Error(
+              openError != 0 ? openError : EIO,
+              fmt::format("Cannot read GID type from {}", path)));
+        }
+        std::array<char, 32> type{};
+        const ssize_t bytesRead = ::read(fd, type.data(), type.size());
+        const int readError = errno;
+        ::close(fd);
+        if (bytesRead < 0) {
+          return makeUnexpected(Error(
+              readError, fmt::format("Cannot read GID type from {}", path)));
+        }
+        return std::string(type.data(), bytesRead);
+      });
+  if (result.hasError()) {
+    return makeUnexpected(Error(
+        result.error().errNum,
+        fmt::format(
+            "Cannot resolve RoCE GID index {} on {} port {}: {}",
+            requestedIndex,
+            device_->name,
+            portNum,
+            result.error().errStr)));
+  }
+  return result;
 }
 
 Expected<IbvCq> IbvDevice::createCq(

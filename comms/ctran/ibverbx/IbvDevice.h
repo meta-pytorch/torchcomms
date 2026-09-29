@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <functional>
 #include <unordered_set>
 
 #include "comms/ctran/ibverbx/IbvCommon.h"
@@ -11,6 +12,16 @@
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
 namespace ibverbx {
+
+namespace detail {
+// Testable selection policy. The caller provides GID and RoCE-type queries so
+// no hardware or transport configuration is required to exercise the policy.
+Expected<int> selectRoceGidIndex(
+    int gidTableLength,
+    int requestedIndex,
+    const std::function<Expected<ibv_gid>(int)>& queryGid,
+    const std::function<Expected<std::string>(int)>& queryGidType);
+} // namespace detail
 
 // IbvDevice
 class IbvDevice {
@@ -41,6 +52,13 @@ class IbvDevice {
   Expected<ibv_device_attr> queryDevice() const;
   Expected<ibv_port_attr> queryPort(uint8_t portNum) const;
   Expected<ibv_gid> queryGid(uint8_t portNum, int gidIndex) const;
+  // Resolve an explicit GID index or auto-select a usable RoCE v2 GID when
+  // requestedIndex is -1. Callers own their configuration; ibverbx reads no
+  // transport-specific settings. The result is local to this device and port.
+  Expected<int> resolveRoceGidIndex(
+      uint8_t portNum,
+      const ibv_port_attr& portAttr,
+      int requestedIndex) const;
 
   Expected<IbvCq> createCq(
       int cqe,
