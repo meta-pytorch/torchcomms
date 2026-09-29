@@ -42,15 +42,14 @@ __device__ int torchcomms_self_copy_block(
     unsigned long long bytes) {
   auto* dst = reinterpret_cast<char*>(dst_ptr) + dst_offset;
   auto* src = reinterpret_cast<const char*>(src_ptr) + src_offset;
-  auto group = detail::make_thread_group(CoopScope::BLOCK);
-  comms::prims::memcpy_vectorized(dst, src, static_cast<size_t>(bytes), group);
+  detail::memcpy_nvl(dst, src, static_cast<size_t>(bytes), CoopScope::BLOCK);
   return 0;
 }
 
 // torchcomms_put_block: block-cooperative data transfer.
 //
 // win->put(CoopScope::BLOCK) handles both GIN paths internally:
-//   - GIN/LSA (NVLink): all threads cooperate on memcpy_vectorized.
+//   - GIN/LSA (NVLink): all threads cooperate on the copy.
 //   - GIN (RDMA): CoopScope::BLOCK → ncclCoopCta{} → __syncthreads__.
 __device__ int torchcomms_put_block(
     void* win_ptr,
@@ -101,7 +100,7 @@ __device__ int torchcomms_barrier_block(void* win_ptr, int barrier_id) {
 // Block-scope Wait Operations
 //
 // Thread 0 polls the signal/counter; remaining threads synchronize via
-// __syncthreads__ (CoopScope::BLOCK → make_thread_group → group.sync()).
+// __syncthreads__ (CoopScope::BLOCK).
 // Reduces spin-poll traffic from N acquire loads per poll cycle
 // (thread-scope, N = blockDim.x) to 1 acquire load + 1 __syncthreads__.
 // =============================================================================

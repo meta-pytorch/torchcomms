@@ -819,6 +819,8 @@ INSTANTIATE_TEST_SUITE_P(
         PutParam{16777216, CoopScope::THREAD},
         PutParam{1024, CoopScope::WARP},
         PutParam{1024, CoopScope::BLOCK},
+        // Covers both an aligned vector tail and rank-dependent misalignment.
+        PutParam{1028, CoopScope::BLOCK},
         PutParam{1048576, CoopScope::WARP},
         PutParam{1048576, CoopScope::BLOCK}),
     [](const auto& info) {

@@ -29,9 +29,9 @@ extern "C" {
 // =============================================================================
 // Inline PTX memcpy — zero allocas, zero register spills
 //
-// Replaces pipes::memcpy_vectorized which uses VecType v[kUnroll] arrays
+// Replaces the default cooperative copy, which uses VecType v[kUnroll] arrays
 // that LLVM lowers to alloca [8 x uint4] (128 bytes = 32 registers).
-// When multiple memcpy_vectorized instantiations exist in the same
+// When multiple vectorized-copy instantiations exist in the same
 // compilation unit (even in separate functions), Triton's LLVM→PTX
 // lowering inlines everything into a single kernel entry, causing
 // all allocas to coexist and generating 42+ register spills.
@@ -99,7 +99,7 @@ __device__ __forceinline__ void nvl_memcpy_ptx(
 // the NVLink hot path's register allocation.
 //
 // When Triton inlines all functions into one PTX kernel entry, any
-// memcpy_vectorized alloca [8 x uint4] from the GIN path would coexist
+// vectorized-copy alloca [8 x uint4] from the GIN path would coexist
 // with the NVLink inline PTX path, causing register spills.  By marking
 // the GIN fallback __noinline__, its alloca stays in a separate function
 // and doesn't affect the NVLink path's register budget.
