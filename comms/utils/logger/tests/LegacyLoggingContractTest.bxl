@@ -4,6 +4,7 @@ _SCOPE_CONFIGS = (
     ("fbcode//comms/ctran/...", "//comms/ctran/"),
     ("fbcode//comms/mccl/...", "//comms/mccl/"),
     ("fbcode//comms/ncclx/...", "//comms/ncclx/"),
+    ("fbcode//comms/prims/...", "//comms/prims/"),
     ("fbcode//comms/torchcomms/ncclx/...", "//comms/torchcomms/ncclx/"),
 )
 _SCOPE_LABEL_PREFIX = "fbcode//"
@@ -587,8 +588,7 @@ def _validate_detector() -> None:
     for source_path in (
         "//comms/ctran/utils/Source.cuh",
         "//comms/ctran/utils/Source.inl",
-        # Covered by the parent MCCL scope after PRIMs moved underneath it.
-        "//comms/mccl/prims/utils/Source.tcc",
+        "//comms/prims/utils/Source.tcc",
     ):
         if not _is_scoped_source(source_path):
             fail("Migrated scope detector missed: {}".format(source_path))

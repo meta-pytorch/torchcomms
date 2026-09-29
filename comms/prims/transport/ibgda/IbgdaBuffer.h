@@ -1,0 +1,729 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#pragma once
+
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+
+#include <endian.h>
+
+#include "comms/prims/core/SignalState.cuh"
+#include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#include "comms/prims/transport/rdma/NicConstants.h"
+
+// Allow compilation in both host (C++) and device (CUDA/HIP) contexts
+#if defined(__CUDACC__) || defined(__HIPCC__)
+#define IBGDA_HOST_DEVICE __host__ __device__
+#else
+#define IBGDA_HOST_DEVICE
+#endif
+
+// Bounds-check trap for NetworkLKeys / NetworkRKeys operator[].
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#define IBGDA_KEYS_OOB_TRAP(kind, n, sz)              \
+  do {                                                \
+    printf(                                           \
+        "Network" kind                                \
+        "Keys: index %d out of range [0, %d) at "     \
+        "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n", \
+        (int)(n),                                     \
+        (int)(sz),                                    \
+        __FILE__,                                     \
+        __LINE__,                                     \
+        blockIdx.x,                                   \
+        blockIdx.y,                                   \
+        blockIdx.z,                                   \
+        threadIdx.x,                                  \
+        threadIdx.y,                                  \
+        threadIdx.z);                                 \
+    __trap();                                         \
+  } while (0)
+#else
+#define IBGDA_KEYS_OOB_TRAP(kind, n, sz) assert((n) >= 0 && (n) < (sz))
+#endif
+
+namespace comms::prims {
+
+// NIC-aware byte order conversion for RDMA memory keys.
+// mlx5 requires big-endian keys; bnxt/ionic use native byte order.
+namespace detail {
+inline uint32_t ibgdaNetworkByteOrderKey(uint32_t hostValue) {
+#if defined(NIC_BNXT) || defined(NIC_IONIC)
+  return hostValue; // Native byte order for non-mlx5 NICs
+#else
+  return htobe32(hostValue); // mlx5: big-endian
+#endif
+}
+} // namespace detail
+
+// =============================================================================
+// Strong Types for RDMA Memory Keys
+// =============================================================================
+//
+// DOCA GPUNetIO expects memory registration keys (lkey/rkey) in network byte
+// order (big-endian) for RDMA WQE construction. These strong types prevent
+// accidental mixing of host and network byte order keys.
+//
+// Use case:
+//   - ibv_reg_mr() returns keys in host byte order
+//   - DOCA device APIs expect keys in network byte order
+//   - These types ensure correct conversion at compile time
+
+/**
+ * HostLKey - Local key in host byte order
+ *
+ * Represents an lkey as returned by ibv_reg_mr() or similar APIs.
+ * Must be converted to NetworkLKey before use in RDMA operations.
+ */
+struct HostLKey {
+  uint32_t value{0};
+
+  HostLKey() = default;
+  IBGDA_HOST_DEVICE explicit HostLKey(uint32_t v) : value(v) {}
+
+  IBGDA_HOST_DEVICE bool operator==(const HostLKey& other) const {
+    return value == other.value;
+  }
+  IBGDA_HOST_DEVICE bool operator!=(const HostLKey& other) const {
+    return value != other.value;
+  }
+};
+
+/**
+ * NetworkLKey - Local key in network byte order (big-endian)
+ *
+ * Represents an lkey ready for use in RDMA WQE construction.
+ * This is the format expected by DOCA GPUNetIO device APIs.
+ *
+ * Supports implicit conversion from HostLKey (performs byte order conversion).
+ */
+struct NetworkLKey {
+  uint32_t value{0};
+
+  NetworkLKey() = default;
+  IBGDA_HOST_DEVICE explicit NetworkLKey(uint32_t v) : value(v) {}
+
+  // Implicit conversion from HostLKey (performs byte order conversion)
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  /* implicit */ NetworkLKey(HostLKey hostKey)
+      : value(detail::ibgdaNetworkByteOrderKey(hostKey.value)) {}
+
+  IBGDA_HOST_DEVICE bool operator==(const NetworkLKey& other) const {
+    return value == other.value;
+  }
+  IBGDA_HOST_DEVICE bool operator!=(const NetworkLKey& other) const {
+    return value != other.value;
+  }
+};
+
+/**
+ * HostRKey - Remote key in host byte order
+ *
+ * Represents an rkey as received from a remote peer (after network transport).
+ * Must be converted to NetworkRKey before use in RDMA operations.
+ */
+struct HostRKey {
+  uint32_t value{0};
+
+  HostRKey() = default;
+  IBGDA_HOST_DEVICE explicit HostRKey(uint32_t v) : value(v) {}
+
+  IBGDA_HOST_DEVICE bool operator==(const HostRKey& other) const {
+    return value == other.value;
+  }
+  IBGDA_HOST_DEVICE bool operator!=(const HostRKey& other) const {
+    return value != other.value;
+  }
+};
+
+/**
+ * NetworkRKey - Remote key in network byte order (big-endian)
+ *
+ * Represents an rkey ready for use in RDMA WQE construction.
+ * This is the format expected by DOCA GPUNetIO device APIs.
+ *
+ * Supports implicit conversion from HostRKey (performs byte order conversion).
+ */
+struct NetworkRKey {
+  uint32_t value{0};
+
+  NetworkRKey() = default;
+  IBGDA_HOST_DEVICE explicit NetworkRKey(uint32_t v) : value(v) {}
+
+  // Implicit conversion from HostRKey (performs byte order conversion)
+  // Note: This constructor is intentionally NOT explicit - implicit conversion
+  // is the desired behavior. It is also intentionally host-only (no
+  // IBGDA_HOST_DEVICE) because the conversion happens on the host before
+  // passing to device code.
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  /* implicit */ NetworkRKey(HostRKey hostKey)
+      : value(detail::ibgdaNetworkByteOrderKey(hostKey.value)) {}
+
+  IBGDA_HOST_DEVICE bool operator==(const NetworkRKey& other) const {
+    return value == other.value;
+  }
+  IBGDA_HOST_DEVICE bool operator!=(const NetworkRKey& other) const {
+    return value != other.value;
+  }
+};
+
+// =============================================================================
+// Per-NIC Key Arrays
+// =============================================================================
+//
+// Named wrappers around fixed-size arrays of per-NIC keys with explicit
+// `size` (count of populated NIC slots) and bounds-checked indexing.
+//
+// Construction:
+//   NetworkLKeys keys{};               // size=0, no NICs
+//   NetworkLKeys keys(numNics);        // pre-size for loop fill via op[]
+//
+// Indexed access:
+//   auto v = keys[nic].value;          // traps if nic >= keys.size
+
+/**
+ * NetworkLKeys - Fixed-capacity array of per-NIC local keys with explicit
+ * `size` and bounds-checked indexing.
+ */
+struct NetworkLKeys {
+  NetworkLKey values[kMaxNicsPerGpu]{};
+  int size{0};
+
+  NetworkLKeys() = default;
+
+  // Pre-size for progressive fill via operator[]:
+  //   NetworkLKeys k(numNics);
+  //   for (int n = 0; n < numNics; ++n) k[n] = ...;
+  IBGDA_HOST_DEVICE explicit NetworkLKeys(int n) : size(n) {
+    assert(n >= 0 && n <= kMaxNicsPerGpu);
+  }
+
+  // Variadic per-NIC ctor: size = number of keys.
+  //   Single-NIC: NetworkLKeys{lkey}            (size=1)
+  //   Multi-NIC:  NetworkLKeys{lkey0, lkey1}    (size=2)
+  // explicit: NetworkLKey does NOT implicitly convert to NetworkLKeys —
+  // every single-NIC site must spell the wrap, making it visible in code
+  // review when refactoring for multi-NIC.
+  template <typename... Rest>
+  IBGDA_HOST_DEVICE explicit NetworkLKeys(NetworkLKey k0, Rest... rest)
+      : size(static_cast<int>(1 + sizeof...(Rest))) {
+    static_assert(
+        1 + sizeof...(Rest) <= kMaxNicsPerGpu,
+        "NetworkLKeys: too many keys for kMaxNicsPerGpu");
+    const NetworkLKey arr[] = {k0, rest...};
+    for (int i = 0; i < size; ++i) {
+      values[i] = arr[i];
+    }
+  }
+
+  IBGDA_HOST_DEVICE NetworkLKey& operator[](int n) {
+    if (n < 0 || n >= size) {
+      IBGDA_KEYS_OOB_TRAP("L", n, size);
+    }
+    return values[n];
+  }
+  IBGDA_HOST_DEVICE const NetworkLKey& operator[](int n) const {
+    if (n < 0 || n >= size) {
+      IBGDA_KEYS_OOB_TRAP("L", n, size);
+    }
+    return values[n];
+  }
+};
+
+/**
+ * NetworkRKeys - Mirror of NetworkLKeys for remote keys.
+ */
+struct NetworkRKeys {
+  NetworkRKey values[kMaxNicsPerGpu]{};
+  int size{0};
+
+  NetworkRKeys() = default;
+
+  IBGDA_HOST_DEVICE explicit NetworkRKeys(int n) : size(n) {
+    assert(n >= 0 && n <= kMaxNicsPerGpu);
+  }
+
+  // Variadic per-NIC ctor: size = number of keys.
+  //   Single-NIC: NetworkRKeys{rkey}            (size=1)
+  //   Multi-NIC:  NetworkRKeys{rkey0, rkey1}    (size=2)
+  // explicit — see NetworkLKeys for rationale.
+  template <typename... Rest>
+  IBGDA_HOST_DEVICE explicit NetworkRKeys(NetworkRKey k0, Rest... rest)
+      : size(static_cast<int>(1 + sizeof...(Rest))) {
+    static_assert(
+        1 + sizeof...(Rest) <= kMaxNicsPerGpu,
+        "NetworkRKeys: too many keys for kMaxNicsPerGpu");
+    const NetworkRKey arr[] = {k0, rest...};
+    for (int i = 0; i < size; ++i) {
+      values[i] = arr[i];
+    }
+  }
+
+  IBGDA_HOST_DEVICE NetworkRKey& operator[](int n) {
+    if (n < 0 || n >= size) {
+      IBGDA_KEYS_OOB_TRAP("R", n, size);
+    }
+    return values[n];
+  }
+  IBGDA_HOST_DEVICE const NetworkRKey& operator[](int n) const {
+    if (n < 0 || n >= size) {
+      IBGDA_KEYS_OOB_TRAP("R", n, size);
+    }
+    return values[n];
+  }
+};
+
+// =============================================================================
+// Buffer Descriptors
+// =============================================================================
+
+/**
+ * IbgdaLocalBuffer - Local buffer descriptor for RDMA operations
+ *
+ * Represents a buffer in the local GPU's memory that can be used as a
+ * source for RDMA writes or destination for RDMA reads. Carries one local
+ * key per NIC (`lkey_per_device`) for multi-NIC IBGDA support — each NIC
+ * has its own ibv_pd with a distinct lkey for the same physical buffer.
+ * The kernel-side P2pIbgdaTransportDevice selects
+ * `lkey_per_device[nic]` based on the rail it dispatches to.
+ *
+ * Indexing `lkey_per_device[n]` traps if `n >= lkey_per_device.size`.
+ *
+ * This struct is usable from both host and device code.
+ */
+struct IbgdaLocalBuffer {
+  void* ptr{nullptr};
+  NetworkLKeys lkey_per_device{};
+
+  IbgdaLocalBuffer() = default;
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer(void* p, const NetworkLKeys& keys)
+      : ptr(p), lkey_per_device(keys) {}
+
+  /**
+   * Create a sub-buffer at the given byte offset.
+   * Propagates all NICs' lkeys. A null base stays null for optional buffers.
+   */
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer subBuffer(std::size_t offset) const {
+    return IbgdaLocalBuffer(
+        ptr == nullptr ? nullptr : static_cast<char*>(ptr) + offset,
+        lkey_per_device);
+  }
+};
+
+/**
+ * IbgdaRemoteBuffer - Remote buffer descriptor for RDMA operations
+ *
+ * Mirror of IbgdaLocalBuffer for remote buffers. Carries one remote key
+ * per NIC (`rkey_per_device`) for multi-NIC IBGDA support. Indexing
+ * `rkey_per_device[n]` traps if `n >= rkey_per_device.size`.
+ *
+ * This struct is usable from both host and device code.
+ */
+struct IbgdaRemoteBuffer {
+  void* ptr{nullptr};
+  NetworkRKeys rkey_per_device{};
+
+  IbgdaRemoteBuffer() = default;
+
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer(void* p, const NetworkRKeys& keys)
+      : ptr(p), rkey_per_device(keys) {}
+
+  /**
+   * Create a sub-buffer at the given byte offset.
+   * Propagates all NICs' rkeys. A null base stays null for optional buffers.
+   */
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer subBuffer(std::size_t offset) const {
+    return IbgdaRemoteBuffer(
+        ptr == nullptr ? nullptr : static_cast<char*>(ptr) + offset,
+        rkey_per_device);
+  }
+};
+
+// =============================================================================
+// Signal Operation Types
+// =============================================================================
+
+/**
+ * IbgdaSignalOp - Signal operation types for IBGDA transport
+ *
+ * Defines the atomic operation to perform on the remote signal buffer.
+ * Note: SET is not yet supported by DOCA GPUNetIO, but included for
+ * API consistency and future compatibility with torchcomms.
+ */
+enum class IbgdaSignalOp {
+  ADD, // Atomic fetch-add (supported)
+  SET, // Atomic set (not yet supported by DOCA)
+};
+
+/**
+ * IbgdaCmpOp - Comparison operations for wait_signal
+ *
+ * Defines the comparison operation used when waiting for a signal value.
+ * API consistent with torchcomms::device::CmpOp.
+ */
+enum class IbgdaCmpOp {
+  EQ, // ==
+  NE, // !=
+  LT, // <
+  LE, // <=
+  GT, // >
+  GE, // >= (most common for wait operations)
+};
+
+// =============================================================================
+// Buffer Exchange Info
+// =============================================================================
+
+/**
+ * IbgdaBufferExchInfo - Buffer info for exchange between hosts
+ *
+ * Represents a buffer's address and remote key in host byte order,
+ * suitable for serialization and exchange between peers. The rkey
+ * is stored in host byte order and will be converted to network
+ * byte order when creating an IbgdaRemoteBuffer for RDMA operations.
+ *
+ * Use case:
+ *   - Exchange buffer registration info between peers via bootstrap
+ *   - Convert to IbgdaRemoteBuffer after receiving from peer
+ */
+struct IbgdaBufferExchInfo {
+  uint64_t addr{0};
+  // Number of valid entries in rkey_per_device. All peers exchange the
+  // same numNics (uniform topology assumption).
+  int numNics{0};
+  HostRKey rkey_per_device[kMaxNicsPerGpu]{};
+
+  IbgdaBufferExchInfo() = default;
+
+  /**
+   * Convert to IbgdaRemoteBuffer for RDMA operations.
+   * The result's NetworkRKeys.size matches this->numNics.
+   */
+  IbgdaRemoteBuffer toRemoteBuffer() const {
+    NetworkRKeys keys(numNics);
+    for (int n = 0; n < numNics; ++n) {
+      keys[n] = NetworkRKey(rkey_per_device[n]);
+    }
+    return IbgdaRemoteBuffer(reinterpret_cast<void*>(addr), keys);
+  }
+
+  /**
+   * Create a sub-buffer at the given byte offset.
+   */
+  IbgdaBufferExchInfo subBuffer(std::size_t offset) const {
+    IbgdaBufferExchInfo sub = *this;
+    sub.addr += offset;
+    return sub;
+  }
+};
+
+namespace detail {
+
+/**
+ * Internal stage for one transport-owned resumable send/recv operation.
+ *
+ * `Done` is intentionally zero so freshly zeroed transport memory starts idle.
+ * Send operations use `WaitLocalCompletion` and `WaitSlotFree`; recv
+ * operations use `WaitDataReady`. Blocking send/recv temporarily use `Busy` to
+ * make same-direction overlap fail explicitly instead of sharing a cursor.
+ */
+enum class IbSendRecvProgressStage : uint8_t {
+  Done,
+  WaitLocalCompletion,
+  WaitSlotFree,
+  WaitDataReady,
+  Busy,
+};
+
+} // namespace detail
+
+struct IbChannelProgress {
+  int64_t nextStep{0};
+  std::size_t activeNextByte{0};
+  std::size_t activeTailPadding{0};
+  int64_t activeBaseStep{0};
+  // Geometry inputs captured at init so the progress calls no longer take
+  // them: activeUserBytes is the op's payload length, activeMaxSignalBytes
+  // caps chunkPayload.
+  std::size_t activeUserBytes{0};
+  std::size_t activeMaxSignalBytes{0};
+  // The buffer activeUserBytes describes: src on a send slot, dst on a recv
+  // slot, since the two directions have separate slot arrays. void* because
+  // the send side is const and only ever reads through it.
+  void* activeUserBuf{nullptr};
+  // Source of a registered send, which the NIC reads directly and so needs the
+  // lkey too. Shares the send slot with activeUserBuf; exactly one of the two
+  // is live, decided by which init started the operation.
+  IbgdaLocalBuffer activeRegisteredBuf{};
+  detail::IbSendRecvProgressStage activeStage{
+      detail::IbSendRecvProgressStage::Done};
+  // CopyOp category of the most recent op driven on this channel (true =
+  // variable-size, e.g. AnsCompress). The persistent cursor (nextStep) is kept
+  // in WIRE bytes and pinned to whole perBlockSlot strides for BOTH categories,
+  // so a fixed<->variable-size switch on the same slot is safe: a compressed op
+  // always resumes on a slot boundary rather than reinterpreting a mid-slot
+  // byte cursor as a sub-chunk cursor. Recorded here so the compressed-path
+  // slot-alignment trap can attribute a mis-aligned cursor to a preceding
+  // fixed-size op, making the cross-category contract explicit in state.
+  bool activeVariableSize{false};
+};
+
+inline constexpr std::size_t kSendRecvSignalSlotStride = sizeof(SignalState);
+
+// Per-protocol resource slots reserved on every channel, indexed by a protocol
+// tag's kProtoSlot (Simple = 0, LL = 1). Protocols share the channel's QPs but
+// own separate staging, signal, counter, and progress state.
+inline constexpr int kNumProtoSlots = 2;
+
+IBGDA_HOST_DEVICE inline std::size_t sendRecvSignalSlotOffset(int slot) {
+  assert(slot >= 0);
+  return static_cast<std::size_t>(slot) * kSendRecvSignalSlotStride;
+}
+
+struct IbChannelLayout {
+  IbgdaLocalBuffer
+      sendStagingBuf; ///< Registered sendStaging (lkey for put src)
+  IbgdaRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
+  char* sendStagingPtr{
+      nullptr}; ///< Raw sendStaging pointer (memcpy addressing)
+  char* recvStagingPtr{
+      nullptr}; ///< Raw local recvStaging pointer (recv memcpy)
+  IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
+  IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
+  IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
+  IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
+  int maxChannels{0}; ///< Number of provisioned channel/protocol slots.
+  int numChannels{0}; ///< Logical channels; a caller's group_id selects within
+                      ///< [0, numChannels). Also the QP channel: protocols
+                      ///< share a channel's QPs and are separated by resource
+                      ///< slot, never by channel id.
+  int numProtocolSlots{kNumProtoSlots}; ///< Provisioned slots per channel.
+  int numLanes{1}; ///< QP lanes = numNics * qpsPerConnection; each lane owns a
+                   ///< single-writer DATA_READY slot per channel
+  int pipelineDepth{0}; ///< Number of slots/chunks in one channel
+  std::size_t perChannelSize{0}; ///< Backward-compatible channel window alias
+  std::size_t perChannelBufferSize{0}; ///< Total staging bytes for one channel
+
+  __host__ __device__ std::size_t data_buffer_size() const {
+    const std::size_t perChannel =
+        perChannelBufferSize != 0 ? perChannelBufferSize : perChannelSize;
+    return perChannel * static_cast<std::size_t>(maxChannels);
+  }
+
+  // Flat resource slot for (logical channel, protocol slot). Proto-major, so
+  // kNumProtoSlots == 1 is the identity and a protocol's channels stay
+  // contiguous. Every slot-indexed accessor below takes this flat slot, NOT a
+  // logical channel.
+  IBGDA_HOST_DEVICE int protoChannelSlot(int channelId, int protoSlot) const {
+    return protoSlot * numChannels + channelId;
+  }
+
+  IBGDA_HOST_DEVICE int dataReadySignalSlot(int channelId) const {
+    return channelId * numLanes;
+  }
+
+  IBGDA_HOST_DEVICE int slotFreeSignalSlot(int channelId) const {
+    return numLanes * maxChannels + channelId;
+  }
+
+  IBGDA_HOST_DEVICE int counterSlot(int channelId) const {
+    return channelId;
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer localDataReadySignal(int channelId) const {
+    return localSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(dataReadySignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer
+  remoteDataReadySignal(int channelId) const {
+    return remoteSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(dataReadySignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer localSlotFreeSignal(int channelId) const {
+    return localSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(slotFreeSignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaRemoteBuffer
+  remoteSlotFreeSignal(int channelId) const {
+    return remoteSignalBuf.subBuffer(
+        sendRecvSignalSlotOffset(slotFreeSignalSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer localCounter(int channelId) const {
+    return localCounterBuf.subBuffer(
+        sendRecvSignalSlotOffset(counterSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE IbgdaLocalBuffer
+  localCompletionCounter(int channelId) const {
+    return localCounterCompletionBuf.subBuffer(
+        sendRecvSignalSlotOffset(counterSlot(channelId)));
+  }
+
+  IBGDA_HOST_DEVICE SignalState* localSignalState(int slot) const {
+    return signalStateAt(localSignalBuf.ptr, slot);
+  }
+
+  IBGDA_HOST_DEVICE SignalState* localCounterState(int channelId) const {
+    return signalStateAt(localCounterBuf.ptr, counterSlot(channelId));
+  }
+
+ private:
+  IBGDA_HOST_DEVICE static SignalState* signalStateAt(void* base, int slot) {
+    if (base == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<SignalState*>(
+        static_cast<char*>(base) + sendRecvSignalSlotOffset(slot));
+  }
+};
+
+enum class IbDirection : uint8_t {
+  Send = 0,
+  Recv = 1,
+};
+
+inline constexpr int kIbDirections = 2;
+inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
+
+// Identifies a lane-local completion threshold returned by put().
+// completionId is the send-lane ordinal; value is complete once that lane's
+// backend-specific completion frontier reaches it. posted is false when the
+// operation stopped before publishing a WQE.
+struct IbLocalCompletionTicket {
+  uint32_t completionId{0};
+  bool posted{false};
+  uint64_t value{0};
+};
+
+// Completion thresholds accumulated for one channel's pipeline slot.
+// generation identifies the slot use; laneMask selects valid values entries,
+// each the latest ticket value that must complete before the slot is reused.
+struct IbSendCompletionSlot {
+  uint64_t generation{0};
+  uint64_t laneMask{0};
+  uint64_t values[kIbMaxQpLanesPerChannelDirection]{};
+};
+
+struct IbQpState {
+  uint32_t cursor{0};
+  uint64_t pendingFlushLanesMask{0};
+  uint64_t lastFlushWqe[kIbMaxQpLanesPerChannelDirection]{};
+};
+
+// Everything ONE wire protocol owns on one channel, selected by the protocol
+// tag's kProtoSlot. Duplicated per protocol: these cursors are resumable across
+// kernel launches, so two protocols sharing a slot would corrupt each other's
+// progress even though they never run concurrently within one kernel.
+//
+// Reach it through detail::acquire_channel<P>(), never by naming a slot index.
+struct IbChannelProtoSlot {
+  IbChannelProgress sendProgress;
+  IbChannelProgress recvProgress;
+
+  // Per-lane receiver DATA_READY bookkeeping for the round-robin send/recv
+  // protocol. On per-lane backends (IBGDA) the sender round-robins each chunk's
+  // RDMA_WRITE + DATA_READY atomic-FA across `numLanes` single-writer slots:
+  // chunk i rides lane `i % numLanes`, driven by the sender's free-running
+  // `IbQpState::cursor`. The receiver reconstructs chunk i's lane by mirroring
+  // that cursor in `recvDataReadyLaneCursor` (incremented once per received
+  // chunk) and waits on that lane's own slot rather than the summed cumulative,
+  // so a fast lane's later chunk cannot mask a slow lane's not-yet-landed data.
+  // `recvLaneExpected` holds each lane's running cumulative byte target
+  // (mirrors its DATA_READY slot); a running sum is required because chunks
+  // clamp at slot / stream boundaries and are not all `chunkSize`.
+  //
+  // Reset semantics (must stay aligned with the sender across peers):
+  //  - `recvDataReadyLaneCursor` mirrors the sender's `IbQpState::cursor`.
+  //    It is free-running and only zeroed at channel (re)construction — never
+  //    by the device reset kernel. Reset it only in lock-step with that cursor;
+  //    zeroing it on a partial reset would desync the round-robin lane mapping.
+  //  - `recvLaneExpected` mirrors the DATA_READY slots; zero it whenever those
+  //    slots are zeroed (channel construction AND the device reset kernel).
+  uint64_t recvLaneExpected[kIbMaxQpLanesPerChannelDirection]{};
+
+  IbgdaLocalBuffer dataReady;
+  IbgdaLocalBuffer slotFree;
+  IbgdaLocalBuffer nicDoneWait;
+  IbgdaLocalBuffer nicDoneCompletion;
+
+  IbSendCompletionSlot* sendCompletionSlots{nullptr};
+};
+
+// A channel: the state every protocol on it shares, plus one slot per protocol.
+//
+// `sendQp` / `recvQp` are shared because a channel is one QP pair no matter how
+// many protocols address it, so `lastFlushWqe` and `pendingFlushLanesMask`
+// cover whatever any protocol actually posted on a lane.
+//
+// `recvDataReadyLaneCursor` is shared because it mirrors `sendQp.cursor`, which
+// counts puts POSTED on this (channel, Send) -- NOT DATA_READY events. Every
+// put must have exactly one receiver-observable event advancing the mirror, or
+// the round-robin lane mapping desyncs and the receiver waits on a slot that a
+// later chunk will satisfy, reading data that has not landed. A signal-less raw
+// put() gives the receiver nothing to observe, so it must never share a
+// (channel, direction) with send()/recv().
+//
+// Reset semantics: `recvDataReadyLaneCursor` is free-running and only zeroed at
+// channel (re)construction -- never by the device reset kernel. Reset it only
+// in lock-step with `sendQp.cursor`.
+//
+// `recvLaneExpected` is deliberately NOT shared: it mirrors the contents of a
+// protocol's own DATA_READY slots, so it belongs with those slots.
+struct IbLocalChannel {
+  IbQpState sendQp;
+  IbQpState recvQp;
+  uint64_t recvDataReadyLaneCursor{0};
+
+  IbChannelProtoSlot protos[kNumProtoSlots];
+};
+
+// Built on the host and cudaMemcpy'd to the device, so it must stay trivially
+// copyable.
+static_assert(std::is_trivially_copyable_v<IbLocalChannel>);
+
+struct IbRemoteChannel {
+  IbgdaRemoteBuffer dataReady;
+  IbgdaRemoteBuffer slotFree;
+  IbgdaRemoteBuffer recvStaging;
+};
+
+IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
+    const IbChannelLayout& layout,
+    int channelId,
+    IbSendCompletionSlot* sendCompletionSlots = nullptr) {
+  // channelId is the LOGICAL channel; every protocol slot on it gets its own
+  // views, resolved at that slot's flat index.
+  IbLocalChannel channel{};
+  assert(layout.numProtocolSlots >= 1);
+  assert(layout.numProtocolSlots <= kNumProtoSlots);
+  for (int protoSlot = 0; protoSlot < layout.numProtocolSlots; ++protoSlot) {
+    const int slot = layout.protoChannelSlot(channelId, protoSlot);
+    IbChannelProtoSlot& proto = channel.protos[protoSlot];
+    proto.dataReady = layout.localDataReadySignal(slot);
+    proto.slotFree = layout.localSlotFreeSignal(slot);
+    proto.nicDoneWait = layout.localCounter(slot);
+    proto.nicDoneCompletion = layout.localCompletionCounter(slot);
+    proto.sendCompletionSlots = sendCompletionSlots;
+  }
+  return channel;
+}
+
+IBGDA_HOST_DEVICE inline IbRemoteChannel makeIbRemoteChannel(
+    const IbChannelLayout& layout,
+    int channelId) {
+  return IbRemoteChannel{
+      .dataReady = layout.remoteDataReadySignal(channelId),
+      .slotFree = layout.remoteSlotFreeSignal(channelId),
+      .recvStaging = layout.recvStagingBuf,
+  };
+}
+
+} // namespace comms::prims

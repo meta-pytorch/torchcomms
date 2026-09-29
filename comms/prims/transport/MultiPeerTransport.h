@@ -1,0 +1,514 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+// `<cuda.h>` (driver API) and `<cuda_runtime.h>` are NVIDIA-only. On AMD,
+// `comms/prims/memory/GpuMemHandler.h` (included below) brings in the HIP
+// runtime headers under `#ifdef __HIP_PLATFORM_AMD__` and provides the
+// stand-in types needed for the CUDA driver types referenced via
+// `NvlMemExchange.h` (`NvlPeerMem`).
+#ifndef __HIP_PLATFORM_AMD__
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
+
+#include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
+#include "comms/prims/memory/GpuMemHandler.h"
+#include "comms/prims/memory/NvlMemExchange.h"
+#include "comms/prims/topology/TopologyDiscovery.h"
+#include "comms/prims/transport/IbTransportConfig.h"
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibrc/MultipeerIbrcTransport.h"
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
+
+namespace comms::fault_tolerance {
+class Abort;
+} // namespace comms::fault_tolerance
+
+namespace comms::prims {
+
+// Forward declaration — include MultiPeerDeviceHandle.cuh to use
+// get_device_handle(peers).
+struct MultiPeerDeviceHandle;
+class HostWindow;
+
+struct MultiPeerTransportConfig {
+  MultiPeerNvlTransportConfig nvlConfig;
+  MultipeerIbTransportConfig ibConfig;
+
+  // Selects the IB backend for non-NVL peers. Default remains IBGDA.
+  IbBackendMode ibMode{IbBackendMode::kIbgda};
+
+  // MNNVL topology overrides for UUID and clique ID.
+  // See TopologyConfig for field-level documentation.
+  TopologyConfig topoConfig;
+
+  // When true, IBGDA transport is never constructed and all non-self peers
+  // are routed over NVLink. Requires all ranks in the same NVL domain.
+  bool disableIb{false};
+};
+
+/**
+ * MultiPeerTransport - Host-side wrapper unifying NVLink, IBGDA, and
+ * Self transports.
+ *
+ * IBGDA is the universal transport created for ALL non-self peers.
+ * NVL is additionally created for NVLink-connected peers and is preferred
+ * when available. get_transport_type() returns the preferred transport.
+ *
+ * Construction:
+ *   1. Discovers topology (NVLink peers) via bootstrap allGather
+ *      + cudaDeviceCanAccessPeer
+ *   2. Creates MultiPeerNvlTransport for NVLink-reachable peers
+ *      (using NvlBootstrapAdapter for local rank mapping)
+ *   3. Always creates MultipeerIbgdaTransport for ALL peers
+ *      (using full global rank space)
+ *
+ * Usage:
+ *   auto transport = MultiPeerTransport(myRank, nRanks, deviceId, bootstrap,
+ * config); transport.exchange();                            // COLLECTIVE auto
+ * handle = transport.get_device_handle(peers); // For kernels
+ */
+class MultiPeerTransport {
+ public:
+  /// When topo is provided, bypasses TopologyDiscovery and uses the
+  /// pre-computed topology directly (primarily for unit testing).
+  ///
+  /// @throws std::runtime_error on topology discovery, transport construction,
+  /// or enabled FT abort-device handle creation failure.
+  MultiPeerTransport(
+      int myRank,
+      int nRanks,
+      int deviceId,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      const MultiPeerTransportConfig& config,
+      std::optional<TopologyResult> topo = std::nullopt,
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr);
+
+  ~MultiPeerTransport();
+
+  // Non-copyable, non-movable
+  MultiPeerTransport(const MultiPeerTransport&) = delete;
+  MultiPeerTransport& operator=(const MultiPeerTransport&) = delete;
+  MultiPeerTransport(MultiPeerTransport&&) = delete;
+  MultiPeerTransport& operator=(MultiPeerTransport&&) = delete;
+
+  /**
+   * COLLECTIVE: exchanges NVLink memory handles and IBGDA RDMA info.
+   * All nRanks must call this.
+   */
+  void exchange();
+
+  /**
+   * Perform all rank-local allocation required by exchangePrepared().
+   *
+   * This operation is idempotent and performs no bootstrap communication. A
+   * caller coordinating failure across the communicator must run its readiness
+   * agreement after every rank has attempted this method.
+   */
+  void prepareExchange();
+
+  /**
+   * Complete the failure-safe exchange after prepareExchange() has succeeded
+   * and the caller has agreed readiness across the full communicator.
+   *
+   * Unlike exchange(), the CUDA-IPC path includes a post-import team agreement.
+   * A failure poisons this transport and cannot be retried.
+   */
+  void exchangePrepared();
+
+  // --- Topology queries ---
+
+  /** @return Preferred transport type for the given peer rank. */
+  TransportType get_transport_type(int peerRank) const;
+
+  /** @return True if peerRank is reachable via NVLink. */
+  bool is_nvl_peer(int peerRank) const;
+
+  /** @return True if IBGDA is the preferred transport for peerRank. */
+  bool is_ibgda_peer(int peerRank) const;
+
+  /** @return True if IBGDA transport is available for peerRank (all non-self).
+   */
+  bool has_ibgda(int peerRank) const {
+    return ibgdaTransport_ != nullptr && peerRank != myRank_;
+  }
+
+  /** @return True if IBGDA is the preferred transport (no NVL available). */
+  bool prefers_ibgda(int peerRank) const {
+    return typePerRank_[peerRank] == TransportType::P2P_IBGDA;
+  }
+
+  /** @return This rank's global rank index. */
+  int my_rank() const {
+    return myRank_;
+  }
+
+  /** @return Total number of ranks in the communicator. */
+  int n_ranks() const {
+    return nRanks_;
+  }
+
+  /** @return Global ranks of NVL peers (excluding self). */
+  const std::vector<int>& nvl_peer_ranks() const {
+    return nvlPeerRanks_;
+  }
+
+  /** @return Global ranks whose preferred transport is IB. */
+  const std::vector<int>& ib_peer_ranks() const {
+    return ibPeerRanks_;
+  }
+
+  /** @return NVL bootstrap adapter for NVL-scoped collective ops.
+   *  Used by HostWindow for GpuMemHandler NVL exchange. */
+  std::shared_ptr<meta::comms::IBootstrap> nvl_bootstrap() const {
+    return nvlBootstrapAdapter_;
+  }
+
+  /** @return This rank's local index within the NVL peer group. */
+  int nvl_local_rank() const {
+    return nvlLocalRank_;
+  }
+
+  /** @return Number of ranks in the NVL peer group (including self). */
+  int nvl_n_ranks() const {
+    return nvlNRanks_;
+  }
+
+  /** @return NVL local rank for the given global rank.
+   *  @throws std::out_of_range if globalRank is not in the NVL group. */
+  int global_to_nvl_local(int globalRank) const {
+    return globalToNvlLocal_.at(globalRank);
+  }
+
+  // --- External buffer configuration ---
+
+  /**
+   * Set external NVL data buffers for reuse instead of internal allocation.
+   *
+   * Call BEFORE exchange(). Delegates to
+   * MultiPeerNvlTransport::setExternalDataBuffers().
+   */
+  void setExternalNvlDataBuffers(ExternalStagingBuffers externalStagingBuffers);
+
+  // --- Host-side transport accessors ---
+
+  /**
+   * @param globalPeerRank Global rank of the NVL peer.
+   * @return Pointer to P2pNvlTransportDevice on device memory for the given
+   * peer.
+   */
+  P2pNvlTransportDevice get_p2p_nvl_transport_device(int globalPeerRank) const;
+
+  /**
+   * @return Pointer to the device-side Transport array from NVL transport,
+   *   indexed by NVL local rank. Returns nullptr if no NVL transport.
+   */
+  Transport* /*nullable*/ get_nvl_transports_array() const;
+
+  /**
+   * @return True after collective multimem initialization succeeds.
+   *
+   * This is a cached local query and never starts a collective operation.
+   */
+  bool has_multimem_nvl_transport() const;
+
+  /**
+   * Collectively initialize the multimem NVL transport when all ranks are
+   * eligible. Returns false for disabled/ineligible communicators so the
+   * dispatcher can select a fallback algorithm.
+   *
+   * PRECONDITION: all NVL ranks call this in lockstep.
+   * @throws std::runtime_error on bootstrap or multicast setup failure.
+   */
+  bool initialize_multimem_nvl_transport() const;
+
+  /**
+   * Return the device handle for the copy-based (staging) multimem NVL
+   * transport. Delegates to
+   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the nvlmm
+   * staging path.
+   *
+   * Call initialize_multimem_nvl_transport() collectively before this cached
+   * getter. It throws when initialization has not succeeded.
+   *
+   * This getter is local and never touches bootstrap.
+   *
+   * @throws std::runtime_error if no NVL transport, multimem NVL is not
+   * initialized.
+   */
+  MultimemNvlTransportDevice get_multimem_nvl_transport_device() const;
+
+  /**
+   * @param globalPeerRank Global rank of the IBGDA peer.
+   * @return Non-owning pointer to GPU-allocated P2pIbgdaTransportDevice.
+   * Materializes the peer on demand and may perform bootstrap communication.
+   */
+  P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(int globalPeerRank);
+
+  /** @return A stateless P2pSelfTransportDevice handle. */
+  P2pSelfTransportDevice get_p2p_self_transport_device() const;
+
+  // --- Device handle (for passing to kernels) ---
+
+  /**
+   * Materialize the specified IBGDA peers, then return the device handle.
+   * Use with lazy mode for DeviceWindow or direct Transport[] access.
+   *
+   * @param peers List of peer ranks to materialize
+   * @throws std::runtime_error if called before exchange() or if peer
+   * materialization fails.
+   */
+  MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
+
+  bool is_lazy_mode() const;
+
+  /**
+   * Returns true when an ambiguous IB failure requires every locally owned
+   * or caller-owned registered target allocation to remain alive until process
+   * exit.
+   */
+  bool ibgda_resources_quarantined() const noexcept {
+    return ibgdaResourcesQuarantined_.load(std::memory_order_acquire);
+  }
+
+  /*
+   * Actual channel capacity of the configured IBGDA transport.
+   */
+  std::optional<int> ibgda_max_groups() const;
+
+  /*
+   * Resolved staging pipeline depth of the configured IBGDA transport.
+   */
+  std::optional<int> ibgda_pipeline_depth() const;
+
+  /*
+   * Channel capacity of whichever IB backend is configured. Empty when this
+   * rank has no IB peers.
+   */
+  std::optional<int> ib_max_num_channels() const;
+
+  /*
+   * Channel capacity of the NVL transport. Empty when this rank has no NVL
+   * peers, mirroring ib_max_num_channels(). Rank-local: IB cross-validates
+   * maxChannels across ranks at connect, NVL has no equivalent exchange, so
+   * using this for per-edge geometry assumes it is uniform across the job, the
+   * same assumption MCCL_MAX_NBLOCKS already relies on.
+   */
+  std::optional<int> nvl_max_num_channels() const;
+
+  /*
+   * Every requested edge must be requested by both endpoint ranks in the same
+   * connect round. Peer-vector order may differ between ranks.
+   */
+  void materializePeers(const std::vector<int>& peers);
+
+  void connectPeers();
+
+  // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
+
+  /**
+   * Register a user-provided buffer for IBGDA RDMA access.
+   *
+   * @param ptr Pointer to GPU memory
+   * @param size Size of the buffer in bytes
+   * @return IbgdaLocalBuffer with valid lkey for local RDMA operations
+   * @throws std::runtime_error if no IBGDA transport or registration fails
+   */
+  IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
+
+  /**
+   * Register an exact caller-owned range. On return or exception,
+   * registrationQuarantined is set only when this invocation leaves an MR
+   * active, in which case the backing allocation must remain alive until exit.
+   */
+  IbBufferRegistration registerIbBufferRange(
+      void* ptr,
+      std::size_t size,
+      bool* registrationQuarantined = nullptr);
+
+  /**
+   * Deregister an exact-range buffer and invalidate its handle. Returns false
+   * when the MR and backing allocation must remain alive until process exit.
+   */
+  [[nodiscard]] bool deregisterIbBufferRange(
+      IbBufferRegistration& registration);
+
+  /**
+   * Deregister a previously registered IBGDA buffer.
+   *
+   * After process-lifetime quarantine, the MR is retained and the caller must
+   * keep the allocation alive until exit.
+   *
+   * @param ptr Pointer to the buffer to deregister
+   * @return False when the backing allocation must remain alive because the
+   *         registration could not be safely revoked
+   */
+  [[nodiscard]] bool localDeregisterIbgdaBuffer(void* ptr) noexcept;
+
+  /**
+   * Collectively exchange IBGDA buffer info with all peers.
+   *
+   * COLLECTIVE OPERATION: All ranks MUST call this with their local buffer.
+   * Returns remote buffer info for all IBGDA peers.
+   *
+   * @param localBuf Local buffer registered with localRegisterIbgdaBuffer()
+   * @return Vector of remote buffers, one per IBGDA peer (size = nRanks - 1)
+   */
+  std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
+      const IbgdaLocalBuffer& localBuf);
+
+  /**
+   * Host-driven RDMA writer for one peer (CPU posts put/signal into the IBRC
+   * command queue, no GPU kernel involved). Only available when the transport
+   * was built in IBRC mode (config.ibMode == kIbrc); throws otherwise.
+   *
+   * @param peerRank Global rank of the IB peer.
+   * @param queueIndex Command-queue index for this peer (default 0).
+   * @return A P2pIbrcHostWriter bound to that peer's command queue.
+   */
+  P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
+
+  /**
+   * Number of NICs the IB transport opened for this GPU -- the best-affinity
+   * tier, or config.gpuNicMap when set. A host-driven collective needs this to
+   * size its lane count: one writer reaches one NIC, so pinning a transfer
+   * to queue 0 uses a single port of however many the topology provides.
+   *
+   * @throws std::runtime_error when the IBRC transport is not available.
+   */
+  int ibNumNics() const;
+
+  /** Largest lane count getHostLanes() accepts for this peer. */
+  std::size_t hostLaneCapacity(int peerRank) const;
+
+  /**
+   * Lanes onto one peer for splitting a single transfer across NICs and QPs.
+   * See P2pIbrcHostLanes for the per-lane signalling contract -- each lane
+   * must signal its own counter, and the receiver must wait on all of them.
+   *
+   * @throws std::runtime_error when the IBRC transport is not available.
+   */
+  P2pIbrcHostLanes getHostLanes(int peerRank, int numLanes) const;
+
+  IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
+  IbgdaLocalBuffer registerIbCounterBuffer(
+      const IbgdaLocalBuffer& buffer,
+      std::size_t size);
+  [[nodiscard]] bool freeIbCounterBuffer(
+      IbgdaLocalBuffer& buffer,
+      void*& hostPtr) noexcept;
+
+  /**
+   * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.
+   *
+   * COLLECTIVE OPERATION: All NVL ranks MUST call this with their buffer.
+   * Supports both cudaMalloc'd and cuMem-allocated buffers (e.g. from
+   * ncclMemAlloc). Three exchange paths are auto-detected:
+   * - cudaMalloc buffers: cudaIpcMemHandle path
+   * - cuMem with CU_MEM_HANDLE_TYPE_FABRIC: fabric handle path
+   * - cuMem with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR (no fabric):
+   *   POSIX FD path via pidfd_getfd (Linux 5.6+, intra-host only)
+   *
+   * @param localPtr GPU pointer (cudaMalloc or ncclMemAlloc). The actual
+   *                 buffer length is derived from the allocation itself
+   *                 (via `cuMemGetAddressRange` on the VMM path) -- callers
+   *                 do not need to pass a size.
+   * @param localHandlePossiblyExposed Optional sticky flag set after local
+   *                 handle export succeeds and before the first collective.
+   * @return Vector of mapped peer pointers (size = nvlNRanks_), indexed by
+   *         NVL local rank. Self entry is the original localPtr. Other entries
+   *         are IPC-mapped pointers to peer buffers.
+   */
+  std::vector<void*> exchangeNvlBuffer(
+      void* localPtr,
+      bool* localHandlePossiblyExposed = nullptr);
+
+  /**
+   * Unmap NVL IPC-mapped peer buffers obtained from exchangeNvlBuffer().
+   *
+   * @param mappedPtrs Vector returned by exchangeNvlBuffer()
+   */
+  void unmapNvlBuffers(const std::vector<void*>& mappedPtrs);
+
+ private:
+  friend class HostWindow;
+
+  const int myRank_;
+  const int nRanks_;
+  const int deviceId_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
+  std::shared_ptr<comms::fault_tolerance::Abort> abort_;
+  comms::fault_tolerance::AbortDevice abortDevice_;
+
+  // --- Topology (populated in constructor) ---
+  std::vector<int> nvlPeerRanks_;
+  std::vector<int> ibPeerRanks_;
+  std::vector<TransportType> typePerRank_;
+
+  // --- NVLink rank mapping ---
+  std::unordered_map<int, int> globalToNvlLocal_;
+  int nvlLocalRank_{-1};
+  int nvlNRanks_{0};
+
+  // --- Sub-transports ---
+  std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
+  std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
+  // Exactly one IB backend is constructed, selected by MultiPeerTransportConfig
+  // ::ibMode (kIbgda by default, kIbrc selects the CPU-proxy skeleton backend).
+  // IBRC functional entry points fail fast until the backend is implemented.
+  std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
+  std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
+
+  // --- GPU-allocated transport array for device handle ---
+  Transport* transportsGpu_{nullptr};
+  std::vector<Transport> transportsHost_;
+  bool deviceHandleBuilt_{false};
+  // Once set, the destructor detaches the configured IB transport instead of
+  // releasing resources that a peer or provider may still address.
+  std::atomic<bool> ibgdaResourcesQuarantined_{false};
+
+  enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
+  ExchangeState exchangeState_{ExchangeState::kUnprepared};
+
+  // --- Private helpers ---
+  void initFromTopology(
+      TopologyResult topo,
+      const MultiPeerTransportConfig& config);
+  void build_device_handle(bool allowAllocation);
+  void free_device_handle();
+  void rollbackPreparedExchange() noexcept;
+  void requireIbTransportUsable() const;
+  void connectIbgdaPeers();
+  void quarantineIbgdaTransport(std::string_view context) noexcept;
+
+  // Memory type detection for exchangeNvlBuffer tri-path support.
+  enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };
+  NvlMemMode detectNvlMemMode(void* ptr) const;
+
+  // Track NVL exchange state for proper cleanup in unmapNvlBuffers. The
+  // NvlPeerMem owns the peer memory state produced by the NvlMemExchange
+  // helpers: for VMM modes its `vmmMappings` (RAII peer VAs) and
+  // `vmmPeerHandles` (imported handles released via cuMemRelease), and for
+  // cudaIpc mode the peer pointers in `peerPtrs` (closed via
+  // cudaIpcCloseMemHandle).
+  struct NvlExchangeRecord {
+    NvlMemMode mode{NvlMemMode::kCudaIpc};
+    NvlPeerMem mem;
+  };
+  // Keyed by the self (local) pointer, i.e. mappedPtrs[nvlLocalRank_].
+  std::unordered_map<void*, NvlExchangeRecord> nvlExchangeRecords_;
+};
+
+} // namespace comms::prims

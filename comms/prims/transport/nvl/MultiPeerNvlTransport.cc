@@ -1,0 +1,839 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <exception>
+#include <optional>
+#include <stdexcept>
+#include <vector>
+
+#include "comms/prims/transport/Transport.cuh"
+#include "comms/prims/transport/ll/LlPacket.cuh"
+#include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/nvl/NvlChannelProgress.cuh"
+#include "comms/prims/transport/nvl/NvlChannelState.cuh"
+#include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#else
+#include "comms/utils/CudaRAII.h"
+#endif
+#include "comms/utils/checks.h"
+
+namespace comms::prims {
+
+namespace {
+
+constexpr int kMultimemEligibilityError = -1;
+constexpr int kMultimemIneligible = 0;
+constexpr int kMultimemEligible = 1;
+
+int currentCudaDevice() {
+  int device = -1;
+  CUDA_CHECK(cudaGetDevice(&device));
+  return device;
+}
+
+std::size_t dataBufferSize(const MultiPeerNvlTransportConfig& config) {
+  return static_cast<std::size_t>(config.maxNumChannels) *
+      config.perChannelSize;
+}
+
+MultiPeerNvlTransportConfig normalizeChannelConfig(
+    MultiPeerNvlTransportConfig config) {
+  if (config.maxNumChannels <= 0) {
+    config.perChannelSize = 0;
+    return config;
+  }
+
+  if (config.perChannelSize == 0) {
+    config.perChannelSize = kDefaultNvlPerChannelSize;
+  }
+
+  if (config.perChannelSize < 16) {
+    throw std::runtime_error("tile send/recv requires perChannelSize >= 16");
+  }
+  if (config.perChannelSize % 16 != 0) {
+    throw std::runtime_error(
+        "tile send/recv requires perChannelSize to be 16-byte aligned");
+  }
+  if (config.pipelineDepth < 1) {
+    throw std::runtime_error("tile send/recv requires pipelineDepth >= 1");
+  }
+  if (config.perChannelSize % config.pipelineDepth != 0) {
+    throw std::runtime_error(
+        "tile send/recv requires perChannelSize divisible by pipelineDepth");
+  }
+  const std::size_t pipelineChunk =
+      config.perChannelSize / config.pipelineDepth;
+  if (pipelineChunk < 16 || pipelineChunk % 16 != 0) {
+    throw std::runtime_error(
+        "tile send/recv requires perChannelSize / pipelineDepth to be a 16-byte aligned chunk >= 16");
+  }
+  // Cap per-channel staging at 128MB (matches NCCL's max channel buffer). This
+  // also keeps the derived per-slot staging size bounded for any sane channel
+  // count.
+  constexpr std::size_t kMaxPerChannelSize = 128ULL * 1024 * 1024;
+  if (config.perChannelSize > kMaxPerChannelSize) {
+    throw std::runtime_error("tile send/recv requires perChannelSize <= 128MB");
+  }
+  return config;
+}
+
+} // namespace
+
+MultiPeerNvlTransport::MultiPeerNvlTransport(
+    int myRank,
+    int nRanks,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+    const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
+    : MultiPeerNvlTransport(
+          myRank,
+          nRanks,
+          currentCudaDevice(),
+          std::move(bootstrap),
+          multiPeerNvlTransportConfig) {}
+
+MultiPeerNvlTransport::MultiPeerNvlTransport(
+    int myRank,
+    int nRanks,
+    int multimemCudaDevice,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+    const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
+    : myRank_(myRank),
+      nRanks_(nRanks),
+      multimemCudaDevice_(multimemCudaDevice),
+      bootstrap_(std::move(bootstrap)),
+      config_(normalizeChannelConfig(multiPeerNvlTransportConfig)),
+      memSharingMode_(config_.memSharingMode.value_or(
+          GpuMemHandler::detectBestMode(multimemCudaDevice))) {
+  // ===========================================================================
+  // Buffer Allocation
+  // ===========================================================================
+  //
+  // Memory allocation uses RAII pattern via std::unique_ptr<GpuMemHandler>.
+  // If any allocation or initialization fails and throws an exception:
+  // - Previously allocated GpuMemHandler objects are automatically cleaned up
+  //   when the exception propagates and unique_ptr destructors run
+  // - No manual cleanup is needed in the constructor
+  // - The destructor only needs to handle successfully constructed objects
+  //
+  // Data buffers are NOT allocated here — they are either:
+  // - Allocated internally in exchange() (default)
+  // - Provided externally via setExternalDataBuffers() before exchange()
+  //
+  // Allocation order: signal -> state
+  // Each handler's destructor will free its GPU memory if constructed.
+
+  // Calculate per-peer fixed-channel buffer sizes.
+  dataBufferSize_ = dataBufferSize(config_);
+  perPeerDataBufferSize_ = dataBufferSize_;
+
+  perPeerSignalBufferSize_ =
+      getSignalBufferSize(static_cast<int>(config_.p2pSignalCount));
+
+  // Allocate signal buffer (always needed)
+  const std::size_t totalSignalBufferSize =
+      perPeerSignalBufferSize_ * (nRanks_ - 1);
+
+  signalBufferHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, totalSignalBufferSize, memSharingMode_);
+
+  // Initialize signal state buffer to 0 for all ranks
+  auto signalPtr =
+      static_cast<SignalState*>(signalBufferHandler_->getLocalDeviceMemPtr());
+  std::vector<SignalState> signalInitStates(
+      config_.p2pSignalCount * (nRanks_ - 1));
+  CUDA_CHECK(cudaMemcpy(
+      signalPtr,
+      signalInitStates.data(),
+      totalSignalBufferSize,
+      cudaMemcpyDefault));
+
+  // Conditionally allocate per-channel state for the tile protocol.
+  // One NvlChannelState per channel per peer; the whole array is IPC-shared
+  // so the remote rank's send/recv can write data_ready / slot_free into our
+  // local endpoint.
+  if (config_.maxNumChannels > 0) {
+    if (config_.pipelineDepth < 1) {
+      throw std::runtime_error("tile send/recv requires pipelineDepth >= 1");
+    }
+    perPeerChannelStateSize_ = config_.maxNumChannels * sizeof(NvlChannelState);
+    const std::size_t totalChannelStateSize =
+        perPeerChannelStateSize_ * (nRanks_ - 1);
+    channelStateHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalChannelStateSize, memSharingMode_);
+    auto* channelStatePtr = channelStateHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(channelStatePtr, 0, totalChannelStateSize));
+
+    // Same per-peer shape as the channel state above, but local rather than
+    // IPC-shared. One allocation holds both directions back to back, send
+    // first; progressDirectionStride_ is the offset to the recv half. Zeroed so
+    // every channel starts NvlProgressStage::Idle.
+    perPeerChannelProgressSize_ =
+        config_.maxNumChannels * sizeof(NvlChannelProgress);
+    progressDirectionStride_ = perPeerChannelProgressSize_ * (nRanks_ - 1);
+    // A single-rank transport has no peers and so no progress slices. Skip the
+    // allocation rather than calling cudaMalloc with size 0, which succeeds
+    // while leaving the pointer null. buildP2pTransportDevice leaves the device
+    // progress pointers null, and the progress entry points trap on them.
+    if (progressDirectionStride_ > 0) {
+      void* progressPtr = nullptr;
+      CUDA_CHECK(cudaMalloc(&progressPtr, progressDirectionStride_ * 2));
+      if (progressPtr == nullptr) {
+        throw std::runtime_error("failed to allocate NVL progress state");
+      }
+      progressBase_.reset(progressPtr);
+      CUDA_CHECK(cudaMemset(progressPtr, 0, progressDirectionStride_ * 2));
+    }
+  }
+
+  // Conditionally allocate barrier buffer
+  if (config_.p2pBarrierCount > 0) {
+    perPeerBarrierBufferSize_ =
+        getBarrierBufferSize(static_cast<int>(config_.p2pBarrierCount));
+    std::size_t totalBarrierSize = perPeerBarrierBufferSize_ * (nRanks_ - 1);
+    barrierBufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalBarrierSize, memSharingMode_);
+
+    // Zero-initialize barrier counters
+    auto* barrierPtr = barrierBufferHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(barrierPtr, 0, totalBarrierSize));
+  }
+
+  // Conditionally allocate LL128 buffers
+  if (config_.ll128BufferSize > 0) {
+    perPeerLl128BufferSize_ = config_.ll128BufferSize;
+    std::size_t totalLl128Size = perPeerLl128BufferSize_ * (nRanks_ - 1);
+    ll128BufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalLl128Size, memSharingMode_);
+
+    // Initialize all LL128 packet flags to kLl128ReadyToWrite (-1).
+    // cudaMemset(0xFF) sets all bytes to 0xFF = -1 in two's complement.
+    // Data payload bytes are also 0xFF but get overwritten before first read.
+    auto* ll128Ptr = ll128BufferHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(ll128Ptr, kLl128MemsetInitByte, totalLl128Size));
+  }
+
+  // Conditionally allocate LL buffers
+  if (config_.llBufferSize > 0) {
+    perPeerLlBufferSize_ = config_.llBufferSize;
+    std::size_t totalLlSize = perPeerLlBufferSize_ * (nRanks_ - 1);
+    llBufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalLlSize, memSharingMode_);
+
+    // Initialize all LL line flags to kLlReadyToWrite (0xFFFFFFFF).
+    auto* llPtr = llBufferHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(llPtr, kLlMemsetInitByte, totalLlSize));
+  }
+
+  // Ensure all buffer initialization completes before exchange
+  if (config_.ll128BufferSize > 0 || config_.llBufferSize > 0) {
+    CUDA_CHECK(cudaDeviceSynchronize());
+  }
+}
+
+MultiPeerNvlTransport::~MultiPeerNvlTransport() {
+  if (!multimemNvlTransport_) {
+    return;
+  }
+  try {
+    meta::comms::CudaDeviceGuard guard(multimemCudaDevice_);
+    multimemNvlTransport_.reset();
+  } catch (const std::exception& error) {
+    std::fprintf(
+        stderr,
+        "MultiPeerNvlTransport: failed to select multimem CUDA device during "
+        "cleanup; leaking the multicast transport to avoid unsafe teardown: "
+        "%s\n",
+        error.what());
+    static_cast<void>(multimemNvlTransport_.release());
+  }
+}
+
+void MultiPeerNvlTransport::setExternalDataBuffers(
+    ExternalStagingBuffers externalStagingBuffers) {
+  // Validate that the vectors are large enough to index by rank.
+  if (static_cast<int>(externalStagingBuffers.localBuffers.size()) < nRanks_ ||
+      static_cast<int>(externalStagingBuffers.remoteBuffers.size()) < nRanks_) {
+    throw std::runtime_error(
+        "setExternalDataBuffers: localBuffers.size()=" +
+        std::to_string(externalStagingBuffers.localBuffers.size()) +
+        " and remoteBuffers.size()=" +
+        std::to_string(externalStagingBuffers.remoteBuffers.size()) +
+        " must both be >= nRanks=" + std::to_string(nRanks_));
+  }
+
+  // Validate that every non-self peer buffer meets the minimum size.
+  for (int peer = 0; peer < nRanks_; ++peer) {
+    if (peer == myRank_) {
+      continue;
+    }
+    auto localSize = externalStagingBuffers.localBuffers[peer].size();
+    auto remoteSize = externalStagingBuffers.remoteBuffers[peer].size();
+    if (localSize < perPeerDataBufferSize_) {
+      throw std::runtime_error(
+          "setExternalDataBuffers: local buffer for peer " +
+          std::to_string(peer) + " has size " + std::to_string(localSize) +
+          " but requires at least " + std::to_string(perPeerDataBufferSize_) +
+          " (maxNumChannels * perChannelSize)");
+    }
+    if (remoteSize < perPeerDataBufferSize_) {
+      throw std::runtime_error(
+          "setExternalDataBuffers: remote buffer for peer " +
+          std::to_string(peer) + " has size " + std::to_string(remoteSize) +
+          " but requires at least " + std::to_string(perPeerDataBufferSize_) +
+          " (maxNumChannels * perChannelSize)");
+    }
+  }
+  externalStagingBuffers_ = std::move(externalStagingBuffers);
+}
+
+void MultiPeerNvlTransport::exchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+
+  if (!externalStagingBuffers_ && !dataBufferHandler_ && dataBufferSize_ > 0) {
+    const std::size_t totalDataBufferSize =
+        perPeerDataBufferSize_ * (nRanks_ - 1);
+    dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
+  }
+
+  if (dataBufferHandler_) {
+    dataBufferHandler_->exchangeMemPtrs();
+  }
+  signalBufferHandler_->exchangeMemPtrs();
+
+  if (ll128BufferHandler_) {
+    ll128BufferHandler_->exchangeMemPtrs();
+  }
+  if (barrierBufferHandler_) {
+    barrierBufferHandler_->exchangeMemPtrs();
+  }
+  if (channelStateHandler_) {
+    channelStateHandler_->exchangeMemPtrs();
+  }
+  if (llBufferHandler_) {
+    llBufferHandler_->exchangeMemPtrs();
+  }
+  exchangeState_ = ExchangeState::kExchanged;
+
+  // Multimem NVL is intentionally not initialized here. Most collectives only
+  // need the peer-to-peer NVLink transport. Multimem collectives invoke the
+  // explicit collective initializer before reading the cached device handle.
+}
+
+void MultiPeerNvlTransport::prepareExchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kPrepared ||
+      exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (externalStagingBuffers_.has_value()) {
+    throw std::invalid_argument(
+        "prepared NVLink exchange does not accept legacy external staging buffers");
+  }
+
+  try {
+    if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
+      const std::size_t totalDataBufferSize =
+          perPeerDataBufferSize_ * (nRanks_ - 1);
+      dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+          bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
+    }
+
+    if (dataBufferHandler_) {
+      dataBufferHandler_->prepareExchange();
+    }
+    signalBufferHandler_->prepareExchange();
+    if (ll128BufferHandler_) {
+      ll128BufferHandler_->prepareExchange();
+    }
+    if (barrierBufferHandler_) {
+      barrierBufferHandler_->prepareExchange();
+    }
+    if (channelStateHandler_) {
+      channelStateHandler_->prepareExchange();
+    }
+    if (llBufferHandler_) {
+      llBufferHandler_->prepareExchange();
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackExchange();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kPrepared;
+}
+
+void MultiPeerNvlTransport::exchangePrepared() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (exchangeState_ != ExchangeState::kPrepared) {
+    throw std::logic_error(
+        "MultiPeerNvlTransport::exchangePrepared called before prepareExchange");
+  }
+
+  try {
+    if (dataBufferHandler_) {
+      dataBufferHandler_->exchangeMemPtrsPrepared();
+    }
+    signalBufferHandler_->exchangeMemPtrsPrepared();
+    if (ll128BufferHandler_) {
+      ll128BufferHandler_->exchangeMemPtrsPrepared();
+    }
+    if (barrierBufferHandler_) {
+      barrierBufferHandler_->exchangeMemPtrsPrepared();
+    }
+    if (channelStateHandler_) {
+      channelStateHandler_->exchangeMemPtrsPrepared();
+    }
+    if (llBufferHandler_) {
+      llBufferHandler_->exchangeMemPtrsPrepared();
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackExchange();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kExchanged;
+}
+
+void MultiPeerNvlTransport::rollbackExchange() noexcept {
+  llBufferHandler_.reset();
+  channelStateHandler_.reset();
+  barrierBufferHandler_.reset();
+  ll128BufferHandler_.reset();
+  signalBufferHandler_.reset();
+  dataBufferHandler_.reset();
+  transportsDevice_.reset();
+  progressBase_.reset();
+  externalStagingBuffers_.reset();
+  multiPeerInitialized_ = false;
+}
+
+P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
+    int peerRank) {
+  // Buffer Layout Example (4 ranks, buffer size X per peer):
+  //
+  // Rank 0's buffer: [Slot 0: Peer1 | Slot 1: Peer2 | Slot 2: Peer3]
+  // Rank 1's buffer: [Slot 0: Peer0 | Slot 1: Peer2 | Slot 2: Peer3]
+  // Rank 2's buffer: [Slot 0: Peer0 | Slot 1: Peer1 | Slot 2: Peer3]
+  // Rank 3's buffer: [Slot 0: Peer0 | Slot 1: Peer1 | Slot 2: Peer2]
+  //
+  // Communication examples:
+  // Rank 0 -> Rank 1: local[0]=0*X, remote[0]=0*X
+  // Rank 0 -> Rank 2: local[1]=1*X, remote[0]=0*X
+  // Rank 0 -> Rank 3: local[2]=2*X, remote[0]=0*X
+  // Rank 1 -> Rank 2: local[1]=1*X, remote[1]=1*X
+  // Rank 1 -> Rank 3: local[2]=2*X, remote[1]=1*X
+  // Rank 2 -> Rank 3: local[2]=2*X, remote[2]=2*X
+  // ...
+
+  // Calculate local peer index for buffer offset in my own buffer
+  // For peerRank < myRank, they occupy slots 0, 1, 2, ...
+  // For peerRank > myRank, they occupy subsequent slots
+  const int localPeerIndex = (peerRank < myRank_) ? peerRank : (peerRank - 1);
+  const std::size_t localDataBufferOffset =
+      localPeerIndex * perPeerDataBufferSize_;
+  const std::size_t localSignalBufferOffset =
+      localPeerIndex * perPeerSignalBufferSize_;
+
+  // Calculate remote peer index for buffer offset in peer's buffer
+  // From peer's perspective, where does myRank fit in their buffer?
+  const int remotePeerIndex = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+  const std::size_t remoteDataBufferOffset =
+      remotePeerIndex * perPeerDataBufferSize_;
+  const std::size_t remoteSignalBufferOffset =
+      remotePeerIndex * perPeerSignalBufferSize_;
+
+  const int maxChannels = config_.maxNumChannels;
+  const std::size_t perChannelBuffer =
+      maxChannels > 0 ? config_.perChannelSize : 0;
+  const std::size_t perChannelSlot =
+      maxChannels > 0 ? config_.perChannelSize / config_.pipelineDepth : 0;
+  P2pNvlTransportOptions options{
+      .dataBufferSize = dataBufferSize_,
+      .pipelineDepth = config_.pipelineDepth,
+      .ll128BufferNumPackets = perPeerLl128BufferSize_ / kLl128PacketSize,
+      .llBufferNumLines = perPeerLlBufferSize_ / kLlLineSize,
+      .per_channel_buffer = perChannelBuffer,
+      .per_channel_slot = perChannelSlot,
+      .max_num_channels = maxChannels,
+  };
+
+  // Per-peer NvlChannelState pointers (nullptr when tile path is disabled).
+  // local_channels: this rank's channel endpoint for the remote rank.
+  // remote_channels: the remote rank's channel endpoint, seen via IPC.
+  NvlChannelState* localChannels = nullptr;
+  NvlChannelState* remoteChannels = nullptr;
+  if (channelStateHandler_) {
+    auto* localChBase =
+        static_cast<char*>(channelStateHandler_->getLocalDeviceMemPtr());
+    auto* remoteChBase =
+        static_cast<char*>(channelStateHandler_->getPeerDeviceMemPtr(peerRank));
+    localChannels = reinterpret_cast<NvlChannelState*>(
+        localChBase + localPeerIndex * perPeerChannelStateSize_);
+    remoteChannels = reinterpret_cast<NvlChannelState*>(
+        remoteChBase + remotePeerIndex * perPeerChannelStateSize_);
+  }
+
+  // Both directions slice by localPeerIndex; unlike the channel state there is
+  // no remote endpoint, since this storage is local. The recv half sits one
+  // direction stride into the same allocation.
+  NvlChannelProgress* sendProgress = nullptr;
+  NvlChannelProgress* recvProgress = nullptr;
+  if (progressBase_) {
+    auto* progressPtr = static_cast<char*>(progressBase_.get()) +
+        localPeerIndex * perPeerChannelProgressSize_;
+    sendProgress = reinterpret_cast<NvlChannelProgress*>(progressPtr);
+    recvProgress = reinterpret_cast<NvlChannelProgress*>(
+        progressPtr + progressDirectionStride_);
+  }
+
+  auto* localSignalPtr =
+      static_cast<char*>(signalBufferHandler_->getLocalDeviceMemPtr());
+  auto* remoteSignalPtr =
+      static_cast<char*>(signalBufferHandler_->getPeerDeviceMemPtr(peerRank));
+
+  DeviceSpan<SignalState> localSignalSpan(
+      reinterpret_cast<SignalState*>(localSignalPtr + localSignalBufferOffset),
+      config_.p2pSignalCount);
+  DeviceSpan<SignalState> remoteSignalSpan(
+      reinterpret_cast<SignalState*>(
+          remoteSignalPtr + remoteSignalBufferOffset),
+      config_.p2pSignalCount);
+
+  // Barrier buffer spans (empty if p2pBarrierCount == 0)
+  auto makeBarrierSpans =
+      [&]() -> std::pair<DeviceSpan<BarrierState>, DeviceSpan<BarrierState>> {
+    if (!barrierBufferHandler_) {
+      return {DeviceSpan<BarrierState>(), DeviceSpan<BarrierState>()};
+    }
+    auto* localBarrierPtr =
+        static_cast<char*>(barrierBufferHandler_->getLocalDeviceMemPtr());
+    auto* remoteBarrierPtr = static_cast<char*>(
+        barrierBufferHandler_->getPeerDeviceMemPtr(peerRank));
+    const std::size_t localBarrierOffset =
+        localPeerIndex * perPeerBarrierBufferSize_;
+    const std::size_t remoteBarrierOffset =
+        remotePeerIndex * perPeerBarrierBufferSize_;
+    return {
+        DeviceSpan<BarrierState>(
+            reinterpret_cast<BarrierState*>(
+                localBarrierPtr + localBarrierOffset),
+            config_.p2pBarrierCount),
+        DeviceSpan<BarrierState>(
+            reinterpret_cast<BarrierState*>(
+                remoteBarrierPtr + remoteBarrierOffset),
+            config_.p2pBarrierCount)};
+  };
+  auto [localBarrierSpan, remoteBarrierSpan] = makeBarrierSpans();
+
+  // Compute LL128 buffer pointers (nullptr when LL128 is disabled)
+  Ll128Packet* localLl128 = nullptr;
+  Ll128Packet* remoteLl128 = nullptr;
+  if (ll128BufferHandler_) {
+    auto* localLl128Ptr =
+        static_cast<char*>(ll128BufferHandler_->getLocalDeviceMemPtr());
+    localLl128 = reinterpret_cast<Ll128Packet*>(
+        localLl128Ptr + localPeerIndex * perPeerLl128BufferSize_);
+    auto* remoteLl128Ptr =
+        static_cast<char*>(ll128BufferHandler_->getPeerDeviceMemPtr(peerRank));
+    remoteLl128 = reinterpret_cast<Ll128Packet*>(
+        remoteLl128Ptr + remotePeerIndex * perPeerLl128BufferSize_);
+  }
+
+  // Compute LL buffer pointers (nullptr when LL is disabled)
+  LlLine* localLl = nullptr;
+  LlLine* remoteLl = nullptr;
+  if (llBufferHandler_) {
+    auto* localLlPtr =
+        static_cast<char*>(llBufferHandler_->getLocalDeviceMemPtr());
+    localLl = reinterpret_cast<LlLine*>(
+        localLlPtr + localPeerIndex * perPeerLlBufferSize_);
+    auto* remoteLlPtr =
+        static_cast<char*>(llBufferHandler_->getPeerDeviceMemPtr(peerRank));
+    remoteLl = reinterpret_cast<LlLine*>(
+        remoteLlPtr + remotePeerIndex * perPeerLlBufferSize_);
+  }
+
+  // Data buffer pointers: use external buffers if provided, otherwise
+  // use internally allocated dataBufferHandler_. When neither is available
+  // (dataBufferSize=0), pass nullptr — tile send()/recv() will trap.
+  char* localDataBuffer = nullptr;
+  char* remoteDataBuffer = nullptr;
+  if (externalStagingBuffers_) {
+    localDataBuffer = externalStagingBuffers_->localBuffers[peerRank].data();
+    remoteDataBuffer = externalStagingBuffers_->remoteBuffers[peerRank].data();
+  } else if (dataBufferHandler_) {
+    localDataBuffer =
+        static_cast<char*>(dataBufferHandler_->getLocalDeviceMemPtr()) +
+        localDataBufferOffset;
+    remoteDataBuffer =
+        static_cast<char*>(dataBufferHandler_->getPeerDeviceMemPtr(peerRank)) +
+        remoteDataBufferOffset;
+  }
+
+  LocalState localState{
+      .dataBuffer = localDataBuffer,
+      .signalBuffer = localSignalSpan,
+      .barrierBuffer = localBarrierSpan,
+      .ll128Buffer = localLl128,
+      .llBuffer = localLl,
+  };
+
+  RemoteState remoteState{
+      .dataBuffer = remoteDataBuffer,
+      .signalBuffer = remoteSignalSpan,
+      .barrierBuffer = remoteBarrierSpan,
+      .ll128Buffer = remoteLl128,
+      .llBuffer = remoteLl,
+  };
+
+  return P2pNvlTransportDevice(
+      myRank_,
+      peerRank,
+      options,
+      localState,
+      remoteState,
+      localChannels,
+      remoteChannels,
+      sendProgress,
+      recvProgress);
+}
+
+DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {
+  // Thread-safe lazy initialization of device-accessible arrays
+  if (!multiPeerInitialized_) {
+    initializeTransportsArray();
+    multiPeerInitialized_ = true;
+  }
+
+  return DeviceSpan<Transport>(
+      static_cast<Transport*>(transportsDevice_->get()), nRanks_);
+}
+
+bool MultiPeerNvlTransport::hasMultimemNvlTransport() const {
+  std::lock_guard<std::mutex> lock(multimemInitMutex_);
+  return multimemNvlTransport_ != nullptr;
+}
+
+bool MultiPeerNvlTransport::initializeMultimemNvlTransportIfEligible() const {
+  if (multimemNvlIneligible_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  try {
+    initializeMultimemNvlTransport();
+    return true;
+  } catch (...) {
+    if (multimemNvlIneligible_.load(std::memory_order_acquire)) {
+      return false;
+    }
+    throw;
+  }
+}
+
+MultimemNvlTransportDevice
+MultiPeerNvlTransport::getMultimemNvlTransportDevice() const {
+  std::lock_guard<std::mutex> lock(multimemInitMutex_);
+  if (!multimemNvlTransport_) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: multimem NVL transport is not initialized");
+  }
+  return multimemNvlTransport_->getDeviceTransport();
+}
+
+void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
+  // Serialize concurrent same-rank callers so at most one thread drives the
+  // eligibility agreement, local construction, construction-readiness
+  // agreement, and multicast exchange. If two threads on this rank both raced
+  // past the null-check, each would enter its own collective while other ranks
+  // only participate once, deadlocking the bootstrap. Second+ arrivals block
+  // here, then see the cached transport or terminal state below.
+  std::lock_guard<std::mutex> lock(multimemInitMutex_);
+
+  if (multimemNvlTransport_) {
+    return;
+  }
+  if (multimemNvlUnavailable_) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: multimem NVL transport is not available: " +
+        multimemNvlErrorMessage_);
+  }
+
+  std::vector<int> multimemEligible(nRanks_, 0);
+  std::vector<int> multimemReady(nRanks_, 0);
+  std::optional<meta::comms::CudaDeviceGuard> deviceGuard;
+  if (!config_.enableMultimem) {
+    // A disabled rank must still vote so enabled peers cannot hang in the
+    // communicator-wide eligibility agreement.
+    multimemEligible[myRank_] = kMultimemIneligible;
+  } else {
+    // A local CUDA/driver query failure is an error vote, not an early return:
+    // every rank must still enter the allGather so peers cannot hang.
+    try {
+      deviceGuard.emplace(multimemCudaDevice_);
+      multimemEligible[myRank_] =
+          MultimemNvlTransport::isEligible(nRanks_, multimemCudaDevice_)
+          ? kMultimemEligible
+          : kMultimemIneligible;
+    } catch (...) {
+      multimemEligible[myRank_] = kMultimemEligibilityError;
+    }
+  }
+  int eligibilityResult = 0;
+  try {
+    eligibilityResult =
+        bootstrap_
+            ->allGather(multimemEligible.data(), sizeof(int), myRank_, nRanks_)
+            .get();
+  } catch (...) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport eligibility allGather threw";
+    throw;
+  }
+  if (eligibilityResult != 0) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport eligibility allGather failed";
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+  if (std::any_of(
+          multimemEligible.begin(), multimemEligible.end(), [](int value) {
+            return value == kMultimemEligibilityError;
+          })) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport eligibility query failed on at least one rank";
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+  if (!std::all_of(
+          multimemEligible.begin(), multimemEligible.end(), [](int value) {
+            return value == kMultimemEligible;
+          })) {
+    multimemNvlIneligible_.store(true, std::memory_order_release);
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport is not eligible on all ranks";
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+
+  std::unique_ptr<MultimemNvlTransport> multimemNvlTransport;
+  std::exception_ptr constructionError;
+  try {
+    multimemNvlTransport = std::make_unique<MultimemNvlTransport>(
+        myRank_, nRanks_, bootstrap_, config_.multimem);
+    multimemReady[myRank_] = 1;
+  } catch (...) {
+    constructionError = std::current_exception();
+  }
+
+  int readinessResult = 0;
+  try {
+    readinessResult =
+        bootstrap_
+            ->allGather(multimemReady.data(), sizeof(int), myRank_, nRanks_)
+            .get();
+  } catch (...) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport construction allGather threw";
+    throw;
+  }
+  if (readinessResult != 0) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport construction allGather failed";
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+  if (!std::all_of(multimemReady.begin(), multimemReady.end(), [](int value) {
+        return value != 0;
+      })) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport construction failed on at least one rank";
+    if (constructionError) {
+      std::rethrow_exception(constructionError);
+    }
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: " + multimemNvlErrorMessage_);
+  }
+
+  // Unlike the eligibility allGather above, exchange() is a cross-rank
+  // collective that can partially succeed on peers before it throws locally; a
+  // retry would re-enter a collective the other ranks have already moved past,
+  // risking desync/hang. So an exchange() failure is terminal: latch the poison
+  // bit before rethrowing so future callers throw the cached failure instead
+  // of retrying.
+  try {
+    multimemNvlTransport->exchange();
+  } catch (const std::exception& e) {
+    // Latch the poison bit BEFORE building the message: the string
+    // concatenation can throw (bad_alloc), and if the poison store were skipped
+    // a later caller would retry the already-partially-run collective and risk
+    // cross-rank desync.
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        std::string("multimem NVL transport exchange failed: ") + e.what();
+    throw;
+  } catch (...) {
+    multimemNvlUnavailable_ = true;
+    multimemNvlErrorMessage_ =
+        "multimem NVL transport exchange failed with a non-standard exception";
+    throw;
+  }
+  multimemNvlTransport_ = std::move(multimemNvlTransport);
+}
+
+void MultiPeerNvlTransport::initializeTransportsArray() {
+  // Allocate device memory for Transport objects using DeviceBuffer
+  transportsDevice_ =
+      std::make_unique<meta::comms::DeviceBuffer>(nRanks_ * sizeof(Transport));
+
+  // Build host-side Transport array, then batch copy to device
+  // Note: We use move semantics since Transport is non-copyable
+  std::vector<Transport> hostTransports;
+  hostTransports.reserve(nRanks_);
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    if (rank == myRank_) {
+      hostTransports.emplace_back(P2pSelfTransportDevice());
+    } else {
+      hostTransports.emplace_back(getP2pTransportDevice(rank));
+    }
+  }
+
+  // Single batched memcpy for all Transport objects
+  // This works because Transport is designed for byte-copy (see
+  // Transport.cuh)
+  CUDA_CHECK(cudaMemcpy(
+      transportsDevice_->get(),
+      hostTransports.data(),
+      nRanks_ * sizeof(Transport),
+      cudaMemcpyDefault));
+}
+
+P2pNvlTransportDevice MultiPeerNvlTransport::buildP2pTransportDevice(
+    int peerRank) {
+  return getP2pTransportDevice(peerRank);
+}
+
+} // namespace comms::prims
