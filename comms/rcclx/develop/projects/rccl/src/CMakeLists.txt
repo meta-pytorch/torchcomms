@@ -1665,7 +1665,7 @@ endif()
 # a FetchContent-built fmt-header-only target leaks into rccl's link
 # interface and breaks install(EXPORT) for static builds.
 target_link_libraries(rccl PRIVATE $<BUILD_INTERFACE:fmt::fmt-header-only>)
-target_link_libraries(rccl PRIVATE spdlog::spdlog)
+target_link_libraries(rccl PRIVATE spdlog::spdlog_header_only)
 target_link_libraries(rccl PRIVATE absl::log absl::check)  # GpuClockCalibration.cc
 if(ENABLE_ROCSHMEM)
   target_link_libraries(rccl PRIVATE ${ROCSHMEM_LIBRARY})

@@ -158,7 +158,7 @@ if(USE_SYSTEM_LIBS)
         "-lboost_program_options"
         "-lboost_filesystem"
         "-lfmt"
-        spdlog::spdlog
+        spdlog::spdlog_header_only
     )
 else()
     # libobservatory.so after the archive, not before: it is the archive's
