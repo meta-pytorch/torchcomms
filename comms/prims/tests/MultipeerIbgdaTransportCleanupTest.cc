@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 
@@ -36,8 +38,10 @@ class RegistrationCacheHarness final : private MultiPeerIbTransportBase {
             std::move(bootstrap),
             makeConfig()) {}
 
-  void seedRegistration(void* ptr, std::size_t size) {
+  void
+  seedRegistration(void* ptr, std::size_t size, ibverbx::ibv_mr* mr = nullptr) {
     CachedMr cached;
+    cached.mrs[0] = mr;
     cached.allocSize = size;
     cached.refs = 1;
     registrationState_.wlock()->registeredBuffers.emplace(
@@ -46,6 +50,10 @@ class RegistrationCacheHarness final : private MultiPeerIbTransportBase {
 
   void registerRange(void* ptr, std::size_t size) {
     static_cast<void>(registerBuffer(ptr, size, /*relaxedOrdering=*/false));
+  }
+
+  void deregister(void* ptr) {
+    deregisterBuffer(ptr);
   }
 
   int refs(void* ptr) const {
@@ -224,6 +232,22 @@ TEST(
     EXPECT_THAT(e.what(), ::testing::HasSubstr("same allocation base"));
   }
   EXPECT_EQ(transport.refs(allocation.data()), 1);
+}
+
+TEST(MultipeerIbgdaTransportCleanupDeathTest, FailedMrDeregistrationIsFatal) {
+  std::array<int, 2> allocation{};
+  ibverbx::ibv_mr mr{};
+  EXPECT_DEATH(
+      {
+        ibverbx::ibvSymbols.ibv_internal_dereg_mr =
+            [](ibverbx::ibv_mr*) -> int { return EBUSY; };
+        auto bootstrap = std::make_shared<StrictMockBootstrap>();
+        EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+        RegistrationCacheHarness transport(bootstrap);
+        transport.seedRegistration(allocation.data(), sizeof(allocation), &mr);
+        transport.deregister(allocation.data());
+      },
+      "failed to deregister MR on NIC 0");
 }
 
 } // namespace

@@ -1508,7 +1508,8 @@ void MultipeerIbgdaTransport::cleanup() {
       for (int n = 0; n < numNics_; ++n) {
         if (cached.mrs[n] != nullptr &&
             symbols.ibv_internal_dereg_mr != nullptr) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[n]), 0)
+              << "failed to deregister IBGDA MR on NIC " << n;
         }
       }
     }
@@ -1521,7 +1522,8 @@ void MultipeerIbgdaTransport::cleanup() {
   for (int n = 0; n < static_cast<int>(nicDoca_.size()); ++n) {
     if (nicDoca_[n].sinkMr != nullptr) {
       if (symbols.ibv_internal_dereg_mr != nullptr) {
-        symbols.ibv_internal_dereg_mr(nicDoca_[n].sinkMr);
+        CHECK_EQ(symbols.ibv_internal_dereg_mr(nicDoca_[n].sinkMr), 0)
+            << "failed to deregister IBGDA sink MR on NIC " << n;
       }
       nicDoca_[n].sinkMr = nullptr;
     }

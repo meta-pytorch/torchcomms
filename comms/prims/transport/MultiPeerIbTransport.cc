@@ -104,7 +104,8 @@ bool nicSupportsDataDirect(
   const bool dmabufUnsupported =
       (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   if (probeMr != nullptr) {
-    symbols.ibv_internal_dereg_mr(probeMr);
+    CHECK_EQ(symbols.ibv_internal_dereg_mr(probeMr), 0)
+        << "failed to deregister Data-Direct probe MR";
   }
   if (dmabufUnsupported) {
     return false;
@@ -151,7 +152,8 @@ bool nicSupportsRelaxedOrdering(ibverbx::ibv_pd* pd) {
   if (mr == nullptr) {
     return false;
   }
-  symbols.ibv_internal_dereg_mr(mr);
+  CHECK_EQ(symbols.ibv_internal_dereg_mr(mr), 0)
+      << "failed to deregister Relaxed Ordering probe MR";
   return true;
 }
 
@@ -1272,7 +1274,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
           DmaBufExportKind::Pcie);
       if (!ddDmabuf) {
         for (int j = 0; j < n; ++j) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
         }
         throw std::runtime_error(
             fmt::format(
@@ -1300,7 +1303,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
       close(ddDmabuf->fd);
       if (!mr) {
         for (int j = 0; j < n; ++j) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
         }
         throw std::runtime_error(
             fmt::format(
@@ -1336,7 +1340,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
     if (!mr) {
       if (isMultiSegment) {
         for (int j = 0; j < n; ++j) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
         }
         throw std::runtime_error(
             fmt::format(
@@ -1355,7 +1360,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
       if (!mr) {
         const int savedErrno = errno;
         for (int j = 0; j < n; ++j) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[j]);
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
         }
         throw std::runtime_error(
             fmt::format(
@@ -1421,7 +1427,8 @@ IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
   const auto cleanup = [&](int end) {
     for (int n = 0; n < end; ++n) {
       if (mrs[n] != nullptr) {
-        symbols.ibv_internal_dereg_mr(mrs[n]);
+        CHECK_EQ(symbols.ibv_internal_dereg_mr(mrs[n]), 0)
+            << "failed to roll back exact-range MR on NIC " << n;
         mrs[n] = nullptr;
       }
     }
@@ -1535,12 +1542,9 @@ void MultiPeerIbTransportBase::deregisterIbBufferRange(
   }
   for (int n = 0; n < registration.numNics_; ++n) {
     if (registration.mrs_[n] != nullptr) {
-      const int rc =
-          ibverbx::ibvSymbols.ibv_internal_dereg_mr(registration.mrs_[n]);
-      if (rc != 0) {
-        LOG(WARNING) << "Failed to deregister exact VA MR on NIC " << n
-                     << ": rc=" << rc;
-      }
+      CHECK_EQ(
+          ibverbx::ibvSymbols.ibv_internal_dereg_mr(registration.mrs_[n]), 0)
+          << "failed to deregister exact-range MR on NIC " << n;
     }
   }
   registration.reset();
@@ -1568,7 +1572,9 @@ void MultiPeerIbTransportBase::deregisterBufferLocked(
       if (it->second.refs <= 0) {
         // Deregistration is backend-agnostic (no PD/DOCA needed).
         for (int n = 0; n < numNics_; ++n) {
-          ibverbx::ibvSymbols.ibv_internal_dereg_mr(it->second.mrs[n]);
+          CHECK_EQ(
+              ibverbx::ibvSymbols.ibv_internal_dereg_mr(it->second.mrs[n]), 0)
+              << "failed to deregister MR on NIC " << n << " for ptr=" << ptr;
         }
         registrations.registeredBuffers.erase(it);
       }
