@@ -24,7 +24,6 @@
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/logger/SpdlogLogger.h"
 
@@ -237,10 +236,6 @@ void MultiPeerTransport::initFromTopology(
 
 MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
-  static_cast<void>(detail::releaseTransportForProcessLifetimeIfQuarantined(
-      ibgdaTransport_, ibgda_resources_quarantined()));
-  // IBRC teardown must run to stop its progress thread. Its cleanup retains the
-  // provider resources and backing allocations when rollback was quarantined.
 }
 
 std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
@@ -411,18 +406,12 @@ P2pNvlTransportDevice MultiPeerTransport::get_p2p_nvl_transport_device(
 }
 
 P2pIbgdaTransportDevice* MultiPeerTransport::get_p2p_ibgda_transport_device(
-    int globalPeerRank) {
-  requireIbTransportUsable();
+    int globalPeerRank) const {
   if (!ibgdaTransport_) {
     throw std::runtime_error(
         "get_p2p_ibgda_transport_device: IBGDA transport not available (nRanks == 1?)");
   }
-  return detail::runWithProcessLifetimeQuarantineOnFailure(
-      *ibgdaTransport_,
-      [globalPeerRank](auto& transport) {
-        return transport.getP2pTransportDevice(globalPeerRank);
-      },
-      [this](std::string_view context) { quarantineIbgdaTransport(context); });
+  return ibgdaTransport_->getP2pTransportDevice(globalPeerRank);
 }
 
 Transport* /*nullable*/ MultiPeerTransport::get_nvl_transports_array() const {
@@ -461,7 +450,6 @@ P2pSelfTransportDevice MultiPeerTransport::get_p2p_self_transport_device()
 
 MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
     const std::vector<int>& peers) {
-  requireIbTransportUsable();
   if (!deviceHandleBuilt_) {
     throw std::runtime_error(
         "MultiPeerTransport::get_device_handle(peers) called before exchange()");
@@ -484,7 +472,6 @@ bool MultiPeerTransport::is_lazy_mode() const {
 }
 
 void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
-  requireIbTransportUsable();
   auto materializeOn = [&](auto& ibTransport) {
     for (int peer : peers) {
       if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
@@ -496,104 +483,28 @@ void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
     ibTransport->connectPeers();
   };
   if (ibgdaTransport_) {
-    for (int peer : peers) {
-      if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
-          typePerRank_[peer] == TransportType::P2P_IBGDA) {
-        ibgdaTransport_->queuePeerForMaterialization(peer);
-      }
-    }
-    connectIbgdaPeers();
+    materializeOn(ibgdaTransport_);
   } else if (ibrcTransport_) {
-    detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibrcTransport_,
-        [&](auto&) { materializeOn(ibrcTransport_); },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    materializeOn(ibrcTransport_);
   }
 }
 
 void MultiPeerTransport::connectPeers() {
-  requireIbTransportUsable();
   if (ibgdaTransport_) {
-    connectIbgdaPeers();
+    ibgdaTransport_->connectPeers();
   } else if (ibrcTransport_) {
-    detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibrcTransport_,
-        [](auto& transport) { transport.connectPeers(); },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    ibrcTransport_->connectPeers();
   }
-}
-
-void MultiPeerTransport::requireIbTransportUsable() const {
-  if (ibgda_resources_quarantined()) {
-    throw std::runtime_error(
-        "MultiPeerTransport: IB transport is poisoned after an unsafe cleanup "
-        "failure; retry is not supported");
-  }
-}
-
-void MultiPeerTransport::connectIbgdaPeers() {
-  detail::runWithProcessLifetimeQuarantineOnFailure(
-      *ibgdaTransport_,
-      [](auto& transport) { transport.connectPeers(); },
-      [this](std::string_view context) { quarantineIbgdaTransport(context); });
-}
-
-void MultiPeerTransport::quarantineIbgdaTransport(
-    std::string_view context) noexcept {
-  if (ibgdaTransport_ == nullptr && ibrcTransport_ == nullptr) {
-    return;
-  }
-  if (ibgdaResourcesQuarantined_.exchange(true, std::memory_order_acq_rel)) {
-    return;
-  }
-  if (abort_ != nullptr) {
-    try {
-      static_cast<void>(abort_->setAbort(
-          comms::fault_tolerance::AbortReason::NETWORK_ERROR, context));
-    } catch (const std::exception& ex) {
-      COMMS_LOG(
-          ERR,
-          "MultiPeerTransport: failed to publish IB quarantine abort: {}",
-          ex.what());
-    } catch (...) {
-      COMMS_LOG(
-          ERR, "MultiPeerTransport: failed to publish IB quarantine abort");
-    }
-  }
-  COMMS_LOG(
-      ERR,
-      "MultiPeerTransport: poisoned this communicator and will retain its "
-      "IB transport for process lifetime after unsafe cleanup: {}",
-      context);
 }
 
 IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
     void* ptr,
     size_t size) {
-  requireIbTransportUsable();
   if (ibgdaTransport_) {
-    return detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibgdaTransport_,
-        [ptr, size](auto& transport) {
-          return transport.registerBuffer(ptr, size);
-        },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    return ibgdaTransport_->registerBuffer(ptr, size);
   }
   if (ibrcTransport_) {
-    return detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibrcTransport_,
-        [ptr, size](auto& transport) {
-          return transport.registerBuffer(ptr, size);
-        },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    return ibrcTransport_->registerBuffer(ptr, size);
   }
   throw std::runtime_error(
       "localRegisterIbgdaBuffer: IB transport not available");
@@ -601,100 +512,40 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
 
 IbBufferRegistration MultiPeerTransport::registerIbBufferRange(
     void* ptr,
-    std::size_t size,
-    bool* registrationQuarantined) {
-  if (registrationQuarantined != nullptr) {
-    *registrationQuarantined = false;
-  }
-  requireIbTransportUsable();
+    std::size_t size) {
   if (ibgdaTransport_) {
-    return detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibgdaTransport_,
-        [ptr, size, registrationQuarantined](auto& transport) {
-          return transport.registerIbBufferRange(
-              ptr, size, registrationQuarantined);
-        },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    return ibgdaTransport_->registerIbBufferRange(ptr, size);
   }
   if (ibrcTransport_) {
-    return detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibrcTransport_,
-        [ptr, size, registrationQuarantined](auto& transport) {
-          return transport.registerIbBufferRange(
-              ptr, size, registrationQuarantined);
-        },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    return ibrcTransport_->registerIbBufferRange(ptr, size);
   }
   throw std::runtime_error("registerIbBufferRange: IB transport not available");
 }
 
-bool MultiPeerTransport::deregisterIbBufferRange(
+void MultiPeerTransport::deregisterIbBufferRange(
     IbBufferRegistration& registration) {
-  if (ibgda_resources_quarantined()) {
-    if (ibgdaTransport_) {
-      ibgdaTransport_->retainIbBufferRangeForProcessLifetime(registration);
-    } else if (ibrcTransport_) {
-      ibrcTransport_->retainIbBufferRangeForProcessLifetime(registration);
-    }
-    return false;
-  }
   if (ibgdaTransport_) {
-    const bool deregistered =
-        ibgdaTransport_->deregisterIbBufferRange(registration);
-    if (!deregistered) {
-      quarantineIbgdaTransport("exact-range MR deregistration failed");
-      ibgdaTransport_->retainIbBufferRangeForProcessLifetime(registration);
-    }
-    return deregistered;
+    ibgdaTransport_->deregisterIbBufferRange(registration);
+    return;
   }
   if (ibrcTransport_) {
-    const bool deregistered =
-        ibrcTransport_->deregisterIbBufferRange(registration);
-    if (!deregistered) {
-      quarantineIbgdaTransport("exact-range MR deregistration failed");
-      ibrcTransport_->retainIbBufferRangeForProcessLifetime(registration);
-    }
-    return deregistered;
+    ibrcTransport_->deregisterIbBufferRange(registration);
+    return;
   }
   throw std::runtime_error(
       "deregisterIbBufferRange: IB transport not available");
 }
 
-bool MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) noexcept {
-  try {
-    if (ibgda_resources_quarantined()) {
-      return false;
-    }
-    bool deregistered = false;
-    if (ibgdaTransport_) {
-      deregistered = ibgdaTransport_->deregisterBuffer(ptr);
-    } else if (ibrcTransport_) {
-      deregistered = ibrcTransport_->deregisterBuffer(ptr);
-    } else {
-      return false;
-    }
-    if (!deregistered) {
-      quarantineIbgdaTransport("cached MR deregistration failed");
-    }
-    return deregistered;
-  } catch (const std::exception& ex) {
-    quarantineIbgdaTransport("cached MR deregistration threw");
-    COMMS_LOG(ERR, "Failed to deregister IB buffer {}: {}", ptr, ex.what());
-    return false;
-  } catch (...) {
-    quarantineIbgdaTransport("cached MR deregistration threw");
-    COMMS_LOG(ERR, "Failed to deregister IB buffer {}: unknown exception", ptr);
-    return false;
+void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
+  if (ibgdaTransport_) {
+    ibgdaTransport_->deregisterBuffer(ptr);
+  } else if (ibrcTransport_) {
+    ibrcTransport_->deregisterBuffer(ptr);
   }
 }
 
 std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
     const IbgdaLocalBuffer& localBuf) {
-  requireIbTransportUsable();
   if (ibgdaTransport_) {
     return ibgdaTransport_->exchangeBuffer(localBuf);
   }
@@ -742,7 +593,6 @@ P2pIbrcHostLanes MultiPeerTransport::getHostLanes(int peerRank, int numLanes)
 IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
     std::size_t size,
     void** hostPtr) {
-  requireIbTransportUsable();
   *hostPtr = nullptr;
   if (ibrcTransport_) {
     void* host = nullptr;
@@ -766,16 +616,8 @@ IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
 IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
     const IbgdaLocalBuffer& buffer,
     std::size_t size) {
-  requireIbTransportUsable();
   if (ibgdaTransport_) {
-    return detail::runWithProcessLifetimeQuarantineOnFailure(
-        *ibgdaTransport_,
-        [ptr = buffer.ptr, size](auto& transport) {
-          return transport.registerBuffer(ptr, size);
-        },
-        [this](std::string_view context) {
-          quarantineIbgdaTransport(context);
-        });
+    return ibgdaTransport_->registerBuffer(buffer.ptr, size);
   }
   if (ibrcTransport_) {
     return buffer;
@@ -784,18 +626,14 @@ IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
       "registerIbCounterBuffer: IB transport not available");
 }
 
-bool MultiPeerTransport::freeIbCounterBuffer(
+void MultiPeerTransport::freeIbCounterBuffer(
     IbgdaLocalBuffer& buffer,
     void*& hostPtr) noexcept {
   if (buffer.ptr == nullptr) {
-    return true;
+    return;
   }
-  if (ibgda_resources_quarantined()) {
-    return false;
-  }
-  if (buffer.lkey_per_device.size > 0 &&
-      !localDeregisterIbgdaBuffer(buffer.ptr)) {
-    return false;
+  if (buffer.lkey_per_device.size > 0 && ibgdaTransport_) {
+    ibgdaTransport_->deregisterBuffer(buffer.ptr);
   }
   if (hostPtr != nullptr) {
     (void)cudaFreeHost(hostPtr);
@@ -804,7 +642,6 @@ bool MultiPeerTransport::freeIbCounterBuffer(
     (void)cudaFree(buffer.ptr);
   }
   buffer = IbgdaLocalBuffer{};
-  return true;
 }
 
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
@@ -854,9 +691,7 @@ MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
 #endif
 }
 
-std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(
-    void* localPtr,
-    bool* localHandlePossiblyExposed) {
+std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(void* localPtr) {
   if (!nvlBootstrapAdapter_ || nvlNRanks_ <= 1) {
     throw std::runtime_error(
         "exchangeNvlBuffer: NVL transport not available or single rank");
@@ -894,8 +729,7 @@ std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(
         phys->handle(),
         localPtr,
         phys->size(),
-        /*preferFabric=*/mode == NvlMemMode::kFabric,
-        localHandlePossiblyExposed);
+        /*preferFabric=*/mode == NvlMemMode::kFabric);
 
     std::vector<void*> mappedPtrs = pm.peerPtrs;
     nvlExchangeRecords_[localPtr] = NvlExchangeRecord{mode, std::move(pm)};
@@ -904,11 +738,7 @@ std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(
   }
 
   auto pm = nvlMemExchangeCudaIpc(
-      *nvlBootstrapAdapter_,
-      nvlLocalRank_,
-      nvlNRanks_,
-      localPtr,
-      localHandlePossiblyExposed);
+      *nvlBootstrapAdapter_, nvlLocalRank_, nvlNRanks_, localPtr);
   std::vector<void*> mappedPtrs = pm.peerPtrs;
   nvlExchangeRecords_[localPtr] =
       NvlExchangeRecord{NvlMemMode::kCudaIpc, std::move(pm)};

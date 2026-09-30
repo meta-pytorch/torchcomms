@@ -75,10 +75,6 @@ class MultipeerIbrcTransport
 
   ~MultipeerIbrcTransport();
 
-  bool requiresProcessLifetimeQuarantine() const {
-    return registrationRollbackFailed();
-  }
-
   // Non-copyable, non-movable
   MultipeerIbrcTransport(const MultipeerIbrcTransport&) = delete;
   MultipeerIbrcTransport& operator=(const MultipeerIbrcTransport&) = delete;
@@ -163,7 +159,6 @@ class MultipeerIbrcTransport
     MappedAllocation& operator=(MappedAllocation&& other) noexcept;
 
     void reset() noexcept;
-    void release() noexcept;
   };
 
   struct IbrcCmdState {
@@ -200,7 +195,6 @@ class MultipeerIbrcTransport
   };
 
   void cleanup();
-  void retainResourcesForProcessLifetime() noexcept;
   void initializeControlResources();
   void cleanupPeerCmdQueues(int peerIndex) noexcept;
   void cleanupPeerQps(int peerIndex) noexcept;
@@ -264,7 +258,6 @@ class MultipeerIbrcTransport
   friend class MultiPeerIbTransport<MultipeerIbrcTransport>;
 
   std::vector<PeerResources> peerResources_;
-  bool resourcesRetainedForProcessLifetime_{false};
   // Per-peer publish flag (release in allocatePeerCmdQueues, acquire in
   // progressOnce) so the progress thread never reads a half-moved cmdQueues.
   // Separate array: std::atomic can't live in the movable PeerResources vector.

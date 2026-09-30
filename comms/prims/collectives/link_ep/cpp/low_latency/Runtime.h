@@ -53,12 +53,8 @@ namespace comms::prims::link_ep {
  */
 class LowLatencyRuntime {
  public:
-  /**
-   * @param externalRdmaBuffer If non-null, use this pre-allocated buffer
-   *   instead of allocating a new one. Caller retains ownership.
-   * @param externalRdmaBufferRetentionRequired Optional owner-visible flag set
-   *   if the external buffer must remain alive until process exit.
-   */
+  /** @param externalRdmaBuffer  If non-null, use this pre-allocated buffer
+   *   instead of allocating a new one. Caller retains ownership. */
   LowLatencyRuntime(
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       int rank,
@@ -68,8 +64,7 @@ class LowLatencyRuntime {
       int hidden,
       int numExperts,
       int numQpsPerRank,
-      void* externalRdmaBuffer = nullptr,
-      bool* externalRdmaBufferRetentionRequired = nullptr);
+      void* externalRdmaBuffer = nullptr);
 
   ~LowLatencyRuntime();
 
@@ -168,12 +163,6 @@ class LowLatencyRuntime {
     return ibgdaDeviceTransportPtr_ != nullptr;
   }
 
-  /**
-   * Returns true when the RDMA buffer must remain alive until process exit
-   * because a provider MR could not be revoked.
-   */
-  bool requiresProcessLifetimeQuarantine() const noexcept;
-
   /** Returns nullptr if IBGDA wasn't set up. */
   comms::prims::MultipeerIbgdaDeviceTransport* getIbgdaDeviceTransport()
       const noexcept {
@@ -236,8 +225,6 @@ class LowLatencyRuntime {
   // If ownsRdmaBuffer_ is false, the buffer is externally owned.
   void* rdmaBufferPtr_{nullptr};
   bool ownsRdmaBuffer_{true};
-  bool rdmaBufferRegistered_{false};
-  bool* externalRdmaBufferRetentionRequired_{nullptr};
 
   // Persistent atomic counters (live in workspace; persistent across
   // dispatch / combine invocations).

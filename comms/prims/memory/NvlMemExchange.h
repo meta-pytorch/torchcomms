@@ -222,8 +222,6 @@ class NvlMemExchangeWorkspace {
  *
  * `peerPtrs[rank]` is null for self; the caller fills the self slot with
  * `localPtr`. Throws std::runtime_error on any failure. Requires CUDA 12.3+.
- * When provided, `localHandlePossiblyExposed` becomes true after local export
- * succeeds and immediately before the handle exchange begins.
  */
 NvlPeerMem nvlMemExchangeVmm(
     meta::comms::IBootstrap& bootstrap,
@@ -233,8 +231,7 @@ NvlPeerMem nvlMemExchangeVmm(
     CUmemGenericAllocationHandle localHandle,
     void* localPtr,
     std::size_t allocatedSize,
-    bool preferFabric,
-    bool* localHandlePossiblyExposed = nullptr);
+    bool preferFabric);
 
 NvlPeerMem nvlMemExchangeVmmPrepared(
     meta::comms::IBootstrap& bootstrap,
@@ -255,15 +252,12 @@ NvlPeerMem nvlMemExchangeVmmPrepared(
  * slots are owned by the CUDA IPC runtime (the caller closes them via
  * cudaIpcCloseMemHandle). `vmmMappings` is empty. Throws
  * std::runtime_error on any failure.
- * When provided, `localHandlePossiblyExposed` becomes true after local export
- * succeeds and immediately before the handle exchange begins.
  */
 NvlPeerMem nvlMemExchangeCudaIpc(
     meta::comms::IBootstrap& bootstrap,
     int32_t rank,
     int32_t nRanks,
-    void* localPtr,
-    bool* localHandlePossiblyExposed = nullptr);
+    void* localPtr);
 
 /**
  * Failure-safe cudaIpc exchange using storage and the local handle prepared

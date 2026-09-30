@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -529,35 +528,11 @@ class IbgdaSendRecvBenchmarkContext {
     CHECK_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
     if (registeredEnabled_ && globalRank_ == 0) {
-      try {
-        registeredSendBuf_ =
-            transport_->registerBuffer(sendBuf_->get(), maxBytes_, true);
-        deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
-      } catch (...) {
-        bool retainSendBuffer = transport_->requiresProcessLifetimeQuarantine();
-        if (registeredSendBuf_.ptr != nullptr && !retainSendBuffer) {
-          try {
-            retainSendBuffer = !transport_->deregisterBuffer(sendBuf_->get());
-          } catch (const std::exception& ex) {
-            LOG(ERROR) << "Failed to deregister benchmark send buffer while "
-                          "handling construction failure: "
-                       << ex.what();
-            retainSendBuffer = true;
-          } catch (...) {
-            LOG(ERROR) << "Failed to deregister benchmark send buffer while "
-                          "handling construction failure";
-            retainSendBuffer = true;
-          }
-        }
-        if (retainSendBuffer) {
-          static_cast<void>(sendBuf_.release());
-        }
-        registeredSendBuf_ = {};
-        throw;
-      }
-    } else {
-      deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
+      registeredSendBuf_ =
+          transport_->registerBuffer(sendBuf_->get(), maxBytes_, true);
     }
+
+    deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
   }
 
   ~IbgdaSendRecvBenchmarkContext() {
@@ -569,11 +544,7 @@ class IbgdaSendRecvBenchmarkContext {
       bootstrap_->barrierAll();
     }
     if (transport_ && registeredSendBuf_.ptr != nullptr) {
-      if (!transport_->deregisterBuffer(sendBuf_->get())) {
-        LOG(ERROR) << "Retaining registered send buffer after failed MR "
-                      "deregistration";
-        static_cast<void>(sendBuf_.release());
-      }
+      transport_->deregisterBuffer(sendBuf_->get());
       registeredSendBuf_ = {};
     }
     if (stream_ != nullptr) {

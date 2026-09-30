@@ -335,7 +335,6 @@ TEST_F(GpuMemHandlerTestFixture, VmmExportFailurePropagatesToEveryRank) {
   const auto cuDevice = static_cast<CUdevice>(cudaDevice);
   auto allocation = CuMemAllocation::create(
       cuDevice, 4096, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-  bool localHandlePossiblyExposed = false;
 
   // Rank 0 passes an invalid zero allocation handle while rank 1 passes its
   // valid allocation handle. Rank 0 consequently fails inside
@@ -352,8 +351,7 @@ TEST_F(GpuMemHandlerTestFixture, VmmExportFailurePropagatesToEveryRank) {
         globalRank == 0 ? 0 : allocation->handle(),
         nullptr,
         allocation->size(),
-        /*preferFabric=*/false,
-        &localHandlePossiblyExposed);
+        /*preferFabric=*/false);
   } catch (const std::exception& ex) {
     error = ex.what();
   }
@@ -365,7 +363,6 @@ TEST_F(GpuMemHandlerTestFixture, VmmExportFailurePropagatesToEveryRank) {
         ::testing::HasSubstr(
             "cuMemExportToShareableHandle for POSIX FD failed"));
   }
-  EXPECT_EQ(localHandlePossiblyExposed, globalRank != 0);
 #endif
 }
 
