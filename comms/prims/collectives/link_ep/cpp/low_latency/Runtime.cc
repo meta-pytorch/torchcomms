@@ -40,8 +40,7 @@ LowLatencyRuntime::LowLatencyRuntime(
     int hidden,
     int numExperts,
     int numQpsPerRank,
-    void* externalRdmaBuffer,
-    bool* externalRdmaBufferRetentionRequired)
+    void* externalRdmaBuffer)
     : rank_(rank),
       numRanks_(numRanks),
       numExperts_(numExperts),
@@ -54,9 +53,7 @@ LowLatencyRuntime::LowLatencyRuntime(
               numMaxDispatchTokensPerRank,
               hidden,
               numRanks,
-              numExperts)),
-      externalRdmaBufferRetentionRequired_(
-          externalRdmaBufferRetentionRequired) {
+              numExperts)) {
   if (numRanks_ <= 0) {
     throw std::invalid_argument("LowLatencyRuntime: numRanks must be > 0");
   }
@@ -153,7 +150,6 @@ LowLatencyRuntime::LowLatencyRuntime(
 }
 
 LowLatencyRuntime::~LowLatencyRuntime() {
-  bool retainRdmaBuffer = requiresProcessLifetimeQuarantine();
   if (commStream_ != nullptr) {
     (void)cudaStreamDestroy(commStream_);
   }
@@ -202,34 +198,12 @@ LowLatencyRuntime::~LowLatencyRuntime() {
   if (ibgdaDeviceTransportPtr_ != nullptr) {
     (void)cudaFree(ibgdaDeviceTransportPtr_);
   }
-  if (!retainRdmaBuffer && rdmaBufferRegistered_) {
-    try {
-      if (ibgdaTransport_->deregisterBuffer(rdmaBufferPtr_)) {
-        rdmaBufferRegistered_ = false;
-      } else {
-        retainRdmaBuffer = true;
-      }
-    } catch (...) {
-      retainRdmaBuffer = true;
-    }
-  }
-  if (retainRdmaBuffer && externalRdmaBufferRetentionRequired_ != nullptr) {
-    *externalRdmaBufferRetentionRequired_ = true;
-  }
-  if (retainRdmaBuffer) {
-    static_cast<void>(ibgdaTransport_.release());
-  } else {
-    ibgdaTransport_.reset();
-  }
-  if (rdmaBufferPtr_ != nullptr && ownsRdmaBuffer_ && !retainRdmaBuffer) {
+  // The transport owns the MR over rdmaBufferPtr_; tear it down (QPs, MRs)
+  // before the buffer is freed.
+  ibgdaTransport_.reset();
+  if (rdmaBufferPtr_ != nullptr && ownsRdmaBuffer_) {
     (void)cudaFree(rdmaBufferPtr_);
   }
-  rdmaBufferPtr_ = nullptr;
-}
-
-bool LowLatencyRuntime::requiresProcessLifetimeQuarantine() const noexcept {
-  return ibgdaTransport_ != nullptr &&
-      ibgdaTransport_->requiresProcessLifetimeQuarantine();
 }
 
 void LowLatencyRuntime::setPeerDataPtrs(const std::vector<void*>& peerPtrs) {
@@ -354,7 +328,6 @@ void LowLatencyRuntime::setupIbgda(
   //    register the whole buffer once and use sub-buffer offsets.
   auto localBuf =
       ibgdaTransport_->registerBuffer(rdmaBufferPtr_, numRdmaBytes_);
-  rdmaBufferRegistered_ = true;
 
   // 4. Exchange remote buffer descriptors. One round-trip — every peer learns
   //    every other peer's buffer addr+rkey for the same registered region.

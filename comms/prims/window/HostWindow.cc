@@ -3,14 +3,11 @@
 #include "comms/prims/window/HostWindow.h"
 
 #include <stdexcept>
-#include <utility>
 #include <vector>
 
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
-#include "comms/prims/transport/MultiPeerIbTransportInternal.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
-#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/utils/checks.h"
 
@@ -28,30 +25,12 @@ IbgdaLocalBuffer allocateIbgdaBuffer(std::size_t size) {
   return IbgdaLocalBuffer(ptr, NetworkLKeys{});
 }
 
-void validateOwnedBuffer(
-    const std::shared_ptr<void>& buffer,
-    std::size_t size,
-    bool allowEmpty) {
-  if (allowEmpty && buffer == nullptr && size == 0) {
-    return;
-  }
-  if (buffer == nullptr || size == 0) {
-    throw std::invalid_argument(
-        "HostWindow buffer ownership and nonzero size must be provided together");
-  }
-}
-
 } // namespace
 
 HostWindow::HostWindow(
     MultiPeerTransport& transport,
-    const WindowConfig& config)
-    : HostWindow(transport, config, std::shared_ptr<void>{}, 0) {}
-
-HostWindow::HostWindow(
-    MultiPeerTransport& transport,
     const WindowConfig& config,
-    std::shared_ptr<void> userBuffer,
+    void* userBuffer,
     std::size_t userBufferSize)
     : transport_(transport),
       myRank_(transport.my_rank()),
@@ -61,10 +40,8 @@ HostWindow::HostWindow(
       ibgdaPeerRanks_(transport.ib_peer_ranks()),
       nvlLocalRank_(transport.nvl_local_rank()),
       nvlNRanks_(transport.nvl_n_ranks()),
-      userBuffer_(std::move(userBuffer)),
+      userBuffer_(userBuffer),
       userBufferSize_(userBufferSize) {
-  validateOwnedBuffer(userBuffer_, userBufferSize_, /*allowEmpty=*/true);
-
   int nNvlPeers = static_cast<int>(nvlPeerRanks_.size());
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
 
@@ -159,62 +136,36 @@ HostWindow::HostWindow(
 }
 
 HostWindow::~HostWindow() {
-  static_cast<void>(detail::releaseResourcesOrRetainKeepAlives(
-      transport_.ibgda_resources_quarantined(),
-      callerBufferLifetimeQuarantineRequired_,
-      callerBufferKeepAlives_,
-      [this]() noexcept -> bool {
-        bool allMrsDeregistered = true;
-        const auto deregisterOwnedBuffer =
-            [this, &allMrsDeregistered](IbgdaLocalBuffer& buffer) {
-              if (buffer.ptr == nullptr || buffer.lkey_per_device.size == 0) {
-                return;
-              }
-              const bool deregistered =
-                  transport_.localDeregisterIbgdaBuffer(buffer.ptr);
-              allMrsDeregistered = deregistered && allMrsDeregistered;
-              if (deregistered) {
-                buffer.lkey_per_device = NetworkLKeys{};
-              }
-            };
+  // Free IBGDA buffers: deregister (only if registered) then cudaFree.
+  // lkey is only populated during exchange() via registerIbgdaBuffer(),
+  // so check lkey != NetworkLKey{} to avoid deregistering unregistered buffers.
+  if (ibgdaBarrierLocalBuf_.ptr) {
+    if (ibgdaBarrierLocalBuf_.lkey_per_device.size > 0) {
+      transport_.localDeregisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr);
+    }
+    static_cast<void>(cudaFree(ibgdaBarrierLocalBuf_.ptr));
+  }
+  if (ibgdaPeerSignalLocalBuf_.ptr) {
+    if (ibgdaPeerSignalLocalBuf_.lkey_per_device.size > 0) {
+      transport_.localDeregisterIbgdaBuffer(ibgdaPeerSignalLocalBuf_.ptr);
+    }
+    static_cast<void>(cudaFree(ibgdaPeerSignalLocalBuf_.ptr));
+  }
+  if (ibgdaPeerCounterLocalBuf_.ptr) {
+    transport_.freeIbCounterBuffer(
+        ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_);
+  }
 
-        deregisterOwnedBuffer(ibgdaBarrierLocalBuf_);
-        deregisterOwnedBuffer(ibgdaPeerSignalLocalBuf_);
-        deregisterOwnedBuffer(ibgdaPeerCounterLocalBuf_);
-        for (auto* ptr : registeredLocalBuffers_) {
-          const bool deregistered = transport_.localDeregisterIbgdaBuffer(ptr);
-          allMrsDeregistered = deregistered && allMrsDeregistered;
-        }
-
-        if (!allMrsDeregistered) {
-          return false;
-        }
-
-        if (ibgdaBarrierLocalBuf_.ptr != nullptr) {
-          static_cast<void>(cudaFree(ibgdaBarrierLocalBuf_.ptr));
-        }
-        if (ibgdaPeerSignalLocalBuf_.ptr != nullptr) {
-          static_cast<void>(cudaFree(ibgdaPeerSignalLocalBuf_.ptr));
-        }
-        if (ibgdaPeerCounterLocalBuf_.ptr != nullptr &&
-            !transport_.freeIbCounterBuffer(
-                ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_)) {
-          return false;
-        }
-        return true;
-      }));
-
+  // Clean up IBGDA buffer registrations
+  for (auto* ptr : registeredLocalBuffers_) {
+    transport_.localDeregisterIbgdaBuffer(ptr);
+  }
   if (!exchangedNvlMappedPtrs_.empty()) {
     transport_.unmapNvlBuffers(exchangedNvlMappedPtrs_);
   }
 
   // NVL signal/barrier buffers are freed by GpuMemHandler destructors (RAII)
   // DeviceBuffers are freed by DeviceBuffer destructors (RAII)
-}
-
-bool HostWindow::requiresProcessLifetimeQuarantine() const noexcept {
-  return callerBufferLifetimeQuarantineRequired_ ||
-      transport_.ibgda_resources_quarantined();
 }
 
 void* HostWindow::get_nvlink_address(int peer, std::size_t offset) const {
@@ -239,19 +190,6 @@ void HostWindow::exchange() {
     throw std::runtime_error("HostWindow::exchange() called more than once");
   }
 
-  detail::runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
-      ibgdaRkeysPossiblyExposed_,
-      callerBufferPossiblyExposed_,
-      [this]() { exchangeImpl(); },
-      [this](std::string_view context) {
-        transport_.quarantineIbgdaTransport(context);
-      },
-      [this](std::string_view) {
-        callerBufferLifetimeQuarantineRequired_ = true;
-      });
-}
-
-void HostWindow::exchangeImpl() {
   int nNvlPeers = static_cast<int>(nvlPeerRanks_.size());
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
 
@@ -316,7 +254,6 @@ void HostWindow::exchangeImpl() {
     auto size = config_.barrierCount * sizeof(uint64_t);
     ibgdaBarrierLocalBuf_ =
         transport_.localRegisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr, size);
-    ibgdaRkeysPossiblyExposed_ = true;
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBarrierLocalBuf_);
 
     CUDA_CHECK(cudaMemcpy(
@@ -334,7 +271,6 @@ void HostWindow::exchangeImpl() {
         config_.peerSignalCount * sizeof(uint64_t);
     ibgdaPeerSignalLocalBuf_ =
         transport_.localRegisterIbgdaBuffer(ibgdaPeerSignalLocalBuf_.ptr, size);
-    ibgdaRkeysPossiblyExposed_ = true;
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaPeerSignalLocalBuf_);
 
     // Pre-offset each peer's remote buffer to point to "my row" in their
@@ -366,35 +302,19 @@ void HostWindow::exchangeImpl() {
   }
 
   if (userBuffer_ && userBufferSize_ > 0) {
-    registerAndExchangeBufferImpl(userBuffer_, userBufferSize_);
+    registerAndExchangeBuffer(userBuffer_, userBufferSize_);
   }
 
   exchanged_ = true;
 }
 
 std::optional<NetworkLKeys> HostWindow::registerLocalBuffer(
-    std::shared_ptr<void> buffer,
+    void* ptr,
     std::size_t size) {
-  validateOwnedBuffer(buffer, size, /*allowEmpty=*/false);
   if (ibgdaPeerRanks_.empty()) {
     return std::nullopt;
   }
-  if (transport_.ibgda_resources_quarantined()) {
-    throw std::runtime_error(
-        "HostWindow::registerLocalBuffer: IB transport is quarantined");
-  }
-  callerBufferKeepAlives_.reserve(callerBufferKeepAlives_.size() + 1);
-  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(buffer));
-  void* const ptr = holder->get();
-  registeredLocalBuffers_.reserve(registeredLocalBuffers_.size() + 1);
-  callerBufferKeepAlives_.push_back(std::move(holder));
-  IbgdaLocalBuffer ibgdaBuf;
-  try {
-    ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
-  } catch (...) {
-    callerBufferKeepAlives_.pop_back();
-    throw;
-  }
+  auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
   registeredLocalBuffers_.push_back(ptr);
   return ibgdaBuf.lkey_per_device;
 }
@@ -414,97 +334,53 @@ void HostWindow::reset_signals(cudaStream_t stream) const {
   }
 }
 
-void HostWindow::registerAndExchangeBuffer(
-    std::shared_ptr<void> buffer,
-    std::size_t size) {
-  validateOwnedBuffer(buffer, size, /*allowEmpty=*/false);
+void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
   if (userBufferRegistered_) {
     throw std::runtime_error(
         "HostWindow::registerAndExchangeBuffer() called more than once. "
         "Each DeviceWindow supports exactly one exchanged dst buffer.");
   }
+  userBufferRegistered_ = true;
 
-  detail::runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
-      ibgdaRkeysPossiblyExposed_,
-      callerBufferPossiblyExposed_,
-      [this, buffer = std::move(buffer), size]() mutable {
-        registerAndExchangeBufferImpl(std::move(buffer), size);
-      },
-      [this](std::string_view context) {
-        transport_.quarantineIbgdaTransport(context);
-      },
-      [this](std::string_view) {
-        callerBufferLifetimeQuarantineRequired_ = true;
-      });
-}
-
-void HostWindow::registerAndExchangeBufferImpl(
-    std::shared_ptr<void> buffer,
-    std::size_t size) {
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
   int nNvlPeers = static_cast<int>(nvlPeerRanks_.size());
-  if (nIbgdaPeers > 0 && transport_.ibgda_resources_quarantined()) {
-    throw std::runtime_error(
-        "HostWindow::registerAndExchangeBuffer: IB transport is quarantined");
-  }
-  userBufferRegistered_ = true;
-  registeredLocalBuffers_.reserve(
-      registeredLocalBuffers_.size() + (nIbgdaPeers > 0 ? 1 : 0));
-  callerBufferKeepAlives_.reserve(callerBufferKeepAlives_.size() + 1);
-  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(buffer));
-  void* const ptr = holder->get();
-  callerBufferKeepAlives_.push_back(std::move(holder));
 
-  try {
-    // IBGDA side: register + exchange
-    if (nIbgdaPeers > 0) {
-      auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
-      registeredLocalBuffers_.push_back(ptr);
-      ibgdaRkeysPossiblyExposed_ = true;
-      callerBufferPossiblyExposed_ = true;
-      auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBuf);
-      for (const auto& remoteBuf : remoteBufs) {
-        remoteRegistrations_.emplace_back(
-            remoteBuf.ptr, size, remoteBuf.rkey_per_device);
+  // IBGDA side: register + exchange
+  if (nIbgdaPeers > 0) {
+    auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
+    registeredLocalBuffers_.push_back(ptr);
+    auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBuf);
+    for (const auto& remoteBuf : remoteBufs) {
+      remoteRegistrations_.emplace_back(
+          remoteBuf.ptr, size, remoteBuf.rkey_per_device);
+    }
+  }
+
+  // NVL side: IPC exchange
+  if (nNvlPeers > 0) {
+    exchangedNvlMappedPtrs_ = transport_.exchangeNvlBuffer(ptr);
+
+    // Upload NVL peer pointers to device for offset-based put/put_signal.
+    // exchangedNvlMappedPtrs_ is indexed by NVL local rank; extract peers
+    // in nvlPeerIdx order (skip self).
+    std::vector<void*> nvlPeerPtrs;
+    nvlPeerPtrs.reserve(nNvlPeers);
+    for (int nvlLocal = 0; nvlLocal < nvlNRanks_; ++nvlLocal) {
+      if (nvlLocal == nvlLocalRank_) {
+        continue;
       }
+      nvlPeerPtrs.push_back(exchangedNvlMappedPtrs_.at(nvlLocal));
     }
-
-    // NVL side: IPC exchange
-    if (nNvlPeers > 0) {
-      exchangedNvlMappedPtrs_ =
-          transport_.exchangeNvlBuffer(ptr, &callerBufferPossiblyExposed_);
-
-      // Upload NVL peer pointers to device for offset-based put/put_signal.
-      // exchangedNvlMappedPtrs_ is indexed by NVL local rank; extract peers
-      // in nvlPeerIdx order (skip self).
-      std::vector<void*> nvlPeerPtrs;
-      nvlPeerPtrs.reserve(nNvlPeers);
-      for (int nvlLocal = 0; nvlLocal < nvlNRanks_; ++nvlLocal) {
-        if (nvlLocal == nvlLocalRank_) {
-          continue;
-        }
-        nvlPeerPtrs.push_back(exchangedNvlMappedPtrs_.at(nvlLocal));
-      }
-      userNvlPeerPtrsDevice_ = std::make_unique<meta::comms::DeviceBuffer>(
-          nNvlPeers * sizeof(void*));
-      CUDA_CHECK(cudaMemcpy(
-          userNvlPeerPtrsDevice_->get(),
-          nvlPeerPtrs.data(),
-          nNvlPeers * sizeof(void*),
-          cudaMemcpyDefault));
-    }
-
-    uploadRegistrationsToDevice();
-  } catch (...) {
-    if (!callerBufferPossiblyExposed_) {
-      callerBufferKeepAlives_.pop_back();
-    }
-    throw;
+    userNvlPeerPtrsDevice_ =
+        std::make_unique<meta::comms::DeviceBuffer>(nNvlPeers * sizeof(void*));
+    CUDA_CHECK(cudaMemcpy(
+        userNvlPeerPtrsDevice_->get(),
+        nvlPeerPtrs.data(),
+        nNvlPeers * sizeof(void*),
+        cudaMemcpyDefault));
   }
 
-  if (!callerBufferPossiblyExposed_) {
-    callerBufferKeepAlives_.pop_back();
-  }
+  uploadRegistrationsToDevice();
 }
 
 void HostWindow::uploadRegistrationsToDevice() {

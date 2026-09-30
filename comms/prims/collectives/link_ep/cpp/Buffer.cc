@@ -281,12 +281,9 @@ Buffer::Buffer(
 
 Buffer::~Buffer() {
 #ifndef LINK_EP_OSS_INTRANODE
-  if (lowLatency_ != nullptr) {
-    retainLocalIpcBufferForProcessLifetime_ =
-        retainLocalIpcBufferForProcessLifetime_ ||
-        lowLatency_->requiresProcessLifetimeQuarantine();
-    lowLatency_.reset();
-  }
+  // lowLatency_ registers localIpcBuffer_ as its RDMA region; release that
+  // MR before the buffer is freed below.
+  lowLatency_.reset();
 #endif
   // intranode_ destructor handles workspace cleanup. Close peer IPC handles
   // BEFORE freeing the local buffer (peer handles must be closed while their
@@ -301,10 +298,10 @@ Buffer::~Buffer() {
     }
   }
   peerIpcBuffers_.clear();
-  if (localIpcBuffer_ != nullptr && !retainLocalIpcBufferForProcessLifetime_) {
+  if (localIpcBuffer_ != nullptr) {
     (void)cudaFree(localIpcBuffer_);
+    localIpcBuffer_ = nullptr;
   }
-  localIpcBuffer_ = nullptr;
 }
 
 int Buffer::get_num_rdma_ranks() const noexcept {
@@ -482,11 +479,6 @@ void Buffer::destroy() {
     return;
   }
 #ifndef LINK_EP_OSS_INTRANODE
-  if (lowLatency_ != nullptr) {
-    retainLocalIpcBufferForProcessLifetime_ =
-        retainLocalIpcBufferForProcessLifetime_ ||
-        lowLatency_->requiresProcessLifetimeQuarantine();
-  }
   lowLatency_.reset();
 #endif
   intranode_.reset();
@@ -1109,9 +1101,7 @@ py::tuple Buffer::low_latency_dispatch(
         hidden,
         numExperts,
         /*numQpsPerRank=*/numLocalExperts,
-        /*externalRdmaBuffer=*/llBuffer,
-        /*externalRdmaBufferRetentionRequired=*/
-        &retainLocalIpcBufferForProcessLifetime_);
+        /*externalRdmaBuffer=*/llBuffer);
   }
 
   auto packedRecvX = torch::empty(
@@ -1423,9 +1413,7 @@ void Buffer::setup_low_latency_ibgda(
         hidden,
         numExperts,
         /*numQpsPerRank=*/numLocalExperts,
-        /*externalRdmaBuffer=*/llBuffer,
-        /*externalRdmaBufferRetentionRequired=*/
-        &retainLocalIpcBufferForProcessLifetime_);
+        /*externalRdmaBuffer=*/llBuffer);
   }
   auto bootstrap = std::make_shared<PyAllGatherBootstrap>(
       rank_, numRanks_, std::move(allGatherCallback));

@@ -61,16 +61,6 @@ std::string backendParamName(
   return backendName(info.param);
 }
 
-bool deregisterOrRetain(
-    MultipeerIbgdaTransport& transport,
-    DeviceBuffer& buffer) {
-  if (transport.deregisterBuffer(buffer.get())) {
-    return true;
-  }
-  static_cast<void>(new DeviceBuffer(std::move(buffer)));
-  return false;
-}
-
 class TestIbTransport {
  public:
   TestIbTransport(
@@ -3223,7 +3213,7 @@ TEST_F(
           << "registered send wrote rounded tail bytes into recv staging";
     }
     if (globalRank == 0 && nbytes > 0) {
-      EXPECT_TRUE(deregisterOrRetain(*transport, sendBuffer));
+      transport->deregisterBuffer(sendBuffer.get());
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   }
@@ -3351,7 +3341,7 @@ TEST_F(
           << "mixed registered/staged send corrupted range at " << offset;
     }
   } else {
-    EXPECT_TRUE(deregisterOrRetain(*transport, sendBuffer));
+    transport->deregisterBuffer(sendBuffer.get());
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
@@ -3437,7 +3427,7 @@ TEST_F(
     EXPECT_GT(hostObservation.waitingCount, 0);
     EXPECT_EQ(hostObservation.postedCount, 1);
     EXPECT_EQ(hostObservation.drainedCount, 1);
-    EXPECT_TRUE(deregisterOrRetain(*transport, sendBuffer));
+    transport->deregisterBuffer(sendBuffer.get());
   } else {
     std::vector<uint8_t> received(nbytes);
     CUDACHECK_TEST(cudaMemcpy(

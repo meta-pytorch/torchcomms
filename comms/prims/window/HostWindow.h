@@ -16,9 +16,6 @@ namespace comms::prims {
 // Forward declarations
 class DeviceWindow;
 class MultiPeerTransport;
-namespace tests {
-class HostWindowTestPeer;
-} // namespace tests
 struct MultiPeerDeviceHandle;
 class P2pIbgdaTransportDevice;
 struct LocalBufferRegistration;
@@ -91,17 +88,14 @@ class HostWindow {
    *
    * @param transport MultiPeerTransport providing topology and buffer APIs
    * @param config Window memory configuration
-   * @param userBuffer Ownership-bearing handle whose get() is the exact GPU
-   *                   address to register
-   * @param userBufferSize Size of user buffer in bytes
+   * @param userBuffer Optional user-allocated GPU data buffer
+   * @param userBufferSize Size of user buffer in bytes (0 if no buffer)
    */
-  HostWindow(MultiPeerTransport& transport, const WindowConfig& config);
-
   HostWindow(
       MultiPeerTransport& transport,
       const WindowConfig& config,
-      std::shared_ptr<void> userBuffer,
-      std::size_t userBufferSize);
+      void* userBuffer = nullptr,
+      std::size_t userBufferSize = 0);
 
   ~HostWindow();
 
@@ -116,12 +110,6 @@ class HostWindow {
   bool isExchanged() const {
     return exchanged_;
   }
-
-  /**
-   * Returns true when a remotely exposed caller buffer or an IBGDA target
-   * allocation must remain alive until process exit.
-   */
-  bool requiresProcessLifetimeQuarantine() const noexcept;
 
   /**
    * getDeviceWindow - Get the flattened device-side window handle
@@ -163,10 +151,7 @@ class HostWindow {
    * NOT collective: only registers locally for IBGDA (gets per-NIC lkeys).
    * Does not exchange with peers. Use for source-only buffers.
    *
-   * Pass an aliasing shared pointer when an owning object holds the allocation:
-   * `std::shared_ptr<void> buffer(storage, storage->get())`.
-   *
-   * @param buffer Ownership-bearing handle whose get() is the GPU buffer
+   * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
    * @return      Per-NIC lkeys for the registered buffer (one entry per NIC,
    *              up to kMaxNicsPerGpu), or nullopt if no IBGDA peers. The
@@ -174,13 +159,8 @@ class HostWindow {
    *              it dispatches on, so passing only NIC0's lkey would corrupt
    *              WQEs for any slot landing on NIC[1..N-1] on multi-NIC
    *              hardware (GB200/GB300).
-   *
-   * HostWindow retains the owner until deregistration completes, or for process
-   * lifetime when safe deregistration cannot be proven.
    */
-  std::optional<NetworkLKeys> registerLocalBuffer(
-      std::shared_ptr<void> buffer,
-      std::size_t size);
+  std::optional<NetworkLKeys> registerLocalBuffer(void* ptr, std::size_t size);
 
   /**
    * Register and exchange the window data buffer with all peers.
@@ -192,16 +172,10 @@ class HostWindow {
    * Each DeviceWindow supports exactly one exchanged dst buffer. Calling
    * this more than once is an error.
    *
-   * HostWindow retains the owner until registration teardown and NVLink
-   * unmapping complete, or for process lifetime when safe teardown cannot be
-   * proven.
-   *
-   * @param buffer Ownership-bearing handle whose get() is the GPU buffer
+   * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
    */
-  void registerAndExchangeBuffer(
-      std::shared_ptr<void> buffer,
-      std::size_t size);
+  void registerAndExchangeBuffer(void* ptr, std::size_t size);
 
   int rank() const {
     return myRank_;
@@ -246,12 +220,6 @@ class HostWindow {
   void* get_nvlink_address(int peer, std::size_t offset = 0) const;
 
  private:
-  friend class tests::HostWindowTestPeer;
-
-  void exchangeImpl();
-  void registerAndExchangeBufferImpl(
-      std::shared_ptr<void> buffer,
-      std::size_t size);
   DeviceWindow buildDeviceWindowImpl(MultiPeerDeviceHandle handle) const;
   void uploadRegistrationsToDevice();
 
@@ -301,12 +269,11 @@ class HostWindow {
 
   // --- User data buffer (optional, auto-registered via
   //     registerAndExchangeBuffer) ---
-  std::shared_ptr<void> userBuffer_;
+  void* userBuffer_{nullptr};
   std::size_t userBufferSize_{0};
 
   // --- Locally registered buffer pointers (for IBGDA deregistration) ---
   std::vector<void*> registeredLocalBuffers_;
-  std::vector<std::unique_ptr<std::shared_ptr<void>>> callerBufferKeepAlives_;
 
   // --- Remote buffer registration (for generic put/put_signal) ---
   // Remote registrations for the single exchanged dst buffer (one per IBGDA
@@ -323,12 +290,6 @@ class HostWindow {
 
   bool userBufferRegistered_{false};
   bool exchanged_{false};
-  // Sticky once an IBGDA all-gather may publish this window's target rkeys.
-  bool ibgdaRkeysPossiblyExposed_{false};
-  // Sticky once an exchange may publish the caller-owned buffer to a peer.
-  bool callerBufferPossiblyExposed_{false};
-  // Sticky when a caller buffer may remain reachable after a failed exchange.
-  bool callerBufferLifetimeQuarantineRequired_{false};
 };
 
 } // namespace comms::prims
