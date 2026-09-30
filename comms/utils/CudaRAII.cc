@@ -3,6 +3,7 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/logger/SpdlogLogger.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 #include <stdexcept>
 #include <string>
@@ -13,9 +14,16 @@ DeviceBuffer::DeviceBuffer(std::size_t size) : size_(size) {
   CUDA_CHECK(cudaMalloc(&ptr_, size));
 }
 
+DeviceBuffer::DeviceBuffer(
+    std::size_t size,
+    const memtrace::GpuMemoryAllocationMetadata& metadata)
+    : size_(size) {
+  FB_CUDACHECKTHROW(memtrace::mcclCudaMalloc(&ptr_, size, metadata));
+}
+
 DeviceBuffer::~DeviceBuffer() {
   if (ptr_) {
-    CUDA_CHECK(cudaFree(ptr_));
+    CUDA_CHECK(memtrace::mcclCudaFree(ptr_));
   }
 }
 
