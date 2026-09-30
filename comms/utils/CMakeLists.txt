@@ -52,4 +52,4 @@ target_include_directories(utils PUBLIC
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
-target_link_libraries(utils PUBLIC spdlog::spdlog)
+target_link_libraries(utils PUBLIC spdlog::spdlog_header_only)
