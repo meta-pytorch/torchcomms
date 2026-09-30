@@ -1,10 +1,11 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cerrno>
 #include <cstdlib>
-#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -12,7 +13,7 @@
 #include <vector>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
-#include "comms/prims/transport/MultiPeerIbTransportInternal.h"
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 
@@ -27,39 +28,9 @@ using Event = std::pair<std::string, const void*>;
 using StrictMockBootstrap =
     ::testing::StrictMock<meta::comms::testing::MockBootstrap>;
 
-[[noreturn]] void throwLocalValidationFailure() {
-  throw std::runtime_error("local validation failure");
-}
-
-class PeerExchangeHarness final : private MultiPeerIbTransportBase {
+class RegistrationCacheHarness final : private MultiPeerIbTransportBase {
  public:
-  PeerExchangeHarness(
-      int myRank,
-      std::shared_ptr<meta::comms::IBootstrap> bootstrap)
-      : MultiPeerIbTransportBase(
-            myRank,
-            /*nRanks=*/2,
-            std::move(bootstrap),
-            makeConfig()) {}
-
-  int exchange(
-      int peerRank,
-      int localPayload,
-      const std::function<void()>& beforeSend) {
-    return exchangeWithPeer(peerRank, localPayload, /*tag=*/0, beforeSend);
-  }
-
- private:
-  static MultipeerIbTransportConfig makeConfig() {
-    MultipeerIbTransportConfig config;
-    config.gpuNicMap[0] = {"test_nic"};
-    return config;
-  }
-};
-
-class RegistrationRollbackHarness final : private MultiPeerIbTransportBase {
- public:
-  explicit RegistrationRollbackHarness(
+  explicit RegistrationCacheHarness(
       std::shared_ptr<meta::comms::IBootstrap> bootstrap)
       : MultiPeerIbTransportBase(
             /*myRank=*/0,
@@ -67,81 +38,28 @@ class RegistrationRollbackHarness final : private MultiPeerIbTransportBase {
             std::move(bootstrap),
             makeConfig()) {}
 
-  void recordFailedRollback(
-      void* allocation,
-      std::size_t size,
-      ibverbx::ibv_mr* mr) {
-    CachedMr cached;
-    cached.mrs[0] = mr;
-    cached.allocSize = size;
-    auto registrations = registrationState_.wlock();
-    quarantineFailedRegistrationRollback(
-        reinterpret_cast<uintptr_t>(allocation), cached, *registrations);
-  }
-
-  void recordHealthyRegistration(
-      void* allocation,
-      std::size_t size,
-      ibverbx::ibv_mr* mr) {
+  void
+  seedRegistration(void* ptr, std::size_t size, ibverbx::ibv_mr* mr = nullptr) {
     CachedMr cached;
     cached.mrs[0] = mr;
     cached.allocSize = size;
     cached.refs = 1;
-    auto registrations = registrationState_.wlock();
-    if (!registrations->registeredBuffers
-             .emplace(reinterpret_cast<uintptr_t>(allocation), cached)
-             .second) {
-      throw std::runtime_error("registration already exists");
-    }
+    registrationState_.wlock()->registeredBuffers.emplace(
+        reinterpret_cast<uintptr_t>(ptr), cached);
   }
 
-  bool registrationIsQuarantined(void* allocation) const {
+  void registerRange(void* ptr, std::size_t size) {
+    static_cast<void>(registerBuffer(ptr, size, /*relaxedOrdering=*/false));
+  }
+
+  void deregister(void* ptr) {
+    deregisterBuffer(ptr);
+  }
+
+  int refs(void* ptr) const {
     auto registrations = registrationState_.rlock();
-    const auto it = registrations->registeredBuffers.find(
-        reinterpret_cast<uintptr_t>(allocation));
-    return it != registrations->registeredBuffers.end() &&
-        it->second.deregistrationFailed;
-  }
-
-  bool deregister(void* allocation) {
-    return deregisterBuffer(allocation);
-  }
-
-  void exchangeFailedRegistration(void* allocation) {
-    static_cast<void>(
-        exchangeBuffer(IbgdaLocalBuffer(allocation, NetworkLKeys{})));
-  }
-
-  void registerTrackingQuarantine(
-      void* allocation,
-      std::size_t size,
-      bool& registrationQuarantined) {
-    static_cast<void>(registerBufferTrackingQuarantine(
-        allocation,
-        size,
-        /*relaxedOrdering=*/false,
-        registrationQuarantined));
-  }
-
-  void registerExactRangeTrackingQuarantine(
-      void* allocation,
-      std::size_t size,
-      bool& registrationQuarantined) {
-    static_cast<void>(
-        registerIbBufferRange(allocation, size, &registrationQuarantined));
-  }
-
-  bool requiresProcessLifetimeQuarantine() const {
-    return registrationRollbackFailed();
-  }
-
-  bool tracksFailedMr(void* allocation, ibverbx::ibv_mr* mr) const {
-    auto registrations = registrationState_.rlock();
-    const auto it = registrations->registeredBuffers.find(
-        reinterpret_cast<uintptr_t>(allocation));
-    return it != registrations->registeredBuffers.end() &&
-        it->second.refs == 0 && it->second.deregistrationFailed &&
-        it->second.mrs[0] == mr;
+    return registrations->registeredBuffers.at(reinterpret_cast<uintptr_t>(ptr))
+        .refs;
   }
 
  private:
@@ -150,52 +68,6 @@ class RegistrationRollbackHarness final : private MultiPeerIbTransportBase {
     config.gpuNicMap[0] = {"test_nic"};
     return config;
   }
-};
-
-class MaterializationFailureHarness final
-    : public MultiPeerIbTransport<MaterializationFailureHarness> {
- public:
-  explicit MaterializationFailureHarness(
-      std::shared_ptr<meta::comms::IBootstrap> bootstrap)
-      : MultiPeerIbTransport(
-            /*myRank=*/0,
-            /*nRanks=*/2,
-            std::move(bootstrap),
-            makeConfig()) {
-    peerMaterialized_.resize(1, false);
-  }
-
-  [[noreturn]] void doMaterializePeer(int) {
-    rkeysPossiblyExposed_ = true;
-    throw std::runtime_error("original materialization failure");
-  }
-
-  void cleanupPeerOnFailure(int) {
-    cleanupCalled_ = true;
-    if (rkeysPossiblyExposed_) {
-      requiresProcessLifetimeQuarantine_ = true;
-      return;
-    }
-  }
-
-  bool requiresProcessLifetimeQuarantine() const {
-    return requiresProcessLifetimeQuarantine_;
-  }
-
-  bool cleanupCalled() const {
-    return cleanupCalled_;
-  }
-
- private:
-  static MultipeerIbTransportConfig makeConfig() {
-    MultipeerIbTransportConfig config;
-    config.gpuNicMap[0] = {"test_nic"};
-    return config;
-  }
-
-  bool rkeysPossiblyExposed_{false};
-  bool requiresProcessLifetimeQuarantine_{false};
-  bool cleanupCalled_{false};
 };
 
 TEST(
@@ -300,660 +172,6 @@ TEST(
 
 TEST(
     MultipeerIbgdaTransportCleanupTest,
-    LowerRankReceiveFailureKeepsRkeysLocal) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  EXPECT_CALL(*bootstrap, recv(::testing::_, sizeof(int), 1, ::testing::_))
-      .WillOnce([] { return folly::makeSemiFuture(-1); });
-  EXPECT_CALL(*bootstrap, send(::testing::_, ::testing::_, 1, ::testing::_))
-      .Times(0);
-  PeerExchangeHarness transport(/*myRank=*/0, bootstrap);
-  PeerRkeyExposureState exposureState = PeerRkeyExposureState::kLocalOnly;
-
-  EXPECT_THROW(
-      exchangePeerBufferPayloadWithExposureTracking(
-          exposureState,
-          [&](const auto& beforeSend) {
-            return transport.exchange(/*peerRank=*/1, 7, beforeSend);
-          }),
-      std::runtime_error);
-  EXPECT_EQ(exposureState, PeerRkeyExposureState::kLocalOnly);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    LowerRankSendFailureMarksRkeysPossiblyExposed) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  EXPECT_CALL(*bootstrap, recv(::testing::_, sizeof(int), 1, ::testing::_))
-      .WillOnce([](void* payload, int, int, int) {
-        *static_cast<int*>(payload) = 11;
-        return folly::makeSemiFuture(0);
-      });
-  PeerRkeyExposureState exposureState = PeerRkeyExposureState::kLocalOnly;
-  EXPECT_CALL(*bootstrap, send(::testing::_, sizeof(int), 1, ::testing::_))
-      .WillOnce([&](void*, int, int, int) {
-        EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
-        return folly::makeSemiFuture(-1);
-      });
-  PeerExchangeHarness transport(/*myRank=*/0, bootstrap);
-
-  EXPECT_THROW(
-      exchangePeerBufferPayloadWithExposureTracking(
-          exposureState,
-          [&](const auto& beforeSend) {
-            return transport.exchange(/*peerRank=*/1, 7, beforeSend);
-          }),
-      std::runtime_error);
-  EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    HigherRankReceiveFailureLeavesRkeysPossiblyExposed) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  PeerRkeyExposureState exposureState = PeerRkeyExposureState::kLocalOnly;
-  EXPECT_CALL(*bootstrap, send(::testing::_, sizeof(int), 0, ::testing::_))
-      .WillOnce([&](void*, int, int, int) {
-        EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
-        return folly::makeSemiFuture(0);
-      });
-  EXPECT_CALL(*bootstrap, recv(::testing::_, sizeof(int), 0, ::testing::_))
-      .WillOnce([] { return folly::makeSemiFuture(-1); });
-  PeerExchangeHarness transport(/*myRank=*/1, bootstrap);
-
-  EXPECT_THROW(
-      exchangePeerBufferPayloadWithExposureTracking(
-          exposureState,
-          [&](const auto& beforeSend) {
-            return transport.exchange(/*peerRank=*/0, 7, beforeSend);
-          }),
-      std::runtime_error);
-  EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
-}
-
-TEST(MultipeerIbgdaTransportCleanupTest, FindsFirstPossiblyExposedPeer) {
-  const std::vector<PeerRkeyExposureState> exposureStates = {
-      PeerRkeyExposureState::kPossiblyExposed,
-      PeerRkeyExposureState::kLocalOnly,
-      PeerRkeyExposureState::kPossiblyExposed,
-  };
-
-  EXPECT_EQ(findPossiblyExposedPeer(exposureStates), 0);
-}
-
-TEST(MultipeerIbgdaTransportCleanupTest, NoPossiblyExposedPeerReturnsNullopt) {
-  const std::vector<PeerRkeyExposureState> exposureStates(
-      2, PeerRkeyExposureState::kLocalOnly);
-
-  EXPECT_EQ(findPossiblyExposedPeer(exposureStates), std::nullopt);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    ProcessLifetimeQuarantineDetachesOnlyWhenOwnerIsDestroyed) {
-  bool destroyed = false;
-  struct DestructionProbe {
-    explicit DestructionProbe(bool& destroyed) : destroyed(destroyed) {}
-    ~DestructionProbe() {
-      destroyed = true;
-    }
-    bool& destroyed;
-  };
-  auto owner = std::make_unique<DestructionProbe>(destroyed);
-  auto* quarantined = releaseTransportForProcessLifetimeIfQuarantined(
-      owner, /*processLifetimeQuarantineRequired=*/true);
-
-  EXPECT_EQ(owner, nullptr);
-  EXPECT_FALSE(destroyed);
-
-  delete quarantined;
-  EXPECT_TRUE(destroyed);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    RkeyExchangeFailureAfterExposureQuarantinesAndPreservesOriginalError) {
-  bool rkeysPossiblyExposed = false;
-  bool quarantined = false;
-  std::string quarantineContext;
-
-  try {
-    runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
-        rkeysPossiblyExposed,
-        [&]() {
-          rkeysPossiblyExposed = true;
-          throw std::runtime_error("original window exchange failure");
-        },
-        [&](std::string_view context) {
-          quarantined = true;
-          quarantineContext = context;
-        });
-    FAIL() << "expected original window exchange failure";
-  } catch (const std::runtime_error& ex) {
-    EXPECT_STREQ(ex.what(), "original window exchange failure");
-  }
-
-  EXPECT_TRUE(quarantined);
-  EXPECT_EQ(quarantineContext, "original window exchange failure");
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    RkeyExchangeFailureBeforeExposureDoesNotQuarantine) {
-  bool rkeysPossiblyExposed = false;
-  bool quarantined = false;
-
-  EXPECT_THROW(
-      runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
-          rkeysPossiblyExposed,
-          throwLocalValidationFailure,
-          [&](std::string_view) { quarantined = true; }),
-      std::runtime_error);
-  EXPECT_FALSE(quarantined);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    LaterWindowFailureQuarantinesPreviouslyExposedCallerBuffer) {
-  bool ibgdaRkeysPossiblyExposed = false;
-  bool callerBufferPossiblyExposed = true;
-  bool ibgdaTransportQuarantined = false;
-  bool callerBufferQuarantined = false;
-
-  EXPECT_THROW(
-      runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
-          ibgdaRkeysPossiblyExposed,
-          callerBufferPossiblyExposed,
-          throwLocalValidationFailure,
-          [&](std::string_view) { ibgdaTransportQuarantined = true; },
-          [&](std::string_view) { callerBufferQuarantined = true; }),
-      std::runtime_error);
-  EXPECT_FALSE(ibgdaTransportQuarantined);
-  EXPECT_TRUE(callerBufferQuarantined);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    WindowFailureQuarantinesBothExposedResourceClasses) {
-  bool ibgdaRkeysPossiblyExposed = true;
-  bool callerBufferPossiblyExposed = true;
-  std::vector<std::string> quarantined;
-
-  try {
-    runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
-        ibgdaRkeysPossiblyExposed,
-        callerBufferPossiblyExposed,
-        throwLocalValidationFailure,
-        [&](std::string_view context) {
-          EXPECT_EQ(context, "local validation failure");
-          quarantined.emplace_back("ibgda");
-        },
-        [&](std::string_view context) {
-          EXPECT_EQ(context, "local validation failure");
-          quarantined.emplace_back("caller");
-        });
-    FAIL() << "expected local validation failure";
-  } catch (const std::runtime_error& ex) {
-    EXPECT_STREQ(ex.what(), "local validation failure");
-  }
-
-  EXPECT_EQ(quarantined, (std::vector<std::string>{"ibgda", "caller"}));
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    MaterializationFailurePreservesOriginalErrorAfterOwnerQuarantine) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  auto owner = std::make_unique<MaterializationFailureHarness>(bootstrap);
-  MaterializationFailureHarness* quarantinedTransport = nullptr;
-  bool quarantined = false;
-  bool poisoned = false;
-  auto materialize = [&]() {
-    runWithProcessLifetimeQuarantineOnFailure(
-        *owner,
-        [](auto& transport) { transport.materializePeer(/*peerRank=*/1); },
-        [&](std::string_view context) {
-          EXPECT_EQ(context, "original materialization failure");
-          quarantined = true;
-          poisoned = true;
-        });
-  };
-
-  try {
-    materialize();
-    FAIL() << "expected original materialization failure";
-  } catch (const std::runtime_error& ex) {
-    EXPECT_STREQ(ex.what(), "original materialization failure");
-  }
-  EXPECT_NE(owner, nullptr);
-  EXPECT_TRUE(quarantined);
-  EXPECT_TRUE(poisoned);
-  quarantinedTransport =
-      releaseTransportForProcessLifetimeIfQuarantined(owner, quarantined);
-  ASSERT_NE(quarantinedTransport, nullptr);
-  EXPECT_TRUE(quarantinedTransport->cleanupCalled());
-
-  delete quarantinedTransport;
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    ProcessLifetimeQuarantineRetainsDependentResources) {
-  bool released = false;
-  releaseUnlessProcessLifetimeQuarantined(true, [&]() { released = true; });
-  EXPECT_FALSE(released);
-
-  releaseUnlessProcessLifetimeQuarantined(false, [&]() { released = true; });
-  EXPECT_TRUE(released);
-}
-
-TEST(MultipeerIbgdaTransportCleanupTest, NormalCleanupRunsBeforeOwnerRelease) {
-  bool cleanupRan = false;
-  bool releasedAfterCleanup = false;
-  {
-    auto owner = std::shared_ptr<void>(new int(7), [&](void* ptr) {
-      releasedAfterCleanup = cleanupRan;
-      delete static_cast<int*>(ptr);
-    });
-    std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
-    keepAlives.push_back(
-        std::make_unique<std::shared_ptr<void>>(std::move(owner)));
-
-    EXPECT_TRUE(releaseResourcesOrRetainKeepAlives(
-        /*resourceLifetimeQuarantineRequired=*/false,
-        /*keepAliveLifetimeQuarantineRequired=*/false,
-        keepAlives,
-        [&]() noexcept {
-          cleanupRan = true;
-          return true;
-        }));
-    EXPECT_FALSE(releasedAfterCleanup);
-  }
-  EXPECT_TRUE(releasedAfterCleanup);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    ExceptionUnwindAfterRkeyExposureRetainsCallerOwner) {
-  struct CleanupScope {
-    ~CleanupScope() {
-      static_cast<void>(releaseResourcesOrRetainKeepAlives(
-          quarantine, quarantine, keepAlives, [this]() noexcept {
-            cleanupRan = true;
-            return true;
-          }));
-    }
-
-    bool& quarantine;
-    bool& cleanupRan;
-    std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
-  };
-
-  bool rkeysPossiblyExposed = false;
-  bool quarantined = false;
-  bool cleanupRan = false;
-  std::weak_ptr<void> weakOwner;
-  std::shared_ptr<void>* retainedHolder = nullptr;
-
-  try {
-    auto owner = std::shared_ptr<void>(
-        new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-    weakOwner = owner;
-    CleanupScope cleanup{quarantined, cleanupRan, {}};
-    cleanup.keepAlives.push_back(
-        std::make_unique<std::shared_ptr<void>>(std::move(owner)));
-    retainedHolder = cleanup.keepAlives.front().get();
-
-    runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
-        rkeysPossiblyExposed,
-        [&]() {
-          rkeysPossiblyExposed = true;
-          throw std::runtime_error("post-exposure failure");
-        },
-        [&](std::string_view) { quarantined = true; });
-    FAIL() << "expected post-exposure failure";
-  } catch (const std::runtime_error& ex) {
-    EXPECT_STREQ(ex.what(), "post-exposure failure");
-  }
-
-  EXPECT_TRUE(quarantined);
-  EXPECT_FALSE(cleanupRan);
-  EXPECT_FALSE(weakOwner.expired());
-  delete retainedHolder;
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    FailureBeforeRkeyExposureReleasesNormally) {
-  struct CleanupScope {
-    ~CleanupScope() {
-      static_cast<void>(releaseResourcesOrRetainKeepAlives(
-          quarantine, quarantine, keepAlives, [this]() noexcept {
-            cleanupRan = true;
-            return true;
-          }));
-    }
-
-    bool& quarantine;
-    bool& cleanupRan;
-    std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
-  };
-
-  bool rkeysPossiblyExposed = false;
-  bool quarantined = false;
-  bool cleanupRan = false;
-  std::weak_ptr<void> weakOwner;
-
-  try {
-    auto owner = std::shared_ptr<void>(
-        new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-    weakOwner = owner;
-    CleanupScope cleanup{quarantined, cleanupRan, {}};
-    cleanup.keepAlives.push_back(
-        std::make_unique<std::shared_ptr<void>>(std::move(owner)));
-
-    runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
-        rkeysPossiblyExposed,
-        throwLocalValidationFailure,
-        [&](std::string_view) { quarantined = true; });
-    FAIL() << "expected local validation failure";
-  } catch (const std::runtime_error& ex) {
-    EXPECT_STREQ(ex.what(), "local validation failure");
-  }
-
-  EXPECT_FALSE(quarantined);
-  EXPECT_TRUE(cleanupRan);
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    CallerBufferQuarantineStillReleasesUnrelatedResources) {
-  bool cleanupRan = false;
-  auto owner = std::shared_ptr<void>(
-      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-  std::weak_ptr<void> weakOwner = owner;
-  std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
-  keepAlives.push_back(
-      std::make_unique<std::shared_ptr<void>>(std::move(owner)));
-  auto* retainedHolder = keepAlives.front().get();
-
-  EXPECT_FALSE(releaseResourcesOrRetainKeepAlives(
-      /*resourceLifetimeQuarantineRequired=*/false,
-      /*keepAliveLifetimeQuarantineRequired=*/true,
-      keepAlives,
-      [&]() noexcept {
-        cleanupRan = true;
-        return true;
-      }));
-
-  EXPECT_TRUE(cleanupRan);
-  EXPECT_FALSE(weakOwner.expired());
-  delete retainedHolder;
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    DeregistrationFailureRetainsCallerOwner) {
-  auto owner = std::shared_ptr<void>(
-      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-  std::weak_ptr<void> weakOwner = owner;
-  std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
-  keepAlives.push_back(
-      std::make_unique<std::shared_ptr<void>>(std::move(owner)));
-  auto* retainedHolder = keepAlives.front().get();
-
-  EXPECT_FALSE(releaseResourcesOrRetainKeepAlives(
-      /*resourceLifetimeQuarantineRequired=*/false,
-      /*keepAliveLifetimeQuarantineRequired=*/false,
-      keepAlives,
-      []() noexcept { return false; }));
-  EXPECT_FALSE(weakOwner.expired());
-  delete retainedHolder;
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    FailedDeregistrationRetainsTransportOwner) {
-  auto owner = std::shared_ptr<void>(
-      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-  std::weak_ptr<void> weakOwner = owner;
-  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(owner));
-  auto* retainedHolder = holder.get();
-
-  EXPECT_FALSE(releaseAllocationAfterDeregistration(
-      /*registered=*/true,
-      []() noexcept { return false; },
-      [&]() noexcept { holder.reset(); },
-      [&]() noexcept { static_cast<void>(holder.release()); }));
-  EXPECT_FALSE(weakOwner.expired());
-  delete retainedHolder;
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    SuccessfulDeregistrationReleasesTransportOwner) {
-  auto owner = std::shared_ptr<void>(
-      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-  std::weak_ptr<void> weakOwner = owner;
-  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(owner));
-
-  EXPECT_TRUE(releaseAllocationAfterDeregistration(
-      /*registered=*/true,
-      []() noexcept { return true; },
-      [&]() noexcept { holder.reset(); },
-      [&]() noexcept { static_cast<void>(holder.release()); }));
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    UnregisteredTransportOwnerReleasesWithoutDeregistration) {
-  auto owner = std::shared_ptr<void>(
-      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
-  std::weak_ptr<void> weakOwner = owner;
-  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(owner));
-  bool deregisterCalled = false;
-
-  EXPECT_TRUE(releaseAllocationAfterDeregistration(
-      /*registered=*/false,
-      [&]() noexcept {
-        deregisterCalled = true;
-        return false;
-      },
-      [&]() noexcept { holder.reset(); },
-      [&]() noexcept { static_cast<void>(holder.release()); }));
-  EXPECT_FALSE(deregisterCalled);
-  EXPECT_TRUE(weakOwner.expired());
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    PartialMrDeregistrationPreservesFailedEntries) {
-  int mr0 = 0;
-  int mr1 = 0;
-  int mr2 = 0;
-  std::array<int*, 3> mrs{&mr0, &mr1, &mr2};
-  std::vector<int> attemptedNics;
-
-  EXPECT_FALSE(tryDeregisterMrs(mrs, 3, [&](int nic, int*) {
-    attemptedNics.push_back(nic);
-    return nic == 1 ? -1 : 0;
-  }));
-  EXPECT_EQ(attemptedNics, (std::vector<int>{0, 1, 2}));
-  EXPECT_EQ(mrs[0], nullptr);
-  EXPECT_EQ(mrs[1], &mr1);
-  EXPECT_EQ(mrs[2], nullptr);
-
-  attemptedNics.clear();
-  EXPECT_TRUE(tryDeregisterMrs(mrs, 3, [&](int nic, int*) {
-    attemptedNics.push_back(nic);
-    return 0;
-  }));
-  EXPECT_EQ(attemptedNics, (std::vector<int>{1}));
-  EXPECT_EQ(mrs, (std::array<int*, 3>{nullptr, nullptr, nullptr}));
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    FailedRegistrationRollbackTracksMrAndQuarantinesOwner) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  RegistrationRollbackHarness transport(bootstrap);
-  ibverbx::ibv_mr mr{};
-  int allocation = 0;
-  bool ownerQuarantined = false;
-
-  try {
-    runWithProcessLifetimeQuarantineOnFailure(
-        transport,
-        [&](auto& candidate) {
-          candidate.recordFailedRollback(&allocation, sizeof(allocation), &mr);
-          throw std::runtime_error("original registration failure");
-        },
-        [&](std::string_view context) {
-          EXPECT_EQ(context, "original registration failure");
-          ownerQuarantined = true;
-        });
-    FAIL() << "expected original registration failure";
-  } catch (const std::runtime_error& ex) {
-    EXPECT_STREQ(ex.what(), "original registration failure");
-  }
-
-  EXPECT_TRUE(ownerQuarantined);
-  EXPECT_TRUE(transport.requiresProcessLifetimeQuarantine());
-  EXPECT_TRUE(transport.tracksFailedMr(&allocation, &mr));
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    FailedRollbackCollisionQuarantinesExistingRegistration) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  RegistrationRollbackHarness transport(bootstrap);
-  ibverbx::ibv_mr survivingMr{};
-  int allocation = 0;
-
-  transport.recordHealthyRegistration(
-      &allocation, sizeof(allocation), /*mr=*/nullptr);
-  transport.recordFailedRollback(
-      &allocation, sizeof(allocation) * 2, &survivingMr);
-
-  EXPECT_TRUE(transport.requiresProcessLifetimeQuarantine());
-  EXPECT_TRUE(transport.registrationIsQuarantined(&allocation));
-  EXPECT_FALSE(transport.deregister(&allocation));
-  EXPECT_TRUE(transport.registrationIsQuarantined(&allocation));
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    WiderSameBaseRegistrationIsRejectedBeforeProviderRegistration) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  RegistrationRollbackHarness transport(bootstrap);
-  int allocation = 0;
-  bool registrationQuarantined = false;
-
-  transport.recordHealthyRegistration(
-      &allocation, sizeof(allocation), /*mr=*/nullptr);
-
-  EXPECT_THROW(
-      transport.registerTrackingQuarantine(
-          &allocation, sizeof(allocation) * 2, registrationQuarantined),
-      std::runtime_error);
-  EXPECT_FALSE(registrationQuarantined);
-  EXPECT_FALSE(transport.registrationIsQuarantined(&allocation));
-  EXPECT_TRUE(transport.deregister(&allocation));
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    FailedRegistrationRollbackCannotBeExchanged) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  RegistrationRollbackHarness transport(bootstrap);
-  ibverbx::ibv_mr mr{};
-  int allocation = 0;
-
-  transport.recordFailedRollback(&allocation, sizeof(allocation), &mr);
-
-  EXPECT_THROW(
-      transport.exchangeFailedRegistration(&allocation), std::runtime_error);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    FailedRegistrationRollbackMarksOnlyItsAllocationForRetention) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  RegistrationRollbackHarness transport(bootstrap);
-  ibverbx::ibv_mr mr{};
-  int allocation = 0;
-  int unrelatedAllocation = 0;
-  bool failedAllocationQuarantined = false;
-  bool unrelatedAllocationQuarantined = false;
-
-  transport.recordFailedRollback(&allocation, sizeof(allocation), &mr);
-
-  EXPECT_THROW(
-      transport.registerTrackingQuarantine(
-          &allocation, sizeof(allocation), failedAllocationQuarantined),
-      std::runtime_error);
-  EXPECT_TRUE(failedAllocationQuarantined);
-
-  EXPECT_THROW(
-      transport.registerTrackingQuarantine(
-          &unrelatedAllocation,
-          /*size=*/0,
-          unrelatedAllocationQuarantined),
-      std::invalid_argument);
-  EXPECT_FALSE(unrelatedAllocationQuarantined);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    ExactRangeValidationFailureDoesNotInheritPriorQuarantineResult) {
-  auto bootstrap = std::make_shared<StrictMockBootstrap>();
-  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
-  RegistrationRollbackHarness transport(bootstrap);
-  int allocation = 0;
-  bool registrationQuarantined = true;
-
-  EXPECT_THROW(
-      transport.registerExactRangeTrackingQuarantine(
-          &allocation, /*size=*/0, registrationQuarantined),
-      std::invalid_argument);
-  EXPECT_FALSE(registrationQuarantined);
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
-    QuarantinedOrIncompleteRegistrationCannotPublishKeys) {
-  int mr0 = 0;
-  int mr1 = 0;
-  std::array<int*, 2> mrs{&mr0, &mr1};
-
-  EXPECT_TRUE(registrationKeysAvailable(
-      /*deregistrationFailed=*/false, mrs, mrs.size()));
-
-  mrs[1] = nullptr;
-  EXPECT_FALSE(registrationKeysAvailable(
-      /*deregistrationFailed=*/false, mrs, mrs.size()));
-
-  mrs[1] = &mr1;
-  EXPECT_FALSE(registrationKeysAvailable(
-      /*deregistrationFailed=*/true, mrs, mrs.size()));
-}
-
-TEST(
-    MultipeerIbgdaTransportCleanupTest,
     DisabledQuiescingStillReleasesBuffers) {
   doca_gpu_verbs_qp_hl qp{};
   std::vector<FakeNicResources> nics(1);
@@ -996,6 +214,40 @@ TEST(
           []() { std::abort(); }),
       "QP transition failed; refusing to continue teardown.*"
       "qp_kind=standalone_main nic_index=0 qp_index=0");
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    WiderSameBaseRegistrationIsRejectedBeforeProviderRegistration) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationCacheHarness transport(bootstrap);
+  std::array<int, 2> allocation{};
+  transport.seedRegistration(allocation.data(), sizeof(int));
+
+  try {
+    transport.registerRange(allocation.data(), sizeof(allocation));
+    FAIL() << "wider same-base registration was accepted";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("same allocation base"));
+  }
+  EXPECT_EQ(transport.refs(allocation.data()), 1);
+}
+
+TEST(MultipeerIbgdaTransportCleanupDeathTest, FailedMrDeregistrationIsFatal) {
+  std::array<int, 2> allocation{};
+  ibverbx::ibv_mr mr{};
+  EXPECT_DEATH(
+      {
+        ibverbx::ibvSymbols.ibv_internal_dereg_mr =
+            [](ibverbx::ibv_mr*) -> int { return EBUSY; };
+        auto bootstrap = std::make_shared<StrictMockBootstrap>();
+        EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+        RegistrationCacheHarness transport(bootstrap);
+        transport.seedRegistration(allocation.data(), sizeof(allocation), &mr);
+        transport.deregister(allocation.data());
+      },
+      "failed to deregister MR on NIC 0");
 }
 
 } // namespace

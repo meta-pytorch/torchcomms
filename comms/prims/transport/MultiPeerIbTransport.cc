@@ -19,7 +19,6 @@
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5core.h"
-#include "comms/prims/transport/MultiPeerIbTransportInternal.h"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
 #include "comms/utils/logger/SpdlogLogger.h"
 // GPU DMA-BUF export for MR registration. Generic (no DOCA context): on NVIDIA
@@ -105,7 +104,8 @@ bool nicSupportsDataDirect(
   const bool dmabufUnsupported =
       (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   if (probeMr != nullptr) {
-    symbols.ibv_internal_dereg_mr(probeMr);
+    CHECK_EQ(symbols.ibv_internal_dereg_mr(probeMr), 0)
+        << "failed to deregister Data-Direct probe MR";
   }
   if (dmabufUnsupported) {
     return false;
@@ -152,7 +152,8 @@ bool nicSupportsRelaxedOrdering(ibverbx::ibv_pd* pd) {
   if (mr == nullptr) {
     return false;
   }
-  symbols.ibv_internal_dereg_mr(mr);
+  CHECK_EQ(symbols.ibv_internal_dereg_mr(mr), 0)
+      << "failed to deregister Relaxed Ordering probe MR";
   return true;
 }
 
@@ -375,42 +376,6 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
 // header).
 MultiPeerIbTransportBase::~MultiPeerIbTransportBase() = default;
 
-void MultiPeerIbTransportBase::retainOwnedBuffersForProcessLifetime() noexcept {
-  static_cast<void>(sendRecvSendStagingBulk_.buffer.release());
-  static_cast<void>(sendRecvRecvStagingBulk_.buffer.release());
-  static_cast<void>(sendRecvControlBulk_.buffer.release());
-  for (auto& owned : lazyPeerBufs_) {
-    static_cast<void>(owned.buffer.release());
-  }
-}
-
-void MultiPeerIbTransportBase::releaseRegisteredDeviceBuffer(
-    RegisteredDeviceBuffer& owned,
-    const char* label) noexcept {
-  if (!owned.buffer) {
-    owned.registered = false;
-    return;
-  }
-  static_cast<void>(detail::releaseAllocationAfterDeregistration(
-      owned.registered,
-      [&]() noexcept {
-        try {
-          return deregisterBuffer(owned.buffer->get());
-        } catch (const std::exception& ex) {
-          LOG(ERROR) << "MultiPeerIbTransport: failed to deregister " << label
-                     << ": " << ex.what();
-          return false;
-        }
-      },
-      [&]() noexcept { owned.buffer.reset(); },
-      [&]() noexcept {
-        LOG(ERROR) << "MultiPeerIbTransport: retaining " << label
-                   << " after failed MR deregistration";
-        static_cast<void>(owned.buffer.release());
-      }));
-  owned.registered = false;
-}
-
 // ---- shared send/recv staging-ring lifecycle (eager mode) ----
 
 void MultiPeerIbTransportBase::validateSendRecvConfig() const {
@@ -565,10 +530,8 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
 
   sendRecvPeerBuffers_.resize(numPeers);
 
-  sendRecvSendStagingBulk_.buffer =
-      allocateBulk(stagingPerPeer, "send staging bulk");
-  sendRecvRecvStagingBulk_.buffer =
-      allocateBulk(stagingPerPeer, "recv staging bulk");
+  sendRecvSendStagingBulk_ = allocateBulk(stagingPerPeer, "send staging bulk");
+  sendRecvRecvStagingBulk_ = allocateBulk(stagingPerPeer, "recv staging bulk");
 
   // Signal and the device counter are the small RDMA-registered control
   // buffers; pack them into ONE granularity-aligned allocation so they cost a
@@ -582,12 +545,12 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
       deviceCounter ? counterPerPeer * numPeers : 0;
   const std::size_t counterOff = alignUp(signalTotal, alignof(SignalState));
   const std::size_t controlBytes = alignUp(counterOff + counterTotal, ddAlign);
-  sendRecvControlBulk_.buffer =
+  sendRecvControlBulk_ =
       std::make_unique<meta::comms::DeviceBuffer>(controlBytes);
   checkSlotGpu(
-      slotGpuMemset(sendRecvControlBulk_.buffer->get(), 0, controlBytes),
+      slotGpuMemset(sendRecvControlBulk_->get(), 0, controlBytes),
       "MultiPeerIbTransport: zero send/recv control bulk");
-  char* controlBase = static_cast<char*>(sendRecvControlBulk_.buffer->get());
+  char* controlBase = static_cast<char*>(sendRecvControlBulk_->get());
   checkSendRecvSignalAlignment(
       controlBase, "MultiPeerIbTransport: send/recv signal base");
 
@@ -595,22 +558,19 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
   // so a flag write can't be reordered ahead of the data on the shared route.
   // (Data-Direct, when active, applies to all of these automatically.)
   auto sendStagingBulkReg = registerBuffer(
-      sendRecvSendStagingBulk_.buffer->get(),
+      sendRecvSendStagingBulk_->get(),
       stagingPerPeer * numPeers,
       /*relaxedOrdering=*/true);
-  sendRecvSendStagingBulk_.registered = true;
   sendRecvRecvStagingBulkReg_ = registerBuffer(
-      sendRecvRecvStagingBulk_.buffer->get(),
+      sendRecvRecvStagingBulk_->get(),
       stagingPerPeer * numPeers,
       /*relaxedOrdering=*/true);
-  sendRecvRecvStagingBulk_.registered = true;
   // One registration covers the whole control allocation (registerBuffer
   // registers the entire underlying allocation regardless of the size arg; the
   // base is granularity-aligned so the DMA-BUF offset is 0). The signal and
   // device-counter handles are then just views into this single MR (same lkey),
   // so there is no second registration / refcount to balance.
   sendRecvSignalBulkReg_ = registerBuffer(controlBase, controlBytes);
-  sendRecvControlBulk_.registered = true;
 
   IbgdaLocalBuffer counterBulkBuf;
   IbgdaLocalBuffer counterCompletionBulkBuf;
@@ -688,20 +648,39 @@ void MultiPeerIbTransportBase::exchangeSendRecvBuffersEager() {
 }
 
 void MultiPeerIbTransportBase::cleanupSendRecvBuffers() noexcept {
-  releaseRegisteredDeviceBuffer(
-      sendRecvSendStagingBulk_, "send/recv send staging bulk");
-  releaseRegisteredDeviceBuffer(
-      sendRecvRecvStagingBulk_, "send/recv recv staging bulk");
+  auto deregisterNoexcept = [&](void* ptr) noexcept {
+    if (ptr == nullptr) {
+      return;
+    }
+    try {
+      deregisterBuffer(ptr);
+    } catch (const std::exception& ex) {
+      LOG(ERROR) << "MultiPeerIbTransport: failed to deregister send/recv "
+                    "buffer: "
+                 << ex.what();
+    }
+  };
+
+  deregisterNoexcept(
+      sendRecvSendStagingBulk_ ? sendRecvSendStagingBulk_->get() : nullptr);
+  deregisterNoexcept(
+      sendRecvRecvStagingBulk_ ? sendRecvRecvStagingBulk_->get() : nullptr);
   // The control bulk was registered exactly once (signal + device-counter are
   // views into that single MR); state was never registered.
-  releaseRegisteredDeviceBuffer(sendRecvControlBulk_, "send/recv control bulk");
+  deregisterNoexcept(
+      sendRecvControlBulk_ ? sendRecvControlBulk_->get() : nullptr);
+
+  sendRecvSendStagingBulk_.reset();
+  sendRecvRecvStagingBulk_.reset();
+  sendRecvControlBulk_.reset();
   freeCounterSlotAllocation(sendRecvHostCounterAllocation_);
   sendRecvRecvStagingBulkReg_ = IbgdaLocalBuffer{};
   sendRecvSignalBulkReg_ = IbgdaLocalBuffer{};
   sendRecvCounterBulkReg_ = IbgdaLocalBuffer{};
   // Lazy per-peer allocations (empty in eager mode).
-  for (auto& owned : lazyPeerBufs_) {
-    releaseRegisteredDeviceBuffer(owned, "per-peer send/recv buffer");
+  for (auto& buf : lazyPeerBufs_) {
+    deregisterNoexcept(buf ? buf->get() : nullptr);
+    buf.reset();
   }
   lazyPeerBufs_.clear();
   for (auto& counter : lazySendRecvHostCounters_) {
@@ -756,32 +735,16 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
     off += counterPerPeer;
   }
   const std::size_t total = off;
-  // Take ownership before registering: any throw below then leaves the
-  // allocation and its co-located registration state where
-  // cleanupSendRecvBufferForPeer() can deregister it before freeing.
-  auto& owned = lazyPeerBufs_[peerIndex];
-  owned.buffer = std::make_unique<meta::comms::DeviceBuffer>(total);
+  auto buf = std::make_unique<meta::comms::DeviceBuffer>(total);
   checkSlotGpu(
-      slotGpuMemset(owned.buffer->get(), 0, total),
+      slotGpuMemset(buf->get(), 0, total),
       "MultiPeerIbTransport: zero per-peer send/recv buffer");
-  IbgdaLocalBuffer reg;
-  bool registrationQuarantined = false;
-  try {
-    reg = registerBufferTrackingQuarantine(
-        owned.buffer->get(),
-        total,
-        /*relaxedOrdering=*/false,
-        registrationQuarantined);
-    owned.registered = true;
-  } catch (...) {
-    owned.registered = registrationQuarantined;
-    if (!registrationQuarantined) {
-      owned.buffer.reset();
-    }
-    throw;
-  }
-
-  char* p = static_cast<char*>(owned.buffer->get());
+  auto reg = registerBuffer(buf->get(), total);
+  // The MR is live from here on. Hand ownership over now so a throw below
+  // unwinds through cleanupSendRecvBufferForPeer (deregister, then free)
+  // instead of freeing memory the MR cache still references.
+  char* p = static_cast<char*>(buf->get());
+  lazyPeerBufs_[peerIndex] = std::move(buf);
   auto& pb = sendRecvPeerBuffers_[peerIndex];
   pb.sendStaging = IbgdaLocalBuffer(p + sendStagingOff, reg.lkey_per_device);
   void* recvStagingPtr = p + recvStagingOff;
@@ -835,9 +798,16 @@ void MultiPeerIbTransportBase::cleanupSendRecvBufferForPeer(
       peerIndex >= static_cast<int>(sendRecvPeerBuffers_.size())) {
     return;
   }
-  if (peerIndex < static_cast<int>(lazyPeerBufs_.size())) {
-    releaseRegisteredDeviceBuffer(
-        lazyPeerBufs_[peerIndex], "per-peer send/recv buffer");
+  if (peerIndex < static_cast<int>(lazyPeerBufs_.size()) &&
+      lazyPeerBufs_[peerIndex]) {
+    try {
+      deregisterBuffer(lazyPeerBufs_[peerIndex]->get());
+    } catch (const std::exception& ex) {
+      LOG(ERROR) << "MultiPeerIbTransport: failed to deregister per-peer "
+                    "send/recv buffer: "
+                 << ex.what();
+    }
+    lazyPeerBufs_[peerIndex].reset();
   }
   if (peerIndex < static_cast<int>(lazySendRecvHostCounters_.size())) {
     freeCounterSlotAllocation(lazySendRecvHostCounters_[peerIndex]);
@@ -1147,65 +1117,14 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
     std::size_t size,
     bool relaxedOrdering) {
   auto registrations = registrationState_.wlock();
-  return registerBufferLocked(
-      ptr,
-      size,
-      relaxedOrdering,
-      *registrations,
-      /*registrationQuarantined=*/nullptr);
-}
-
-IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferTrackingQuarantine(
-    void* ptr,
-    std::size_t size,
-    bool relaxedOrdering,
-    bool& registrationQuarantined) {
-  registrationQuarantined = false;
-  auto registrations = registrationState_.wlock();
-  return registerBufferLocked(
-      ptr, size, relaxedOrdering, *registrations, &registrationQuarantined);
-}
-
-void MultiPeerIbTransportBase::quarantineFailedRegistrationRollback(
-    uintptr_t allocBase,
-    CachedMr cached,
-    RegistrationState& registrations) noexcept {
-  cached.refs = 0;
-  cached.deregistrationFailed = true;
-  registrationRollbackFailed_.store(true, std::memory_order_release);
-
-  try {
-    const auto [existing, inserted] =
-        registrations.registeredBuffers.emplace(allocBase, std::move(cached));
-    if (!inserted) {
-      existing->second.deregistrationFailed = true;
-      LOG(ERROR)
-          << "MultiPeerIbTransport: could not cache MRs left active after "
-             "partial-registration rollback because allocBase=0x"
-          << std::hex << allocBase << std::dec
-          << " already has a registration; retaining the transport and "
-             "backing allocation for process lifetime";
-    }
-  } catch (const std::exception& ex) {
-    LOG(ERROR)
-        << "MultiPeerIbTransport: could not cache MRs left active after "
-           "partial-registration rollback: "
-        << ex.what()
-        << "; retaining the transport and backing allocation for process "
-           "lifetime";
-  } catch (...) {
-    LOG(ERROR) << "MultiPeerIbTransport: could not cache MRs left active after "
-                  "partial-registration rollback; retaining the transport and "
-                  "backing allocation for process lifetime";
-  }
+  return registerBufferLocked(ptr, size, relaxedOrdering, *registrations);
 }
 
 IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
     void* ptr,
     std::size_t size,
     bool relaxedOrdering,
-    RegistrationState& registrations,
-    bool* registrationQuarantined) {
+    RegistrationState& registrations) {
   if (ptr == nullptr || size == 0) {
     throw std::invalid_argument("Invalid buffer pointer or size");
   }
@@ -1231,17 +1150,6 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
   if (it != registrations.registeredBuffers.begin()) {
     --it;
     if (rangeContains(it->first, it->second.allocSize, addr, size)) {
-      if (it->second.deregistrationFailed) {
-        if (registrationQuarantined != nullptr) {
-          *registrationQuarantined = true;
-        }
-        throw std::runtime_error(
-            fmt::format(
-                "registerBuffer: ptr={} is contained in a registration with a "
-                "previous deregistration failure (allocBase=0x{:x})",
-                ptr,
-                it->first));
-      }
       // The cache holds one MR set per allocation; its access flags (including
       // Relaxed Ordering) are fixed at registration, so the effective ordering
       // is part of the cache key. A containment hit resolving to different
@@ -1269,12 +1177,11 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
     }
   }
 
-  const auto sameBase = registrations.registeredBuffers.find(addr);
-  if (sameBase != registrations.registeredBuffers.end()) {
-    if (sameBase->second.deregistrationFailed &&
-        registrationQuarantined != nullptr) {
-      *registrationQuarantined = true;
-    }
+  // The cache is keyed by allocation base. A range that starts at an existing
+  // key but is not contained in it (a wider multi-segment VMM request, or any
+  // HIP request) would resolve to the same key, and the emplace below would
+  // silently drop the new MRs. Reject it before touching the provider.
+  if (registrations.registeredBuffers.contains(addr)) {
     throw std::runtime_error(
         fmt::format(
             "registerBuffer: requested range at {} extends an existing "
@@ -1341,28 +1248,6 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
   cached.allocSize = allocSize;
   cached.refs = 1;
   cached.relaxedOrdering = useRelaxedOrdering;
-  const auto rollbackRegisteredMrs = [&](int registeredNics) {
-    const bool deregistered = detail::tryDeregisterMrs(
-        cached.mrs, registeredNics, [&](int nic, ibverbx::ibv_mr* mr) {
-          const int rc = symbols.ibv_internal_dereg_mr(mr);
-          if (rc != 0) {
-            LOG(ERROR) << "MultiPeerIbTransport: failed to roll back MR on NIC "
-                       << nic << " after partial buffer registration (rc=" << rc
-                       << ")";
-          }
-          return rc;
-        });
-    if (!deregistered) {
-      if (registrationQuarantined != nullptr) {
-        *registrationQuarantined = true;
-      }
-      quarantineFailedRegistrationRollback(
-          static_cast<uintptr_t>(allocBase), cached, registrations);
-      LOG(ERROR)
-          << "MultiPeerIbTransport: quarantined MRs and backing allocation "
-             "after partial-registration rollback left an MR active";
-    }
-  };
 
   // Per NIC, register the MR in priority order, each path falling through to
   // the next on failure:
@@ -1388,7 +1273,10 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
           allocSize,
           DmaBufExportKind::Pcie);
       if (!ddDmabuf) {
-        rollbackRegisteredMrs(n);
+        for (int j = 0; j < n; ++j) {
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
+        }
         throw std::runtime_error(
             fmt::format(
                 "Data-Direct selected for NIC {} but PCIe DMA-BUF export failed "
@@ -1414,7 +1302,10 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
       const int regErrno = errno;
       close(ddDmabuf->fd);
       if (!mr) {
-        rollbackRegisteredMrs(n);
+        for (int j = 0; j < n; ++j) {
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
+        }
         throw std::runtime_error(
             fmt::format(
                 "Data-Direct mlx5dv_reg_dmabuf_mr failed for NIC {} "
@@ -1448,7 +1339,10 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
     //    rather than silently producing a broken MR.
     if (!mr) {
       if (isMultiSegment) {
-        rollbackRegisteredMrs(n);
+        for (int j = 0; j < n; ++j) {
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
+        }
         throw std::runtime_error(
             fmt::format(
                 "registerBuffer: buffer spans multiple cuMem VMM segments "
@@ -1465,7 +1359,10 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
           accessFlags);
       if (!mr) {
         const int savedErrno = errno;
-        rollbackRegisteredMrs(n);
+        for (int j = 0; j < n; ++j) {
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[j]), 0)
+              << "failed to roll back MR on NIC " << j;
+        }
         throw std::runtime_error(
             fmt::format(
                 "Failed to register buffer with RDMA on NIC {} "
@@ -1492,11 +1389,7 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
 
 IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
     void* ptr,
-    std::size_t size,
-    bool* registrationQuarantined) {
-  if (registrationQuarantined != nullptr) {
-    *registrationQuarantined = false;
-  }
+    std::size_t size) {
   checkedRangeEnd(ptr, size, "registerIbBufferRange");
   const bool useRelaxedOrdering =
       relaxedOrderingActiveForNic(config_, relaxedOrderingCapable_);
@@ -1532,24 +1425,12 @@ IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
   auto& symbols = ibverbx::ibvSymbols;
   std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
   const auto cleanup = [&](int end) {
-    const bool deregistered =
-        detail::tryDeregisterMrs(mrs, end, [&](int nic, ibverbx::ibv_mr* mr) {
-          const int rc = symbols.ibv_internal_dereg_mr(mr);
-          if (rc != 0) {
-            LOG(ERROR)
-                << "MultiPeerIbTransport: failed to roll back exact-range MR "
-                   "on NIC "
-                << nic << " (rc=" << rc << ")";
-          }
-          return rc;
-        });
-    if (!deregistered) {
-      if (registrationQuarantined != nullptr) {
-        *registrationQuarantined = true;
+    for (int n = 0; n < end; ++n) {
+      if (mrs[n] != nullptr) {
+        CHECK_EQ(symbols.ibv_internal_dereg_mr(mrs[n]), 0)
+            << "failed to roll back exact-range MR on NIC " << n;
+        mrs[n] = nullptr;
       }
-      registrationRollbackFailed_.store(true, std::memory_order_release);
-      LOG(ERROR) << "MultiPeerIbTransport: retaining provider resources after "
-                    "exact-range registration rollback left an MR active";
     }
   };
 
@@ -1653,37 +1534,28 @@ IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
       IbgdaLocalBuffer(ptr, keys), size, useRelaxedOrdering, mrs, numNics_);
 }
 
-bool MultiPeerIbTransportBase::deregisterIbBufferRange(
+void MultiPeerIbTransportBase::deregisterIbBufferRange(
     IbBufferRegistration& registration) {
   if (!registration.valid()) {
     throw std::invalid_argument(
         "deregisterIbBufferRange: invalid registration");
   }
-  const bool deregistered = detail::tryDeregisterMrs(
-      registration.mrs_,
-      registration.numNics_,
-      [](int nic, ibverbx::ibv_mr* mr) {
-        const int rc = ibverbx::ibvSymbols.ibv_internal_dereg_mr(mr);
-        if (rc != 0) {
-          LOG(WARNING) << "Failed to deregister exact VA MR on NIC " << nic
-                       << ": rc=" << rc;
-        }
-        return rc;
-      });
-  if (!deregistered) {
-    registrationRollbackFailed_.store(true, std::memory_order_release);
-    return false;
+  for (int n = 0; n < registration.numNics_; ++n) {
+    if (registration.mrs_[n] != nullptr) {
+      CHECK_EQ(
+          ibverbx::ibvSymbols.ibv_internal_dereg_mr(registration.mrs_[n]), 0)
+          << "failed to deregister exact-range MR on NIC " << n;
+    }
   }
   registration.reset();
-  return true;
 }
 
-bool MultiPeerIbTransportBase::deregisterBuffer(void* ptr) {
+void MultiPeerIbTransportBase::deregisterBuffer(void* ptr) {
   auto registrations = registrationState_.wlock();
-  return deregisterBufferLocked(ptr, *registrations);
+  deregisterBufferLocked(ptr, *registrations);
 }
 
-bool MultiPeerIbTransportBase::deregisterBufferLocked(
+void MultiPeerIbTransportBase::deregisterBufferLocked(
     void* ptr,
     RegistrationState& registrations) {
   // Containment lookup on the ordered map avoids resolving the allocation range
@@ -1693,53 +1565,23 @@ bool MultiPeerIbTransportBase::deregisterBufferLocked(
   if (it != registrations.registeredBuffers.begin()) {
     --it;
     if (addr < it->first + it->second.allocSize) {
-      auto& cached = it->second;
-      if (cached.deregistrationFailed) {
-        LOG(WARNING)
-            << "MultiPeerIbTransport: retaining quarantined registration for "
-            << ptr << " for process lifetime";
-        return false;
-      }
-      if (cached.refs > 1) {
-        --cached.refs;
-        VLOG(1) << "MultiPeerIbTransport: deregister ptr=" << ptr
-                << " allocBase=0x" << std::hex << it->first << std::dec
-                << " refs=" << cached.refs;
-        return true;
-      }
-      if (cached.refs == 1) {
-        cached.refs = 0;
-      } else if (!cached.deregistrationFailed) {
-        LOG(WARNING) << "MultiPeerIbTransport: registration has invalid refs="
-                     << cached.refs << " for ptr=" << ptr;
-        return false;
-      }
+      it->second.refs--;
       VLOG(1) << "MultiPeerIbTransport: deregister ptr=" << ptr
               << " allocBase=0x" << std::hex << it->first << std::dec
-              << " refs=" << cached.refs;
-
-      const bool deregistered =
-          detail::tryDeregisterMrs(
-              cached.mrs, numNics_, [&](int nic, ibverbx::ibv_mr* mr) {
-                const int rc = ibverbx::ibvSymbols.ibv_internal_dereg_mr(mr);
-                if (rc != 0) {
-                  LOG(WARNING)
-                      << "MultiPeerIbTransport: failed to deregister MR on NIC "
-                      << nic << " for ptr=" << ptr << ": rc=" << rc;
-                }
-                return rc;
-              });
-      if (deregistered) {
+              << " refs=" << it->second.refs;
+      if (it->second.refs <= 0) {
+        // Deregistration is backend-agnostic (no PD/DOCA needed).
+        for (int n = 0; n < numNics_; ++n) {
+          CHECK_EQ(
+              ibverbx::ibvSymbols.ibv_internal_dereg_mr(it->second.mrs[n]), 0)
+              << "failed to deregister MR on NIC " << n << " for ptr=" << ptr;
+        }
         registrations.registeredBuffers.erase(it);
-        return true;
       }
-      cached.deregistrationFailed = true;
-      registrationRollbackFailed_.store(true, std::memory_order_release);
-      return false;
+      return;
     }
   }
   LOG(WARNING) << "MultiPeerIbTransport: buffer not registered: " << ptr;
-  return false;
 }
 
 std::vector<IbgdaRemoteBuffer> MultiPeerIbTransportBase::exchangeBuffer(
@@ -1765,10 +1607,6 @@ std::vector<IbgdaRemoteBuffer> MultiPeerIbTransportBase::exchangeBuffer(
     if (addr >= it->first + it->second.allocSize) {
       throw std::runtime_error(
           "Buffer not registered - call registerBuffer() first");
-    }
-    if (it->second.deregistrationFailed) {
-      throw std::runtime_error(
-          "Buffer registration is quarantined after a cleanup failure");
     }
     for (int n = 0; n < numNics_; ++n) {
       allInfo[myRank_].rkey_per_device[n] = HostRKey(it->second.mrs[n]->rkey);
@@ -1890,18 +1728,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerSlotMemory(
         "MultiPeerIbTransport: invalid slot memory registration");
   }
   if (!registered) {
-    bool registrationQuarantined = false;
-    try {
-      (void)registerBufferTrackingQuarantine(
-          registrationPtr,
-          bytes,
-          /*relaxedOrdering=*/false,
-          registrationQuarantined);
-      registered = true;
-    } catch (...) {
-      registered = registrationQuarantined;
-      throw;
-    }
+    (void)registerBuffer(registrationPtr, bytes);
+    registered = true;
   }
 
   NetworkLKeys keys(numNics_);
@@ -1913,11 +1741,6 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerSlotMemory(
   --it;
   CHECK(addr < it->first + it->second.allocSize)
       << "slot allocation MR does not cover registration pointer";
-  if (!detail::registrationKeysAvailable(
-          it->second.deregistrationFailed, it->second.mrs, numNics_)) {
-    throw std::runtime_error(
-        "slot allocation registration is incomplete or quarantined");
-  }
   for (int n = 0; n < numNics_; ++n) {
     keys[n] = NetworkLKey(HostLKey(it->second.mrs[n]->lkey));
   }
@@ -1938,11 +1761,6 @@ IbgdaBufferExchInfo MultiPeerIbTransportBase::registeredSlotMemoryExchInfo(
   --it;
   CHECK(addr < it->first + it->second.allocSize)
       << "slot allocation MR does not cover registration pointer";
-  if (!detail::registrationKeysAvailable(
-          it->second.deregistrationFailed, it->second.mrs, numNics_)) {
-    throw std::runtime_error(
-        "slot allocation registration is incomplete or quarantined");
-  }
 
   IbgdaBufferExchInfo info;
   info.addr = reinterpret_cast<uint64_t>(registrationPtr);
@@ -1959,34 +1777,23 @@ void MultiPeerIbTransportBase::freeDeviceSlotAllocation(
     return;
   }
 
-  static_cast<void>(detail::releaseAllocationAfterDeregistration(
-      allocation.registered,
-      [&]() noexcept {
-        try {
-          return deregisterBuffer(allocation.ptr);
-        } catch (const std::exception& ex) {
-          LOG(WARNING)
-              << "MultiPeerIbTransport: failed to deregister device slot "
-              << "allocation: " << ex.what();
-          return false;
-        }
-      },
-      [&]() noexcept {
-        const SlotGpuError err = allocation.isHostPinned
-            ? slotHostFree(allocation.ptr)
-            : slotGpuFree(allocation.ptr);
-        if (err != kSlotGpuSuccess) {
-          LOG(WARNING) << "MultiPeerIbTransport: failed to free device slot "
-                       << "allocation: " << slotGpuGetErrorString(err);
-        }
-        allocation = DeviceSlotAllocation{};
-      },
-      [&]() noexcept {
-        LOG(ERROR)
-            << "MultiPeerIbTransport: retaining device slot allocation after "
-               "failed MR deregistration";
-        allocation = DeviceSlotAllocation{};
-      }));
+  if (allocation.registered) {
+    try {
+      deregisterBuffer(allocation.ptr);
+    } catch (const std::exception& ex) {
+      LOG(WARNING) << "MultiPeerIbTransport: failed to deregister device slot "
+                   << "allocation: " << ex.what();
+    }
+    allocation.registered = false;
+  }
+
+  SlotGpuError err = allocation.isHostPinned ? slotHostFree(allocation.ptr)
+                                             : slotGpuFree(allocation.ptr);
+  if (err != kSlotGpuSuccess) {
+    LOG(WARNING) << "MultiPeerIbTransport: failed to free device slot "
+                 << "allocation: " << slotGpuGetErrorString(err);
+  }
+  allocation = DeviceSlotAllocation{};
 }
 
 void MultiPeerIbTransportBase::freeCounterSlotAllocation(
@@ -1995,39 +1802,29 @@ void MultiPeerIbTransportBase::freeCounterSlotAllocation(
     return;
   }
 
-  static_cast<void>(detail::releaseAllocationAfterDeregistration(
-      allocation.registered && allocation.devicePtr != nullptr,
-      [&]() noexcept {
-        try {
-          void* registerPtr = allocation.hostPtr != nullptr
-              ? allocation.hostPtr
-              : allocation.devicePtr;
-          return deregisterBuffer(registerPtr);
-        } catch (const std::exception& ex) {
-          LOG(WARNING) << "MultiPeerIbTransport: failed to deregister slot "
-                       << "allocation: " << ex.what();
-          return false;
-        }
-      },
-      [&]() noexcept {
-        SlotGpuError err = kSlotGpuSuccess;
-        if (allocation.hostPtr != nullptr) {
-          err = slotHostFree(allocation.hostPtr);
-        } else if (allocation.devicePtr != nullptr) {
-          err = slotGpuFree(allocation.devicePtr);
-        }
-        if (err != kSlotGpuSuccess) {
-          LOG(WARNING) << "MultiPeerIbTransport: failed to free counter slot "
-                       << "allocation: " << slotGpuGetErrorString(err);
-        }
-        allocation = CounterSlotAllocation{};
-      },
-      [&]() noexcept {
-        LOG(ERROR)
-            << "MultiPeerIbTransport: retaining counter slot allocation after "
-               "failed MR deregistration";
-        allocation = CounterSlotAllocation{};
-      }));
+  if (allocation.registered && allocation.devicePtr != nullptr) {
+    try {
+      void* registerPtr = allocation.hostPtr != nullptr ? allocation.hostPtr
+                                                        : allocation.devicePtr;
+      deregisterBuffer(registerPtr);
+    } catch (const std::exception& ex) {
+      LOG(WARNING) << "MultiPeerIbTransport: failed to deregister slot "
+                   << "allocation: " << ex.what();
+    }
+    allocation.registered = false;
+  }
+
+  SlotGpuError err = kSlotGpuSuccess;
+  if (allocation.hostPtr != nullptr) {
+    err = slotHostFree(allocation.hostPtr);
+  } else if (allocation.devicePtr != nullptr) {
+    err = slotGpuFree(allocation.devicePtr);
+  }
+  if (err != kSlotGpuSuccess) {
+    LOG(WARNING) << "MultiPeerIbTransport: failed to free counter slot "
+                 << "allocation: " << slotGpuGetErrorString(err);
+  }
+  allocation = CounterSlotAllocation{};
 }
 
 void MultiPeerIbTransportBase::allocateSignalCounterResources(
@@ -2432,8 +2229,7 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     const void* localPayload,
     void* remotePayload,
     std::size_t bytes,
-    int phase,
-    const std::function<void()>& beforeSend) {
+    int phase) {
   constexpr int64_t kPrimsPeerTagBase = 1 << 16;
   const int lowRank = std::min(myRank_, peerRank);
   const int highRank = std::max(myRank_, peerRank);
@@ -2457,9 +2253,6 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
               peerRank,
               recvResult));
     }
-    if (beforeSend) {
-      beforeSend();
-    }
     auto sendFuture = bootstrap_->send(
         const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
     int sendResult = std::move(sendFuture).get();
@@ -2472,9 +2265,6 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
               sendResult));
     }
   } else {
-    if (beforeSend) {
-      beforeSend();
-    }
     auto sendFuture = bootstrap_->send(
         const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
     int sendResult = std::move(sendFuture).get();

@@ -1416,8 +1416,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       nic.qpSlots.resize(static_cast<size_t>(numPeers) * slotsPerPeer);
     }
     peerMaterialized_.resize(numPeers, false);
-    peerRkeyExposureStates_.resize(
-        numPeers, detail::PeerRkeyExposureState::kLocalOnly);
 
     // Allocate and register sink buffer for atomic return values
     allocateResources();
@@ -1443,34 +1441,8 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
   cleanup();
 }
 
-bool MultipeerIbgdaTransport::requiresProcessLifetimeQuarantine()
-    const noexcept {
-  return requiresProcessLifetimeQuarantine_.load(std::memory_order_acquire) ||
-      registrationRollbackFailed();
-}
-
 void MultipeerIbgdaTransport::cleanup() {
   auto& symbols = ibverbx::ibvSymbols;
-
-  const auto exposedPeerIndex = materializationFailed_
-      ? detail::findPossiblyExposedPeer(peerRkeyExposureStates_)
-      : std::nullopt;
-  if (registrationRollbackFailed() || exposedPeerIndex.has_value()) {
-    requiresProcessLifetimeQuarantine_.store(true, std::memory_order_release);
-    retainOwnedBuffersForProcessLifetime();
-    if (exposedPeerIndex.has_value()) {
-      LOG(ERROR)
-          << "MultipeerIbgdaTransport: retaining QPs, MRs, and buffers for "
-             "process lifetime after ambiguous rkey exposure; "
-             "exposed_peer_index="
-          << *exposedPeerIndex;
-    } else {
-      LOG(ERROR)
-          << "MultipeerIbgdaTransport: retaining QPs, MRs, and buffers for "
-             "process lifetime after partial-registration rollback failed";
-    }
-    return;
-  }
 
   auto releaseGpuAllocations = [&]() {
     // Free all GPU memory (transport objects + QP pointer arrays).
@@ -1536,7 +1508,8 @@ void MultipeerIbgdaTransport::cleanup() {
       for (int n = 0; n < numNics_; ++n) {
         if (cached.mrs[n] != nullptr &&
             symbols.ibv_internal_dereg_mr != nullptr) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+          CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[n]), 0)
+              << "failed to deregister IBGDA MR on NIC " << n;
         }
       }
     }
@@ -1549,7 +1522,8 @@ void MultipeerIbgdaTransport::cleanup() {
   for (int n = 0; n < static_cast<int>(nicDoca_.size()); ++n) {
     if (nicDoca_[n].sinkMr != nullptr) {
       if (symbols.ibv_internal_dereg_mr != nullptr) {
-        symbols.ibv_internal_dereg_mr(nicDoca_[n].sinkMr);
+        CHECK_EQ(symbols.ibv_internal_dereg_mr(nicDoca_[n].sinkMr), 0)
+            << "failed to deregister IBGDA sink MR on NIC " << n;
       }
       nicDoca_[n].sinkMr = nullptr;
     }
@@ -1805,13 +1779,6 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
     cleanupPeerSignalCounterResources(peerIndex);
   };
 
-  if (registrationRollbackFailed() ||
-      detail::findPossiblyExposedPeer(peerRkeyExposureStates_).has_value()) {
-    requiresProcessLifetimeQuarantine_.store(true, std::memory_order_release);
-    retainOwnedBuffersForProcessLifetime();
-    return;
-  }
-
 #ifndef __HIP_PLATFORM_AMD__
   detail::quiescePeerQpsThenReleaseResources(
       allQpsErrorBeforeDestroyEnabled(),
@@ -1827,8 +1794,6 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   releasePeerResources();
 #endif
 
-  peerRkeyExposureStates_[peerIndex] =
-      detail::PeerRkeyExposureState::kLocalOnly;
   peerMaterialized_[peerIndex] = false;
   if (peerTransportsGpu_ != nullptr && peerTransportSize_ != 0) {
     cudaError_t err = cudaMemset(
@@ -1932,11 +1897,8 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
       localBuf,
       IbCounterStorage::Device,
       /*allocateDiscardSignal=*/true);
-  auto remoteBuf = detail::exchangePeerBufferPayloadWithExposureTracking(
-      peerRkeyExposureStates_[peerIndex], [&](const auto& beforeSend) {
-        return exchangeWithPeer(
-            peerRank, localBuf, kIbPeerBufferExchangeTag, beforeSend);
-      });
+  auto remoteBuf =
+      exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
   applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
   applyRemoteSignalCounterResources(
       peerIndex, remoteBuf, /*hasDiscardSignal=*/true);

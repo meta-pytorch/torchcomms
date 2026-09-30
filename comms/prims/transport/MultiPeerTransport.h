@@ -2,11 +2,9 @@
 
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -41,7 +39,6 @@ namespace comms::prims {
 // Forward declaration — include MultiPeerDeviceHandle.cuh to use
 // get_device_handle(peers).
 struct MultiPeerDeviceHandle;
-class HostWindow;
 
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
@@ -253,9 +250,9 @@ class MultiPeerTransport {
   /**
    * @param globalPeerRank Global rank of the IBGDA peer.
    * @return Non-owning pointer to GPU-allocated P2pIbgdaTransportDevice.
-   * Materializes the peer on demand and may perform bootstrap communication.
    */
-  P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(int globalPeerRank);
+  P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(
+      int globalPeerRank) const;
 
   /** @return A stateless P2pSelfTransportDevice handle. */
   P2pSelfTransportDevice get_p2p_self_transport_device() const;
@@ -273,15 +270,6 @@ class MultiPeerTransport {
   MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
 
   bool is_lazy_mode() const;
-
-  /**
-   * Returns true when an ambiguous IB failure requires every locally owned
-   * or caller-owned registered target allocation to remain alive until process
-   * exit.
-   */
-  bool ibgda_resources_quarantined() const noexcept {
-    return ibgdaResourcesQuarantined_.load(std::memory_order_acquire);
-  }
 
   /*
    * Actual channel capacity of the configured IBGDA transport.
@@ -328,34 +316,16 @@ class MultiPeerTransport {
    */
   IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
 
-  /**
-   * Register an exact caller-owned range. On return or exception,
-   * registrationQuarantined is set only when this invocation leaves an MR
-   * active, in which case the backing allocation must remain alive until exit.
-   */
-  IbBufferRegistration registerIbBufferRange(
-      void* ptr,
-      std::size_t size,
-      bool* registrationQuarantined = nullptr);
+  IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
 
-  /**
-   * Deregister an exact-range buffer and invalidate its handle. Returns false
-   * when the MR and backing allocation must remain alive until process exit.
-   */
-  [[nodiscard]] bool deregisterIbBufferRange(
-      IbBufferRegistration& registration);
+  void deregisterIbBufferRange(IbBufferRegistration& registration);
 
   /**
    * Deregister a previously registered IBGDA buffer.
    *
-   * After process-lifetime quarantine, the MR is retained and the caller must
-   * keep the allocation alive until exit.
-   *
    * @param ptr Pointer to the buffer to deregister
-   * @return False when the backing allocation must remain alive because the
-   *         registration could not be safely revoked
    */
-  [[nodiscard]] bool localDeregisterIbgdaBuffer(void* ptr) noexcept;
+  void localDeregisterIbgdaBuffer(void* ptr);
 
   /**
    * Collectively exchange IBGDA buffer info with all peers.
@@ -406,9 +376,7 @@ class MultiPeerTransport {
   IbgdaLocalBuffer registerIbCounterBuffer(
       const IbgdaLocalBuffer& buffer,
       std::size_t size);
-  [[nodiscard]] bool freeIbCounterBuffer(
-      IbgdaLocalBuffer& buffer,
-      void*& hostPtr) noexcept;
+  void freeIbCounterBuffer(IbgdaLocalBuffer& buffer, void*& hostPtr) noexcept;
 
   /**
    * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.
@@ -425,15 +393,11 @@ class MultiPeerTransport {
    *                 buffer length is derived from the allocation itself
    *                 (via `cuMemGetAddressRange` on the VMM path) -- callers
    *                 do not need to pass a size.
-   * @param localHandlePossiblyExposed Optional sticky flag set after local
-   *                 handle export succeeds and before the first collective.
    * @return Vector of mapped peer pointers (size = nvlNRanks_), indexed by
    *         NVL local rank. Self entry is the original localPtr. Other entries
    *         are IPC-mapped pointers to peer buffers.
    */
-  std::vector<void*> exchangeNvlBuffer(
-      void* localPtr,
-      bool* localHandlePossiblyExposed = nullptr);
+  std::vector<void*> exchangeNvlBuffer(void* localPtr);
 
   /**
    * Unmap NVL IPC-mapped peer buffers obtained from exchangeNvlBuffer().
@@ -443,8 +407,6 @@ class MultiPeerTransport {
   void unmapNvlBuffers(const std::vector<void*>& mappedPtrs);
 
  private:
-  friend class HostWindow;
-
   const int myRank_;
   const int nRanks_;
   const int deviceId_;
@@ -475,9 +437,6 @@ class MultiPeerTransport {
   Transport* transportsGpu_{nullptr};
   std::vector<Transport> transportsHost_;
   bool deviceHandleBuilt_{false};
-  // Once set, the destructor detaches the configured IB transport instead of
-  // releasing resources that a peer or provider may still address.
-  std::atomic<bool> ibgdaResourcesQuarantined_{false};
 
   enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
   ExchangeState exchangeState_{ExchangeState::kUnprepared};
@@ -489,9 +448,6 @@ class MultiPeerTransport {
   void build_device_handle(bool allowAllocation);
   void free_device_handle();
   void rollbackPreparedExchange() noexcept;
-  void requireIbTransportUsable() const;
-  void connectIbgdaPeers();
-  void quarantineIbgdaTransport(std::string_view context) noexcept;
 
   // Memory type detection for exchangeNvlBuffer tri-path support.
   enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };

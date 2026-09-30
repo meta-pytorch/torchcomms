@@ -270,12 +270,8 @@ struct RemoteBufferRegistration {
  *   transport.exchange();
  *   HostWindow window(transport, windowConfig);
  *   window.exchange();
- *   auto srcStorage = std::make_shared<meta::comms::DeviceBuffer>(srcSize);
- *   auto dstStorage = std::make_shared<meta::comms::DeviceBuffer>(dstSize);
- *   std::shared_ptr<void> srcBuffer(srcStorage, srcStorage->get());
- *   std::shared_ptr<void> dstBuffer(dstStorage, dstStorage->get());
- *   window.registerLocalBuffer(srcBuffer, srcSize);
- *   window.registerAndExchangeBuffer(dstBuffer, dstSize);
+ *   window.registerLocalBuffer(srcBuf, srcSize);   // local-only, for put src
+ *   window.registerAndExchangeBuffer(dstBuf, dstSize);  // collective, dst
  *   DeviceWindow dw = window.getDeviceWindow();
  *
  *   // Kernel

@@ -147,11 +147,12 @@ struct TransportHandle {
                  : ibrc->registerBuffer(ptr, size, relaxedOrdering);
   }
 
-  bool deregisterBuffer(void* ptr) {
+  void deregisterBuffer(void* ptr) {
     if (ibgda) {
-      return ibgda->deregisterBuffer(ptr);
+      ibgda->deregisterBuffer(ptr);
+    } else {
+      ibrc->deregisterBuffer(ptr);
     }
-    return ibrc->deregisterBuffer(ptr);
   }
 
   IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size) {
@@ -159,11 +160,12 @@ struct TransportHandle {
                  : ibrc->registerIbBufferRange(ptr, size);
   }
 
-  bool deregisterIbBufferRange(IbBufferRegistration& registration) {
+  void deregisterIbBufferRange(IbBufferRegistration& registration) {
     if (ibgda) {
-      return ibgda->deregisterIbBufferRange(registration);
+      ibgda->deregisterIbBufferRange(registration);
+    } else {
+      ibrc->deregisterIbBufferRange(registration);
     }
-    return ibrc->deregisterIbBufferRange(registration);
   }
 };
 
@@ -239,14 +241,12 @@ TEST_P(MultiSegmentRegistrationTest, DisjointBufferRegistration) {
   }
 
   // Deregister sub-buffer first (decrements refcount).
-  ASSERT_TRUE(transport.deregisterBuffer(subPtr));
+  transport.deregisterBuffer(subPtr);
 
   // Deregister main buffer (drops refcount to zero, frees MR).
-  const bool deregistered = transport.deregisterBuffer(disjointBuf.ptr());
-  EXPECT_TRUE(deregistered);
-  if (deregistered) {
-    disjointBuf.free();
-  }
+  transport.deregisterBuffer(disjointBuf.ptr());
+
+  disjointBuf.free();
 }
 
 TEST_P(MultiSegmentRegistrationTest, ContiguousBufferRegistration) {
@@ -268,11 +268,8 @@ TEST_P(MultiSegmentRegistrationTest, ContiguousBufferRegistration) {
   EXPECT_NE(reg.ptr, nullptr);
   EXPECT_EQ(reg.ptr, devPtr);
 
-  const bool deregistered = transport.deregisterBuffer(devPtr);
-  EXPECT_TRUE(deregistered);
-  if (deregistered) {
-    CUDACHECK_TEST(cudaFree(devPtr));
-  }
+  transport.deregisterBuffer(devPtr);
+  CUDACHECK_TEST(cudaFree(devPtr));
 }
 
 TEST_P(MultiSegmentRegistrationTest, ExactRangeSpansDisjointSegments) {
@@ -301,7 +298,7 @@ TEST_P(MultiSegmentRegistrationTest, ExactRangeSpansDisjointSegments) {
   EXPECT_EQ(registration.localBuffer.ptr, disjointBuffer.ptr());
   EXPECT_EQ(registration.size, kTotalSize);
 
-  EXPECT_TRUE(transport.deregisterIbBufferRange(registration));
+  transport.deregisterIbBufferRange(registration);
   disjointBuffer.free();
 }
 
@@ -335,7 +332,7 @@ TEST_P(MultiSegmentRegistrationTest, ExactRangeRegistrationUsesRequestedVa) {
   EXPECT_EQ(registration.localBuffer.ptr, rangePtr);
   EXPECT_EQ(registration.size, kRangeSize);
 
-  EXPECT_TRUE(transport.deregisterIbBufferRange(registration));
+  transport.deregisterIbBufferRange(registration);
   EXPECT_FALSE(registration.valid());
   EXPECT_THROW(
       transport.deregisterIbBufferRange(registration), std::invalid_argument);
@@ -363,7 +360,7 @@ TEST_P(MultiSegmentRegistrationTest, ExactRangeReportsEffectiveStrictOrdering) {
   auto registration = transport.registerIbBufferRange(allocation, kSize);
   EXPECT_FALSE(registration.relaxedOrdering);
 
-  EXPECT_TRUE(transport.deregisterIbBufferRange(registration));
+  transport.deregisterIbBufferRange(registration);
   CUDACHECK_TEST(cudaFree(allocation));
 }
 
@@ -401,12 +398,9 @@ TEST_P(MultiSegmentRegistrationTest, ExactRangeDoesNotReuseCachedRegistration) {
         cached.lkey_per_device[nic], exact.localBuffer.lkey_per_device[nic]);
   }
 
-  EXPECT_TRUE(transport.deregisterIbBufferRange(exact));
-  const bool deregistered = transport.deregisterBuffer(allocation);
-  EXPECT_TRUE(deregistered);
-  if (deregistered) {
-    CUDACHECK_TEST(cudaFree(allocation));
-  }
+  transport.deregisterIbBufferRange(exact);
+  transport.deregisterBuffer(allocation);
+  CUDACHECK_TEST(cudaFree(allocation));
 }
 
 TEST_P(MultiSegmentRegistrationTest, OverlappingExactRangesRemainIndependent) {
@@ -435,10 +429,10 @@ TEST_P(MultiSegmentRegistrationTest, OverlappingExactRangesRemainIndependent) {
   EXPECT_EQ(outer.localBuffer.ptr, base);
   EXPECT_EQ(inner.localBuffer.ptr, base + kInnerOffset);
 
-  EXPECT_TRUE(transport.deregisterIbBufferRange(inner));
+  transport.deregisterIbBufferRange(inner);
   EXPECT_FALSE(inner.valid());
   EXPECT_TRUE(outer.valid());
-  EXPECT_TRUE(transport.deregisterIbBufferRange(outer));
+  transport.deregisterIbBufferRange(outer);
   CUDACHECK_TEST(cudaFree(allocation));
 }
 

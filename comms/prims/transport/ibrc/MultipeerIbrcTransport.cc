@@ -262,12 +262,6 @@ void MultipeerIbrcTransport::MappedAllocation::reset() noexcept {
   bytes = 0;
 }
 
-void MultipeerIbrcTransport::MappedAllocation::release() noexcept {
-  host = nullptr;
-  device = nullptr;
-  bytes = 0;
-}
-
 MultipeerIbrcTransport::MultipeerIbrcTransport(
     int myRank,
     int nRanks,
@@ -354,11 +348,6 @@ void MultipeerIbrcTransport::exchange() {
 void MultipeerIbrcTransport::cleanup() {
   stopProgressThread();
 
-  if (registrationRollbackFailed()) {
-    retainResourcesForProcessLifetime();
-    return;
-  }
-
   for (int peerIndex = 0; peerIndex < static_cast<int>(peerResources_.size());
        ++peerIndex) {
     cleanupPeerCmdQueues(peerIndex);
@@ -374,11 +363,8 @@ void MultipeerIbrcTransport::cleanup() {
       for (auto& [_, cached] : registrations->registeredBuffers) {
         for (int n = 0; n < numNics_; ++n) {
           if (cached.mrs[n] != nullptr) {
-            int rc = symbols.ibv_internal_dereg_mr(cached.mrs[n]);
-            if (rc != 0) {
-              LOG(WARNING) << "Failed to deregister IBRC MR on NIC " << n
-                           << ": rc=" << rc;
-            }
+            CHECK_EQ(symbols.ibv_internal_dereg_mr(cached.mrs[n]), 0)
+                << "failed to deregister IBRC MR on NIC " << n;
             cached.mrs[n] = nullptr;
           }
         }
@@ -393,32 +379,6 @@ void MultipeerIbrcTransport::cleanup() {
   p2pTransportDevices_.reset();
 
   closeNics();
-}
-
-void MultipeerIbrcTransport::retainResourcesForProcessLifetime() noexcept {
-  if (resourcesRetainedForProcessLifetime_) {
-    return;
-  }
-  resourcesRetainedForProcessLifetime_ = true;
-  stopProgressThread();
-  retainOwnedBuffersForProcessLifetime();
-
-  for (auto& peer : peerResources_) {
-    for (auto& qp : peer.qpResources) {
-      static_cast<void>(qp.signalAtomicSink.release());
-    }
-    for (auto& queue : peer.cmdQueues) {
-      queue.control.release();
-    }
-    peer.cmdQueueDevices.release();
-    peer.channelState.release();
-  }
-  statusControl_.release();
-  p2pTransportDevices_.release();
-
-  LOG(ERROR)
-      << "MultipeerIbrcTransport: retaining QPs, MRs, and buffers for process "
-         "lifetime after partial-registration rollback failed";
 }
 
 void MultipeerIbrcTransport::startProgressThread() {
@@ -1135,12 +1095,9 @@ void MultipeerIbrcTransport::destroyPeerQps(
   for (auto& qpResource : qpResources) {
     if (qpResource.signalAtomicSinkMr != nullptr &&
         symbols.ibv_internal_dereg_mr != nullptr) {
-      int rc = symbols.ibv_internal_dereg_mr(qpResource.signalAtomicSinkMr);
-      if (rc != 0) {
-        LOG(WARNING) << "Failed to deregister IBRC signal sink MR nic="
-                     << qpResource.nic << " qpSlot=" << qpResource.qpSlot
-                     << ": rc=" << rc;
-      }
+      CHECK_EQ(symbols.ibv_internal_dereg_mr(qpResource.signalAtomicSinkMr), 0)
+          << "failed to deregister IBRC signal sink MR nic=" << qpResource.nic
+          << " qpSlot=" << qpResource.qpSlot;
       qpResource.signalAtomicSinkMr = nullptr;
     }
     qpResource.signalAtomicSink.reset();
@@ -1802,10 +1759,6 @@ void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
 void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
   publishTransportError(EIO, "peer materialization failed");
   stopProgressThread();
-  if (registrationRollbackFailed()) {
-    retainResourcesForProcessLifetime();
-    return;
-  }
   cleanupPeerCmdQueues(peerIndex);
   cleanupPeerQps(peerIndex);
   cleanupPeerSignalCounterResources(peerIndex);
