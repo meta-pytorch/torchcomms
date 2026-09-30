@@ -2,9 +2,13 @@
 
 #pragma once
 
-#include <folly/String.h>
-#include <folly/Synchronized.h>
+#include <memory>
+#include <string>
+#include <utility>
 
+#include <folly/String.h>
+
+#include "comms/common/AsyncErrorState.h"
 #include "comms/ctran/utils/AbortUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
@@ -79,28 +83,34 @@ namespace ctran::utils {
         opCount);                                                          \
   }
 
+// CTRAN-specific policy adapter over the communicator-owned error state.
+// The state remains usable by MCCL and other runtimes without depending on
+// CTRAN's fatal-on-error policy or exception type.
 class AsyncError {
- private:
-  folly::Synchronized<Exception> asyncEx_{Exception()};
-
  public:
+  AsyncError(
+      bool abortOnError,
+      const std::string& desc,
+      std::shared_ptr<comms::AsyncErrorState> state = nullptr)
+      : abortOnError(abortOnError),
+        desc(desc),
+        state_(
+            state != nullptr ? std::move(state)
+                             : std::make_shared<comms::AsyncErrorState>()) {}
+
+  void setAsyncException(const Exception& e) {
+    state_->set({e.result(), std::string(e.what())});
+  }
+
+  commResult_t getAsyncResult() const {
+    return state_->result();
+  }
+
   const bool abortOnError;
-  const std::string desc{"undefined"};
+  const std::string desc;
 
-  AsyncError(bool abortOnError, const std::string& desc)
-      : abortOnError(abortOnError), desc(desc) {};
-
-  inline void setAsyncException(const Exception& e) {
-    asyncEx_ = e;
-  }
-
-  inline commResult_t getAsyncResult() const {
-    return asyncEx_.rlock()->result();
-  }
-
-  inline Exception getAsyncException() const {
-    return asyncEx_.copy();
-  }
+ private:
+  std::shared_ptr<comms::AsyncErrorState> state_;
 };
 
 } // namespace ctran::utils
