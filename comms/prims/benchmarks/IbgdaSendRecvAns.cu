@@ -67,8 +67,8 @@ __global__ void __launch_bounds__(kAnsNumWarps * 32, kAnsMinBlocksPerSm)
         group,
         tiles.data(),
         tiles.bytes(),
-        /*max_signal_bytes=*/0,
         abortDevice,
+        /*max_signal_bytes=*/0,
         /*alignedAuxBuf=*/static_cast<char*>(nullptr));
   }
 }
@@ -92,8 +92,8 @@ __global__ void __launch_bounds__(kAnsNumWarps * 32, kAnsMinBlocksPerSm)
         group,
         tiles.data(),
         tiles.bytes(),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 }
 

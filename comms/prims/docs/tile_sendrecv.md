@@ -202,23 +202,23 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       const void* src,
       size_t nbytes,
-      size_t max_signal_bytes = 0,
-      const AbortDevice& timeout = AbortDevice());
+      const AbortDevice& abort_device,
+      size_t max_signal_bytes = 0);
 
   __device__ void recv(
       ThreadGroup& group,
       void* dst,
       size_t nbytes,
-      size_t max_signal_bytes = 0,
-      const AbortDevice& timeout = AbortDevice());
+      const AbortDevice& abort_device,
+      size_t max_signal_bytes = 0);
 
   __device__ void forward(
       ThreadGroup& group,
       void* dst,
       size_t nbytes,
       P2pNvlTransportDevice& successor,
-      size_t max_signal_bytes = 0,
-      const AbortDevice& timeout = AbortDevice());
+      const AbortDevice& abort_device,
+      size_t max_signal_bytes = 0);
 };
 
 class P2pIbgdaTransportDevice {
@@ -227,15 +227,15 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const void* src,
       size_t nbytes,
-      size_t max_signal_bytes = 0,
-      const AbortDevice& timeout = AbortDevice());
+      const AbortDevice& abort_device,
+      size_t max_signal_bytes = 0);
 
   __device__ void recv(
       ThreadGroup& group,
       void* dst,
       size_t nbytes,
-      size_t max_signal_bytes = 0,
-      const AbortDevice& timeout = AbortDevice());
+      const AbortDevice& abort_device,
+      size_t max_signal_bytes = 0);
 };
 ```
 
@@ -269,7 +269,7 @@ def recv(dst_ptr, nbytes, block_id, max_signal_bytes, timeout_ns,
 | `src` / `dst` | yes | — | This block's pre-sliced data pointer. Caller computes per-block offset (see `TiledBuffer`). |
 | `nbytes` | yes | — | This block's data size. May exceed `per_channel_size` — chunked internally over pipeline slots. |
 | `max_signal_bytes` | no | `0` → `per_channel_size` | Hint for the maximum number of bytes between consecutive DATA_READY signals. Capped at `per_channel_size` if larger (sub-slot signaling only). |
-| `timeout` | no | `AbortDevice()` (no limit) | Per-wait abort handle. Reuses `comms::fault_tolerance::AbortDevice`. On expiry the wait terminates; see `comms/common/fault_tolerance/FAULT_TOLERANCE.md`. |
+| `abort_device` (cpp) / `timeout_ns` (Triton) | yes | — | Caller-supplied per-wait abort policy. Cpp reuses `comms::fault_tolerance::AbortDevice`. On expiry the wait terminates; see `comms/common/fault_tolerance/FAULT_TOLERANCE.md`. |
 
 ### Special values
 

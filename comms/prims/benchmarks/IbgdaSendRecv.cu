@@ -96,11 +96,11 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_kernel(
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
       transport->send(
-          sub, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+          sub, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
       transport->recv(
-          sub, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+          sub, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
     }
   }
 }
@@ -112,8 +112,8 @@ void launch_ibgda_send_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   ibgda_send_recv_kernel<<<2 * numBlocks, 512, 0, stream>>>(
       transport, src, dst, nbytes, numBlocks, maxSignalBytes, abortDevice);
   cudaError_t err = cudaGetLastError();
@@ -167,8 +167,8 @@ void launch_ibgda_progress_send_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)src;
@@ -209,17 +209,17 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_two_call_kernel(
   if (isSender) {
     TiledBuffer<char> first(src, firstBytes, sub);
     transport->send(
-        sub, first.data(), first.bytes(), firstMaxSignalBytes, abortDevice);
+        sub, first.data(), first.bytes(), abortDevice, firstMaxSignalBytes);
     TiledBuffer<char> second(src + firstBytes, secondBytes, sub);
     transport->send(
-        sub, second.data(), second.bytes(), secondMaxSignalBytes, abortDevice);
+        sub, second.data(), second.bytes(), abortDevice, secondMaxSignalBytes);
   } else {
     TiledBuffer<char> first(dst, firstBytes, sub);
     transport->recv(
-        sub, first.data(), first.bytes(), firstMaxSignalBytes, abortDevice);
+        sub, first.data(), first.bytes(), abortDevice, firstMaxSignalBytes);
     TiledBuffer<char> second(dst + firstBytes, secondBytes, sub);
     transport->recv(
-        sub, second.data(), second.bytes(), secondMaxSignalBytes, abortDevice);
+        sub, second.data(), second.bytes(), abortDevice, secondMaxSignalBytes);
   }
 }
 
@@ -266,7 +266,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
     transport->send(
-        group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+        group, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
   }
 }
 
@@ -285,7 +285,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
     transport->recv(
-        group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+        group, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
   }
 }
 
@@ -323,8 +323,8 @@ void launch_ibgda_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   ibgda_send_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, src, nbytes, numBlocks, maxSignalBytes, abortDevice);
   cudaError_t err = cudaGetLastError();
@@ -339,8 +339,8 @@ void launch_ibgda_warp_proxy_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   validate_warp_proxy_max_signal_bytes(maxSignalBytes);
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
@@ -369,8 +369,8 @@ void launch_ibgda_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   ibgda_recv_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, dst, nbytes, numBlocks, maxSignalBytes, abortDevice);
   cudaError_t err = cudaGetLastError();
@@ -407,11 +407,11 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_recv_ll_kernel(
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
       transport->send<Memcpy, protocol::LL>(
-          sub, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+          sub, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
       transport->recv<Memcpy, protocol::LL>(
-          sub, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+          sub, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
     }
   }
 }
@@ -423,8 +423,8 @@ void launch_ibgda_send_recv_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   ibgda_send_recv_ll_kernel<<<2 * numBlocks, 512, 0, stream>>>(
       transport, src, dst, nbytes, numBlocks, maxSignalBytes, abortDevice);
   cudaError_t err = cudaGetLastError();
@@ -450,7 +450,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_send_ll_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
     transport->send<Memcpy, protocol::LL>(
-        group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+        group, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
   }
 }
 
@@ -469,7 +469,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_ll_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
     transport->recv<Memcpy, protocol::LL>(
-        group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice);
+        group, tiles.data(), tiles.bytes(), abortDevice, maxSignalBytes);
   }
 }
 
@@ -479,8 +479,8 @@ void launch_ibgda_send_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   ibgda_send_ll_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, src, nbytes, numBlocks, maxSignalBytes, abortDevice);
   cudaError_t err = cudaGetLastError();
@@ -496,8 +496,8 @@ void launch_ibgda_recv_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   ibgda_recv_ll_kernel<<<numBlocks, 512, 0, stream>>>(
       transport, dst, nbytes, numBlocks, maxSignalBytes, abortDevice);
   cudaError_t err = cudaGetLastError();
@@ -513,8 +513,8 @@ void launch_ibgda_warp_proxy_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
   validate_warp_proxy_max_signal_bytes(maxSignalBytes);
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
@@ -743,8 +743,8 @@ void launch_ibgda_progress_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)src;
@@ -772,8 +772,8 @@ void launch_ibgda_progress_send_complete(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)src;
@@ -801,8 +801,8 @@ void launch_ibgda_registered_progress_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)src;
@@ -830,8 +830,8 @@ void launch_ibgda_progress_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)dst;
@@ -912,8 +912,8 @@ void launch_ibgda_progress_send_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)src;
@@ -941,8 +941,8 @@ void launch_ibgda_progress_recv_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)dst;

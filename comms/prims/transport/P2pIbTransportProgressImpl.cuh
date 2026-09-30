@@ -146,7 +146,7 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const AbortDevice& abortDevice = AbortDevice());
+    const AbortDevice& abortDevice);
 
 /**
  * Initialize transport-owned state for one pipelined send operation.
@@ -1038,8 +1038,8 @@ __device__ __forceinline__ void send_registered(
     ThreadGroup& group,
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const AbortDevice& abortDevice) {
+    const AbortDevice& abortDevice,
+    std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   init_registered_send_progress(
       transport, group, src, nbytes, max_signal_bytes);

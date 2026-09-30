@@ -78,7 +78,7 @@ __device__ __forceinline__ void printAllGatherOperation(
  * @param my_rank_id Current rank ID
  * @param transports_per_rank Array of transport objects, one per rank
  *                            (self-transport for my_rank, P2P for others)
- * @param abortDevice Optional abortDevice for wait operations
+ * @param abortDevice Caller-supplied abort handle for wait operations
  *
  * Buffer Layout:
  *   sendbuff_d: [my_data]
@@ -96,7 +96,7 @@ __device__ __forceinline__ void all_gather(
     std::size_t sendcount,
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
-    AbortDevice abortDevice = AbortDevice()) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
   // Start the abortDevice timer - must be called once before any wait
   // operations

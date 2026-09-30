@@ -1044,7 +1044,12 @@ class DeviceWindow {
           const_cast<void*>(remoteBufferRegistry_[ibgdaPeerIdx].base),
           remoteBufferRegistry_[ibgdaPeerIdx].rkey_per_device);
       handle_.get_ib(target_rank)
-          .put(group, localBuf, remoteBuf.subBuffer(dst_offset), nbytes);
+          .put(
+              group,
+              localBuf,
+              remoteBuf.subBuffer(dst_offset),
+              nbytes,
+              handle_.abort);
     }
   }
 
@@ -1106,6 +1111,7 @@ class DeviceWindow {
               remoteBuf.subBuffer(dst_offset),
               nbytes,
               signalBuf,
+              handle_.abort,
               signalVal);
     }
   }
@@ -1174,6 +1180,7 @@ class DeviceWindow {
               remoteBuf.subBuffer(dst_offset),
               nbytes,
               signalBuf,
+              handle_.abort,
               signalVal,
               counterSlotBuf,
               counterVal);
@@ -1236,6 +1243,7 @@ class DeviceWindow {
               remoteBuf.subBuffer(dst_offset),
               nbytes,
               {},
+              handle_.abort,
               1,
               counterSlotBuf,
               counterVal);
