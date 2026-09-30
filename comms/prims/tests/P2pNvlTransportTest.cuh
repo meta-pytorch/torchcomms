@@ -62,7 +62,7 @@ void testTileTwoCallVariableSignalSendRecv(
     size_t secondMaxSignalBytes,
     bool waitForSecondCallSignal,
     int blockSize,
-    AbortDevice abortDevice = AbortDevice(),
+    AbortDevice abortDevice,
     cudaStream_t stream = nullptr);
 
 void testTileTwoCallSendThenRecv(
@@ -74,7 +74,7 @@ void testTileTwoCallSendThenRecv(
     size_t secondCallBytes,
     size_t maxSignalBytes,
     int blockSize,
-    AbortDevice abortDevice = AbortDevice(),
+    AbortDevice abortDevice,
     cudaStream_t stream = nullptr);
 
 void testTileMultiCallSendOnly(

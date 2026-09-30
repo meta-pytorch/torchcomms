@@ -22,7 +22,7 @@ void launch_ibgda_forward_chain(
     int numBlocks,
     int my_rank,
     cudaStream_t stream,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 void launch_ibgda_recv_send_chain(
     P2pIbgdaTransportDevice* prev_transport,
@@ -33,6 +33,6 @@ void launch_ibgda_recv_send_chain(
     int numBlocks,
     int my_rank,
     cudaStream_t stream,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 } // namespace comms::prims::benchmark

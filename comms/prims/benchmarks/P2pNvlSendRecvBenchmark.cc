@@ -154,7 +154,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     std::size_t nBytes = config.nBytes;
     AbortDevice abortDevice;
     void* args[] = {
-        p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &abortDevice};
+        p2pDevicePtr, &devicePtr, &nBytes, &abortDevice, &groupScope};
 
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pSend
                               : (void*)comms::prims::benchmark::p2pRecv;
@@ -228,7 +228,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     // cudaLaunchKernel reads the struct by value from host memory for the
     // kernel parameter.
     void* args[] = {
-        p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &abortDevice};
+        p2pDevicePtr, &devicePtr, &nBytes, &abortDevice, &groupScope};
 
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pSend
                               : (void*)comms::prims::benchmark::p2pRecv;
@@ -325,7 +325,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       kernelFunc = (void*)comms::prims::benchmark::p2pTileSendRecv;
     }
     void* args[] = {
-        p2pDevicePtr, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
+        p2pDevicePtr, &sendTiles, &recvTiles, &abortDevice, &maxSignalBytes};
 
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
     std::optional<dim3> clusterDimOpt = config.spreadClusterLaunch
@@ -517,7 +517,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     // cudaLaunchKernel reads the struct by value from host memory for the
     // kernel parameter.
     void* args[] = {
-        p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &groupScope, &abortDevice};
+        p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &abortDevice, &groupScope};
 
     void* kernelFunc = (void*)comms::prims::benchmark::p2pBidirectional;
 

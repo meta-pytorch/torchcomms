@@ -145,14 +145,10 @@ struct SendRecvTileArgs {
  */
 __global__ __launch_bounds__(512, 2) void sendrecv_tile_kernel(
     const __grid_constant__ SendRecvTileArgs args,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 #else
-// Same defaulted trailing argument as the __CUDACC__ declaration above, so a
-// host-only TU that includes this header sees the same call signature a .cu
-// consumer does.
-void sendrecv_tile_kernel(
-    SendRecvTileArgs args,
-    AbortDevice abortDevice = AbortDevice());
+// Keep the host-visible signature aligned with the CUDA declaration above.
+void sendrecv_tile_kernel(SendRecvTileArgs args, AbortDevice abortDevice);
 #endif
 
 } // namespace comms::prims

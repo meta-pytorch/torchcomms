@@ -129,7 +129,8 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
       send_chunk_infos,
       recv_chunk_infos,
       numBlocks,
-      blockSize);
+      blockSize,
+      AbortDevice{});
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -255,7 +256,8 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
       send_chunk_infos,
       recv_chunk_infos,
       numBlocks,
-      blockSize);
+      blockSize,
+      AbortDevice{});
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
 

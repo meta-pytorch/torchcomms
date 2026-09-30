@@ -85,7 +85,8 @@ TEST_F(IbgdaForwardBenchmarkTest, Correctness) {
       kDataBytes,
       kNumBlocks,
       globalRank,
-      stream_);
+      stream_,
+      AbortDevice{});
 
   cudaError_t err = cudaStreamSynchronize(stream_);
   ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
@@ -207,7 +208,8 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
             nBytes,
             kNumBlocks,
             globalRank,
-            stream_);
+            stream_,
+            AbortDevice{});
         cudaStreamSynchronize(stream_);
         bootstrap->barrierAll();
       }
@@ -223,7 +225,8 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
             nBytes,
             kNumBlocks,
             globalRank,
-            stream_);
+            stream_,
+            AbortDevice{});
       }
       cudaEventRecord(stop, stream_);
       cudaEventSynchronize(stop);
@@ -258,7 +261,8 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
             nBytes,
             kNumBlocks,
             globalRank,
-            stream_);
+            stream_,
+            AbortDevice{});
         cudaStreamSynchronize(stream_);
         bootstrap->barrierAll();
       }
@@ -274,7 +278,8 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
             nBytes,
             kNumBlocks,
             globalRank,
-            stream_);
+            stream_,
+            AbortDevice{});
       }
       cudaEventRecord(stop, stream_);
       cudaEventSynchronize(stop);
