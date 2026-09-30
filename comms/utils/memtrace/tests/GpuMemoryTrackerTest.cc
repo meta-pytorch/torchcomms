@@ -557,6 +557,14 @@ TEST(GpuMemoryTrackerTest, ResourceMetadataIsStable) {
           GpuMemoryResourceType::kMcclAllGatherOverlapCounters),
       GpuMemoryComponent::kMccl);
   EXPECT_EQ(
+      gpuMemoryResourceTypeName(
+          GpuMemoryResourceType::kMcclReduceScatterRemotePartials),
+      "mccl.reducescatter.remote_partials");
+  EXPECT_EQ(
+      gpuMemoryResourceTypeComponent(
+          GpuMemoryResourceType::kMcclReduceScatterRemotePartials),
+      GpuMemoryComponent::kMccl);
+  EXPECT_EQ(
       gpuMemoryResourceTypeComponent(
           GpuMemoryResourceType::kCommonTransportDispatchTable),
       GpuMemoryComponent::kCommon);

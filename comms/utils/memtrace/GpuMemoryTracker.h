@@ -23,6 +23,7 @@ enum class GpuMemoryComponent : uint8_t {
 
 enum class GpuMemoryResourceType : uint8_t {
   kMcclAllGatherOverlapCounters,
+  kMcclReduceScatterRemotePartials,
 
   kCommonTransportDispatchTable,
 
