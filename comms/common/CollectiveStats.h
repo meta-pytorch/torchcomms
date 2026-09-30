@@ -33,6 +33,13 @@ struct CollectiveStat {
   // roll-ups where the geometry above collapses to unknown.
   uint64_t total_sm_us{0};
 
+  // Quantiles of the duration, filled in by the backend after draining; 0
+  // means unknown. queue_p99_us is enqueue to start.
+  uint64_t p50_us{0};
+  uint64_t p90_us{0};
+  uint64_t p99_us{0};
+  uint64_t queue_p99_us{0};
+
   void add(
       uint64_t durationUs,
       uint32_t numBlocks = 0,
@@ -88,6 +95,12 @@ struct CollectiveStat {
     total_us += other.total_us;
     count += other.count;
     total_sm_us += other.total_sm_us;
+    // A quantile of a union lies between the parts' quantiles, so the max is
+    // an upper bound.
+    p50_us = std::max(p50_us, other.p50_us);
+    p90_us = std::max(p90_us, other.p90_us);
+    p99_us = std::max(p99_us, other.p99_us);
+    queue_p99_us = std::max(queue_p99_us, other.queue_p99_us);
 
     // Roll-ups span buckets whose geometry differs.
     if (num_blocks != other.num_blocks || block_size != other.block_size ||
@@ -184,6 +197,14 @@ inline std::ostream& operator<<(std::ostream& os, const CollectiveStat& s) {
         s.num_blocks,
         s.block_size,
         s.blocks_per_sm);
+  }
+  if (s.p50_us != 0 || s.p90_us != 0 || s.p99_us != 0 || s.queue_p99_us != 0) {
+    os << fmt::format(
+        " p50_us={} p90_us={} p99_us={} queue_p99_us={}",
+        s.p50_us,
+        s.p90_us,
+        s.p99_us,
+        s.queue_p99_us);
   }
   return os;
 }
