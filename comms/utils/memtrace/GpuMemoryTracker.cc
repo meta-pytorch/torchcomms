@@ -56,6 +56,9 @@ constexpr std::array<ResourceDescriptor, kGpuMemoryResourceTypeCount>
         {GpuMemoryResourceType::kMcclAllGatherOverlapCounters,
          GpuMemoryComponent::kMccl,
          "mccl.allgather.overlap_counters"},
+        {GpuMemoryResourceType::kMcclReduceScatterRemotePartials,
+         GpuMemoryComponent::kMccl,
+         "mccl.reducescatter.remote_partials"},
 
         {GpuMemoryResourceType::kCommonTransportDispatchTable,
          GpuMemoryComponent::kCommon,
