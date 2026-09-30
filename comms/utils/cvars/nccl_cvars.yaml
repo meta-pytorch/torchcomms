@@ -2624,6 +2624,15 @@ cvars:
      still haven't fully tested the performance impact of this feature. So
      it is disabled by default. In the future, we will enable it by default.
 
+ - name        : MCCL_COLLTRACE_COLLECTIVE_STATS
+   type        : bool
+   default     : true
+   description : |-
+     Killswitch for recording MCCL-native collectives into the stats returned
+     by getAndClearCollectiveStats(). Only takes effect when CollTrace is
+     enabled via NCCL_COLLTRACE. Set to false to leave only the CTRAN
+     GPE-routed collectives in those stats.
+
  - name        : NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD
    type        : bool
    default     : true
