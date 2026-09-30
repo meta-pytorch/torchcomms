@@ -59,6 +59,19 @@ timing(uint64_t count, uint64_t totalUs, uint64_t minUs, uint64_t maxUs) {
       .count = count, .total_us = totalUs, .min_us = minUs, .max_us = maxUs};
 }
 
+CollectiveStat withQuantiles(
+    CollectiveStat stat,
+    uint64_t p50Us,
+    uint64_t p90Us,
+    uint64_t p99Us,
+    uint64_t queueP99Us) {
+  stat.p50_us = p50Us;
+  stat.p90_us = p90Us;
+  stat.p99_us = p99Us;
+  stat.queue_p99_us = queueP99Us;
+  return stat;
+}
+
 TEST(CollLatencyPluginTest, BucketsLikeTheGpe) {
   CollLatencyPlugin plugin;
   std::vector<CollTraceEvent> events;
@@ -75,10 +88,12 @@ TEST(CollLatencyPluginTest, BucketsLikeTheGpe) {
   // 256 float32 elements are 1024 bytes.
   const CollectiveStatsMap expected{
       {"allreduce.ring.1024", timing(2, 400, 100, 300)},
-      {"allreduce.all", timing(2, 400, 100, 300)},
+      {"allreduce.all",
+       withQuantiles(timing(2, 400, 100, 300), 200, 300, 300, 50)},
       {"reducescatter.direct.1024", timing(1, 900, 900, 900)},
-      {"reducescatter.all", timing(1, 900, 900, 900)},
-      {"all", timing(3, 1300, 100, 900)},
+      {"reducescatter.all",
+       withQuantiles(timing(1, 900, 900, 900), 900, 900, 900, 10)},
+      {"all", withQuantiles(timing(3, 1300, 100, 900), 300, 900, 900, 50)},
   };
   EXPECT_EQ(plugin.takeCollectiveStats(), expected);
 }
@@ -92,6 +107,44 @@ TEST(CollLatencyPluginTest, TakeStartsANewWindow) {
 
   EXPECT_FALSE(plugin.takeCollectiveStats().empty());
   EXPECT_TRUE(plugin.takeCollectiveStats().empty());
+}
+
+TEST(CollLatencyPluginTest, QuantilesSpanTheDistribution) {
+  CollLatencyPlugin plugin;
+  // More samples than one buffer holds, so the digest merge path runs too.
+  std::vector<CollTraceEvent> events;
+  for (int us = 1; us <= 1000; ++us) {
+    events.push_back(
+        makeEvent(opMetadata("AllReduce"), microseconds{0}, microseconds{us}));
+  }
+  endCollectives(plugin, events);
+
+  const auto rollUp = plugin.takeCollectiveStats().at("allreduce.all");
+
+  EXPECT_EQ(rollUp.count, 1000);
+  EXPECT_NEAR(rollUp.p50_us, 500, 10);
+  EXPECT_NEAR(rollUp.p90_us, 900, 10);
+  EXPECT_NEAR(rollUp.p99_us, 990, 10);
+}
+
+TEST(CollLatencyPluginTest, AllRollUpSpansEveryOperation) {
+  CollLatencyPlugin plugin;
+  std::vector<CollTraceEvent> events;
+  for (int us = 1; us <= 500; ++us) {
+    events.push_back(
+        makeEvent(opMetadata("AllReduce"), microseconds{0}, microseconds{us}));
+    events.push_back(makeEvent(
+        opMetadata("AllGather"), microseconds{0}, microseconds{500 + us}));
+  }
+  endCollectives(plugin, events);
+
+  const auto stats = plugin.takeCollectiveStats();
+  const auto& all = stats.at("all");
+
+  EXPECT_EQ(all.count, 1000);
+  EXPECT_NEAR(all.p50_us, 500, 10);
+  EXPECT_NEAR(all.p99_us, 990, 10);
+  EXPECT_NEAR(stats.at("allreduce.all").p99_us, 495, 10);
 }
 
 TEST(CollLatencyPluginTest, FilteredCollectiveIsNotRecorded) {
@@ -119,6 +172,18 @@ TEST(CollLatencyPluginTest, UnstartedCollectiveIsNotRecorded) {
   EXPECT_TRUE(plugin.takeCollectiveStats().empty());
 }
 
+TEST(CollLatencyPluginTest, MissingEnqueueTimeKeepsDuration) {
+  CollLatencyPlugin plugin;
+  auto event =
+      makeEvent(opMetadata("AllReduce"), microseconds{50}, microseconds{200});
+  event.collRecord->getTimingInfo().setCollEnqueueTs({});
+
+  ASSERT_TRUE(plugin.afterCollKernelEnd(event).hasValue());
+
+  const auto rollUp = plugin.takeCollectiveStats().at("allreduce.all");
+  EXPECT_EQ(rollUp, withQuantiles(timing(1, 200, 200, 200), 200, 200, 200, 0));
+}
+
 TEST(CollLatencyPluginTest, UnknownFieldsFallBack) {
   CollLatencyPlugin plugin;
   std::vector<CollTraceEvent> events;
@@ -133,8 +198,8 @@ TEST(CollLatencyPluginTest, UnknownFieldsFallBack) {
   const CollectiveStatsMap expected{
       {"unknown.ring.0", timing(1, 30, 30, 30)},
       {"unknown.unknown.0", timing(1, 30, 30, 30)},
-      {"unknown.all", timing(2, 60, 30, 30)},
-      {"all", timing(2, 60, 30, 30)},
+      {"unknown.all", withQuantiles(timing(2, 60, 30, 30), 30, 30, 30, 5)},
+      {"all", withQuantiles(timing(2, 60, 30, 30), 30, 30, 30, 5)},
   };
   EXPECT_EQ(plugin.takeCollectiveStats(), expected);
 }
