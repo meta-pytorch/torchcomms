@@ -258,7 +258,11 @@ ncclResult_t DefaultRcclxApi::allToAll(
     ncclComm_t comm,
     hipStream_t stream) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+  return ncclAlltoAll(sendbuff, recvbuff, count, datatype, comm, stream);
+#else
   return ncclAllToAll(sendbuff, recvbuff, count, datatype, comm, stream);
+#endif
 }
 
 ncclResult_t DefaultRcclxApi::allToAllv(
@@ -272,6 +276,18 @@ ncclResult_t DefaultRcclxApi::allToAllv(
     ncclComm_t comm,
     hipStream_t stream) {
   std::lock_guard<std::mutex> lock(api_mutex_);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+  return ncclAlltoAllv(
+      sendbuff,
+      sendcounts,
+      sdispls,
+      recvbuff,
+      recvcounts,
+      rdispls,
+      datatype,
+      comm,
+      stream);
+#else
   return ncclAllToAllv(
       sendbuff,
       sendcounts,
@@ -282,6 +298,7 @@ ncclResult_t DefaultRcclxApi::allToAllv(
       datatype,
       comm,
       stream);
+#endif
 }
 
 ncclResult_t DefaultRcclxApi::winAllocate(
