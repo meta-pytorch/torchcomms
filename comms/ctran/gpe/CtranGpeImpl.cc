@@ -757,7 +757,7 @@ void CtranGpe::Impl::gpeThreadFn() {
       statex->commDesc(),
       __func__);
 
-  CTRAN_ASYNC_ERR_GUARD(comm->getAsyncError(), {
+  CTRAN_ASYNC_ERR_GUARD(comm, {
     FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
 
     while (1) {

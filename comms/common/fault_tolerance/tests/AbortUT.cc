@@ -13,6 +13,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "comms/common/AsyncErrorState.h"
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/common/fault_tolerance/tests/AbortLogMarkers.h"
 
@@ -50,12 +51,114 @@ TEST(AbortTest, enabledDefaultNotAbort) {
   Abort abort{/*enabled=*/true};
   EXPECT_FALSE(abort.isAborted());
   EXPECT_EQ(abort.reason(), AbortReason::NONE);
+  EXPECT_EQ(abort.getAsyncError().code, commSuccess);
+  EXPECT_EQ(abort.getAsyncError().message, "");
 }
 
 TEST(AbortTest, disabledNoopDefaultNotAbort) {
   Abort abort{/*enabled=*/false};
   EXPECT_FALSE(abort.isAborted());
   EXPECT_EQ(abort.reason(), AbortReason::NONE);
+  EXPECT_EQ(abort.getAsyncError().code, commSuccess);
+  EXPECT_EQ(abort.getAsyncError().message, "");
+}
+
+TEST(AbortTest, asyncErrorTrackingIsIndependentOfAbortEnablement) {
+  for (const bool enabled : {false, true}) {
+    Abort abort{enabled};
+
+    abort.recordAsyncError({commRemoteError, "peer failed"});
+
+    const auto error = abort.getAsyncError();
+    EXPECT_EQ(error.code, commRemoteError);
+    EXPECT_EQ(error.message, "peer failed");
+    EXPECT_FALSE(abort.isAborted());
+    EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+  }
+}
+
+TEST(AbortTest, laterAsyncErrorReplacesCompleteSnapshot) {
+  Abort abort{/*enabled=*/false};
+  abort.recordAsyncError({commRemoteError, "first"});
+  abort.recordAsyncError({commInternalError, "second"});
+
+  const auto error = abort.getAsyncError();
+  EXPECT_EQ(error.code, commInternalError);
+  EXPECT_EQ(error.message, "second");
+}
+
+TEST(AbortTest, concurrentAsyncErrorReadersAndWritersSeeCoherentSnapshots) {
+  Abort abort{/*enabled=*/false};
+  abort.recordAsyncError({commRemoteError, "remote"});
+
+  constexpr int kWriterCount = 8;
+  constexpr int kWritesPerThread = 512;
+  constexpr int kReaderCount = 4;
+  std::atomic<bool> writerStarted{false};
+  std::atomic<int> writersRemaining{kWriterCount};
+  std::atomic<int> readerSamples{0};
+  std::atomic<bool> snapshotsCoherent{true};
+
+  const auto isCoherentSnapshot = [](const comms::AsyncErrorSnapshot& error) {
+    return (error.code == commRemoteError && error.message == "remote") ||
+        (error.code == commInternalError && error.message == "internal");
+  };
+
+  std::vector<std::thread> readers;
+  readers.reserve(kReaderCount);
+  for (int i = 0; i < kReaderCount; ++i) {
+    readers.emplace_back([&] {
+      while (!writerStarted.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      while (writersRemaining.load(std::memory_order_acquire) > 0) {
+        if (!isCoherentSnapshot(abort.getAsyncError())) {
+          snapshotsCoherent.store(false, std::memory_order_relaxed);
+        }
+        readerSamples.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+  }
+
+  std::vector<std::thread> writers;
+  writers.reserve(kWriterCount);
+  for (int i = 0; i < kWriterCount; ++i) {
+    writers.emplace_back([&, i] {
+      int firstWrite = 0;
+      if (i == 0) {
+        abort.recordAsyncError({commInternalError, "internal"});
+        firstWrite = 1;
+        writerStarted.store(true, std::memory_order_release);
+        while (readerSamples.load(std::memory_order_acquire) == 0) {
+          std::this_thread::yield();
+        }
+      } else {
+        while (!writerStarted.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+      }
+
+      for (int write = firstWrite; write < kWritesPerThread; ++write) {
+        if ((i + write) % 2 == 0) {
+          abort.recordAsyncError({commRemoteError, "remote"});
+        } else {
+          abort.recordAsyncError({commInternalError, "internal"});
+        }
+      }
+      writersRemaining.fetch_sub(1, std::memory_order_release);
+    });
+  }
+
+  for (auto& writer : writers) {
+    writer.join();
+  }
+  for (auto& reader : readers) {
+    reader.join();
+  }
+
+  EXPECT_TRUE(snapshotsCoherent.load(std::memory_order_relaxed));
+  EXPECT_GT(readerSamples.load(std::memory_order_relaxed), 0);
+  EXPECT_TRUE(isCoherentSnapshot(abort.getAsyncError()));
 }
 
 TEST(AbortTest, enabled) {
@@ -149,15 +252,17 @@ TEST(AbortFactoryTest, disabledNoop) {
   EXPECT_FALSE(abort->isAborted());
 }
 
-TEST(AbortFactoryTest, DisabledSingletonDoesNotStoreAbortInfo) {
+TEST(AbortFactoryTest, disabledInstancesDoNotShareAsyncErrors) {
   auto first = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
   auto second = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
 
-  ASSERT_EQ(first.get(), second.get());
-
+  ASSERT_NE(first.get(), second.get());
   EXPECT_FALSE(
       first->setAbort(AbortReason::NETWORK_ERROR, "ignored disabled abort"));
+  first->recordAsyncError({commRemoteError, "first communicator"});
 
+  EXPECT_EQ(first->getAsyncError().code, commRemoteError);
+  EXPECT_EQ(second->getAsyncError().code, commSuccess);
   EXPECT_FALSE(first->isAborted());
   EXPECT_EQ(first->getAbortInfo(), std::nullopt);
   EXPECT_FALSE(second->isAborted());

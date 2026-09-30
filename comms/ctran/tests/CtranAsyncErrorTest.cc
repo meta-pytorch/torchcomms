@@ -25,11 +25,8 @@ TEST(CtranAsyncErrorTest, SetAndGet) {
   constexpr int rank = 1;
   constexpr uint64_t commHash = 0x12345;
 
-  auto state = std::make_shared<comms::AsyncErrorState>();
   auto comm = std::make_unique<CtranComm>(
-      comms::fault_tolerance::createAbort(/*enabled=*/false),
-      ctranConfig{},
-      state);
+      comms::fault_tolerance::createAbort(/*enabled=*/false));
   // Expect no asyncError before set
   EXPECT_EQ(comm->getAsyncResult(), commSuccess);
 
@@ -46,7 +43,7 @@ TEST(CtranAsyncErrorTest, SetAndGet) {
             }
 
             // Expect the asyncError is set.
-            const auto asyncError = state->get();
+            const auto asyncError = comm->getAbort()->getAsyncError();
             EXPECT_EQ(asyncError.code, commRemoteError);
             EXPECT_THAT(
                 asyncError.message,

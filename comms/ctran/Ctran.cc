@@ -9,6 +9,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 
+#include "comms/common/AsyncErrorState.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -183,22 +184,23 @@ commResult_t CtranComm::finalize() {
   return commSuccess;
 }
 
-CtranComm::CtranComm(
-    std::shared_ptr<Abort> abort,
-    ctranConfig commConfig,
-    std::shared_ptr<comms::AsyncErrorState> asyncError)
+CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
     : config_(std::move(commConfig)),
-      asyncErr_(
-          std::make_shared<AsyncError>(
-              NCCL_CTRAN_ABORT_ON_ERROR,
-              "CtranComm",
-              std::move(asyncError))),
+      abortOnAsyncError_(NCCL_CTRAN_ABORT_ON_ERROR),
       abort_(std::move(abort)) {
   if (!abort_) {
     throw ctran::utils::Exception("abort must not be empty", commInternalError);
   }
   // Default points to internal opCount
   opCount_ = &ctranOpCount_;
+}
+
+commResult_t CtranComm::getAsyncResult() const {
+  return abort_->getAsyncError().code;
+}
+
+void CtranComm::setAsyncException(const Exception& e) {
+  abort_->recordAsyncError({e.result(), std::string(e.what())});
 }
 
 void CtranComm::destroy() {

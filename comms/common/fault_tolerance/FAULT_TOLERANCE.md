@@ -88,8 +88,20 @@ observe and update the same state.
 
 An enabled `Abort` owns one `AbortState`. CUDA-capable builds allocate that
 state as mapped pinned host memory so CPU and CUDA device code can access the
-same abort reason. Disabled abort objects do not allocate state and all query
-and mutation APIs behave as no-ops or non-aborted results.
+same terminal abort reason. Disabled controllers do not allocate a mapped
+`AbortState`; terminal abort and timeout operations remain no-ops.
+
+### Async-error reporting is independent of abort propagation
+
+Every `Abort` owns a host-only, synchronized `AsyncErrorSnapshot`, even
+when terminal abort propagation is disabled. `recordAsyncError()` replaces the
+complete code/message pair, while `getAsyncError()` returns one coherent copy.
+Recording an error never calls `setAbort()` and never changes `isAborted()`.
+
+Terminal `AbortInfo` remains first-writer-wins. Async error state remains
+last-writer-wins because it reports the latest communicator error. Disabled
+controllers are therefore per-failure-domain objects rather than a shared
+singleton.
 
 The abort reason is first-writer-wins:
 

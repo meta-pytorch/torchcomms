@@ -68,7 +68,7 @@ TEST_F(CtranCommSplitTest, LocalNvlSplitMapsRanksAndBootstrap) {
   EXPECT_EQ(parentRanks, gathered);
 }
 
-TEST_F(CtranCommSplitTest, SharesAbortButKeepsAsyncErrorsIndependent) {
+TEST_F(CtranCommSplitTest, SharesAbortAndAsyncErrors) {
   std::shared_ptr<CtranComm> childComm;
   std::shared_ptr<CtranComm> siblingComm;
   COMMCHECK_TEST(ctranCommSplitLocalNvl(parentComm_.get(), &childComm));
@@ -80,14 +80,14 @@ TEST_F(CtranCommSplitTest, SharesAbortButKeepsAsyncErrorsIndependent) {
   childComm->setAsyncException(
       ctran::utils::Exception("child error", commRemoteError));
   EXPECT_EQ(childComm->getAsyncResult(), commRemoteError);
-  EXPECT_EQ(parentComm_->getAsyncResult(), commSuccess);
-  EXPECT_EQ(siblingComm->getAsyncResult(), commSuccess);
+  EXPECT_EQ(parentComm_->getAsyncResult(), commRemoteError);
+  EXPECT_EQ(siblingComm->getAsyncResult(), commRemoteError);
 
   parentComm_->setAsyncException(
       ctran::utils::Exception("parent error", commInternalError));
   EXPECT_EQ(parentComm_->getAsyncResult(), commInternalError);
-  EXPECT_EQ(childComm->getAsyncResult(), commRemoteError);
-  EXPECT_EQ(siblingComm->getAsyncResult(), commSuccess);
+  EXPECT_EQ(childComm->getAsyncResult(), commInternalError);
+  EXPECT_EQ(siblingComm->getAsyncResult(), commInternalError);
 }
 
 TEST_F(CtranCommSplitTest, LocalNvlSplitSupportsWindowRegistration) {

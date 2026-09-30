@@ -13,6 +13,11 @@
 
 #include "comms/common/fault_tolerance/AbortTypes.h"
 
+namespace comms {
+class AsyncErrorState;
+struct AsyncErrorSnapshot;
+} // namespace comms
+
 /*
  * Marker prefixing every first-writer abort log line, on either side.
  *
@@ -116,10 +121,9 @@ struct AbortDevice;
  * Enabled `Abort` instances use shared state when CUDA pinned allocation and
  * device mapping are available. Host-only environments fall back to ordinary
  * host memory for the same `AbortState` fields so CPU callers can keep using
- * the same API. Disabled instances do not allocate state and every
- * mutating/query operation is a no-op or a non-aborted result. The disabled
- * singleton returned by `createAbort(false)` is intended for code paths that
- * must accept an abort object without enabling fault tolerance.
+ * the same API. Disabled instances do not allocate terminal abort state, so
+ * terminal abort and timeout operations are no-ops or non-aborted results.
+ * Every instance still owns host-only asynchronous error state.
  *
  * `AbortState` fields are mutable shared state. Host code and device code
  * access them with system-scope atomic operations so updates from either side
@@ -142,8 +146,8 @@ class Abort final {
    * allocate it as host-mapped pinned memory so host and device code can
    * observe the same abort reason. Host-only or non-mappable runtime
    * environments fall back to ordinary host memory while preserving the same
-   * host-side state semantics. Disabled controllers are no-op placeholders for
-   * callers that must pass an `Abort` object while fault tolerance is disabled.
+   * host-side state semantics. Disabled controllers keep terminal abort
+   * operations disabled while retaining host-only asynchronous error state.
    */
   explicit Abort(bool enabled, AbortBehavior behavior = AbortBehavior::SKIP);
   ~Abort();
@@ -173,6 +177,18 @@ class Abort final {
   AbortBehavior behavior() const {
     return behavior_;
   }
+
+  /**
+   * Records the communicator's latest asynchronous error.
+   *
+   * This state is available regardless of `isEnabled()`. Recording an error
+   * does not set a terminal abort reason; propagation remains the caller's
+   * responsibility. A later write replaces the complete code/message pair.
+   */
+  void recordAsyncError(comms::AsyncErrorSnapshot error);
+
+  /** Returns a coherent snapshot of the latest asynchronous error. */
+  comms::AsyncErrorSnapshot getAsyncError() const;
 
   /**
    * Records the first abort reason and optional diagnostic context.
@@ -308,6 +324,8 @@ class Abort final {
   bool isContextReady() const;
   bool trySetAbort(AbortReason newReason, std::string context);
 
+  std::unique_ptr<comms::AsyncErrorState> asyncErrorState_;
+
   AbortState* state_{nullptr};
   bool stateMapped_{false};
   int stateDevice_{-1};
@@ -325,8 +343,10 @@ class Abort final {
 };
 
 /**
- * Creates an enabled abort controller or returns the shared disabled
- * controller.
+ * Creates a distinct abort controller.
+ *
+ * Disabled controllers remain distinct because each carries mutable
+ * failure-domain-scoped asynchronous error state.
  */
 std::shared_ptr<Abort> createAbort(
     bool enabled,

@@ -2,13 +2,8 @@
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <utility>
-
 #include <folly/String.h>
 
-#include "comms/common/AsyncErrorState.h"
 #include "comms/ctran/utils/AbortUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
@@ -16,34 +11,34 @@
 namespace ctran::utils {
 // Use the named CTRAN logger so these header macros do not inherit the caller's
 // logging category.
-#define CTRAN_ASYNC_ERR_HANDLE_IMPL(asyncErr, e)                    \
-  do {                                                              \
-    const auto errLog = fmt::format(                                \
-        "{}: Encountered exception: {}", asyncErr->desc, e.what()); \
-    if (asyncErr->abortOnError) {                                   \
-      /* FATAL will abort with error stack */                       \
-      CTRAN_LOG(FATAL, "{}; aborting", errLog);                     \
-    } else {                                                        \
-      CTRAN_LOG(ERR, "{}; setting async error flag", errLog);       \
-      /* TODO: expose also error stack to user */                   \
-      asyncErr->setAsyncException(e);                               \
-    }                                                               \
+#define CTRAN_ASYNC_ERR_HANDLE_IMPL(comm, e)                           \
+  do {                                                                 \
+    const auto errLog =                                                \
+        fmt::format("CtranComm: Encountered exception: {}", e.what()); \
+    if (comm->abortOnAsyncError()) {                                   \
+      /* FATAL will abort with error stack */                          \
+      CTRAN_LOG(FATAL, "{}; aborting", errLog);                        \
+    } else {                                                           \
+      CTRAN_LOG(ERR, "{}; setting async error flag", errLog);          \
+      /* TODO: expose also error stack to user */                      \
+      comm->setAsyncException(e);                                      \
+    }                                                                  \
   } while (0)
 
-#define CTRAN_ASYNC_ERR_GUARD(asyncErr, code)                          \
-  try {                                                                \
-    code;                                                              \
-  } catch (const ctran::utils::Exception& e) {                         \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL(asyncErr, e);                          \
-  } catch (const std::runtime_error& e) {                              \
-    /*TODO: replace remaining runtime_error with Exception */          \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL(                                       \
-        asyncErr, ctran::utils::Exception(e.what(), commRemoteError)); \
+#define CTRAN_ASYNC_ERR_GUARD(comm, code)                          \
+  try {                                                            \
+    code;                                                          \
+  } catch (const ctran::utils::Exception& e) {                     \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm, e);                          \
+  } catch (const std::runtime_error& e) {                          \
+    /*TODO: replace remaining runtime_error with Exception */      \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL(                                   \
+        comm, ctran::utils::Exception(e.what(), commRemoteError)); \
   }
 
 #define CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e, opType, opCount) \
   do {                                                                        \
-    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm->getAsyncError(), e);                    \
+    CTRAN_ASYNC_ERR_HANDLE_IMPL(comm, e);                                     \
     if (comm->abortEnabled()) {                                               \
       CTRAN_LOG(                                                              \
           ERR,                                                                \
@@ -82,35 +77,5 @@ namespace ctran::utils {
         opType,                                                            \
         opCount);                                                          \
   }
-
-// CTRAN-specific policy adapter over the communicator-owned error state.
-// The state remains usable by MCCL and other runtimes without depending on
-// CTRAN's fatal-on-error policy or exception type.
-class AsyncError {
- public:
-  AsyncError(
-      bool abortOnError,
-      const std::string& desc,
-      std::shared_ptr<comms::AsyncErrorState> state = nullptr)
-      : abortOnError(abortOnError),
-        desc(desc),
-        state_(
-            state != nullptr ? std::move(state)
-                             : std::make_shared<comms::AsyncErrorState>()) {}
-
-  void setAsyncException(const Exception& e) {
-    state_->set({e.result(), std::string(e.what())});
-  }
-
-  commResult_t getAsyncResult() const {
-    return state_->result();
-  }
-
-  const bool abortOnError;
-  const std::string desc;
-
- private:
-  std::shared_ptr<comms::AsyncErrorState> state_;
-};
 
 } // namespace ctran::utils
