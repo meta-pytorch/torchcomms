@@ -5,18 +5,33 @@
 
 #include <stdexcept>
 
+#include "comms/common/AsyncErrorState.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
-using ctran::utils::AsyncError;
 using ctran::utils::Exception;
 
-class AsyncErrorTest : public ::testing::Test {
- protected:
-  void SetUp() override {}
-  void TearDown() override {}
+namespace {
+
+class ScopedBoolOverride {
+ public:
+  ScopedBoolOverride(bool& value, bool replacement)
+      : value_(value), original_(value) {
+    value_ = replacement;
+  }
+
+  ~ScopedBoolOverride() {
+    value_ = original_;
+  }
+
+ private:
+  bool& value_;
+  bool original_;
 };
+
+} // namespace
 
 void expectFaultToleranceAbortReason(
     commResult_t result,
@@ -37,48 +52,16 @@ void expectFaultToleranceAbortReason(
           ::testing::HasSubstr("UT error")));
 }
 
-TEST(CtranAsyncErrorTest, SetAndGet) {
-  constexpr auto numThreads = 10;
-  std::vector<std::thread> threads;
-
-  auto asyncErr = std::make_shared<AsyncError>(false, "AsyncErrorTest");
-  for (auto i = 0; i < numThreads; i++) {
-    std::thread t(
-        [&](int tid) {
-          if (tid == 0) {
-            asyncErr->setAsyncException(
-                Exception("test error on thread 0", commRemoteError));
-          } else {
-            // Except all threads should see the asyncError stop waiting
-            while (asyncErr->getAsyncResult() == commSuccess) {
-              std::this_thread::yield();
-            }
-
-            // Expect the asyncError is set.
-            auto asyncError = asyncErr->getAsyncException();
-            EXPECT_EQ(asyncError.result(), commRemoteError);
-            EXPECT_THAT(
-                asyncError.what(),
-                ::testing::HasSubstr("test error on thread 0"));
-          }
-        },
-        i);
-    threads.push_back(std::move(t));
-  }
-
-  // Expect all threads should see the asyncError and exit.
-  for (auto& t : threads) {
-    t.join();
-  }
-}
-
 TEST(AsyncErrorTest, AbortOnError) {
   // Do not check exit code since CTRAN_LOG(FATAL) may trigger core dump, and
   // changed SIGABRT to core dump
   EXPECT_DEATH(
       {
-        auto asyncErr = std::make_shared<AsyncError>(true, "AsyncErrorTest");
-        CTRAN_ASYNC_ERR_GUARD(asyncErr, {
+        NCCL_CTRAN_ABORT_ON_ERROR = true;
+        auto comm = std::make_unique<CtranComm>(
+            comms::fault_tolerance::createAbort(/*enabled=*/false));
+        NCCL_CTRAN_ABORT_ON_ERROR = false;
+        CTRAN_ASYNC_ERR_GUARD(comm, {
           throw Exception("test error on thread 0", commInternalError);
         });
       },
@@ -86,7 +69,8 @@ TEST(AsyncErrorTest, AbortOnError) {
       << "Expected to abort on error";
 }
 
-TEST(AsyncErrorTest, FaultToleranceDisabled) {
+TEST(AsyncErrorTest, FaultToleranceDisabledRecordsBeforeRethrow) {
+  ScopedBoolOverride abortOnError(NCCL_CTRAN_ABORT_ON_ERROR, false);
   auto comm = std::make_unique<CtranComm>(
       comms::fault_tolerance::createAbort(/*enabled=*/false));
   EXPECT_THROW(
@@ -99,9 +83,14 @@ TEST(AsyncErrorTest, FaultToleranceDisabled) {
       },
       ::ctran::utils::Exception)
       << "Expected to throw exception on error";
+  EXPECT_EQ(comm->getAsyncResult(), commRemoteError);
+  EXPECT_THAT(
+      comm->getAbort()->getAsyncError().message,
+      ::testing::HasSubstr("UT error"));
 }
 
 TEST(AsyncErrorTest, FaultToleranceEnabled) {
+  ScopedBoolOverride abortOnError(NCCL_CTRAN_ABORT_ON_ERROR, false);
   expectFaultToleranceAbortReason(
       commRemoteError, comms::fault_tolerance::AbortReason::NETWORK_ERROR);
   expectFaultToleranceAbortReason(
@@ -113,6 +102,7 @@ TEST(AsyncErrorTest, FaultToleranceEnabled) {
 }
 
 TEST(AsyncErrorTest, FaultToleranceEnabledRuntimeErrorRecordsInternalAbort) {
+  ScopedBoolOverride abortOnError(NCCL_CTRAN_ABORT_ON_ERROR, false);
   auto comm = std::make_unique<CtranComm>(
       comms::fault_tolerance::createAbort(/*enabled=*/true));
 
@@ -130,4 +120,22 @@ TEST(AsyncErrorTest, FaultToleranceEnabledRuntimeErrorRecordsInternalAbort) {
           ::testing::HasSubstr("op_count=0"),
           ::testing::HasSubstr("UT runtime error"),
           ::testing::HasSubstr("commInternalError")));
+}
+
+TEST(AsyncErrorTest, ErrorUsesLastWriterWhileAbortKeepsFirstReason) {
+  ScopedBoolOverride abortOnError(NCCL_CTRAN_ABORT_ON_ERROR, false);
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/true));
+
+  CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+      comm, { throw Exception("first error", commRemoteError); }, -1, 0);
+  CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+      comm, { throw Exception("second error", commTimeout); }, -1, 1);
+
+  EXPECT_EQ(comm->getAsyncResult(), commTimeout);
+  const auto abortInfo = comm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(
+      abortInfo->reason, comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+  EXPECT_THAT(abortInfo->context, ::testing::HasSubstr("first error"));
 }

@@ -2306,15 +2306,10 @@ TEST_F(CtranGpeTest, ThrowAsyncException) {
   while (dummyComm->getAsyncResult() == commSuccess)
     ;
 
-  // Expect asyncErr is set with proper info
+  // Expect the GPE failure is published through the communicator's async
+  // result. Exception formatting is covered by ExceptionUT and the injected
+  // state path is covered by CtranAsyncErrorTest.
   EXPECT_EQ(dummyComm->getAsyncResult(), commSystemError);
-  const auto e = dummyComm->getAsyncException();
-  EXPECT_THAT(e.what(), testing::HasSubstr("commSystemError"));
-  EXPECT_EQ(e.result(), commSystemError);
-
-  const auto statex = dummyComm->statex_.get();
-  EXPECT_EQ(e.commHash(), statex->commHash());
-  EXPECT_EQ(e.rank(), statex->rank());
 }
 
 // Verify postKernelCleanup is called after kernel completion for eager

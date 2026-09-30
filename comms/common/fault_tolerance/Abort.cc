@@ -14,6 +14,9 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
+
+#include "comms/common/AsyncErrorState.h"
 
 namespace comms::fault_tolerance {
 
@@ -23,7 +26,9 @@ constexpr std::chrono::milliseconds kAbortInfoPublicationTimeout{300};
 
 } // namespace
 
-Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
+Abort::Abort(bool enabled, AbortBehavior behavior)
+    : asyncErrorState_(std::make_unique<comms::AsyncErrorState>()),
+      behavior_(behavior) {
   if (!enabled) {
     return;
   }
@@ -54,6 +59,14 @@ Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
   state_->abort = encode(AbortReason::NONE);
   state_->contextReady = 0;
   state_->timeoutMs = -1;
+}
+
+void Abort::recordAsyncError(comms::AsyncErrorSnapshot error) {
+  asyncErrorState_->set(std::move(error));
+}
+
+comms::AsyncErrorSnapshot Abort::getAsyncError() const {
+  return asyncErrorState_->get();
 }
 
 Abort::~Abort() {
@@ -275,13 +288,7 @@ bool Abort::trySetAbort(AbortReason newReason, std::string context) {
 }
 
 std::shared_ptr<Abort> createAbort(bool enabled, AbortBehavior behavior) {
-  if (enabled) {
-    return std::make_shared<Abort>(/*enabled=*/true, behavior);
-  } else {
-    static const std::shared_ptr<Abort> disabled =
-        std::make_shared<Abort>(/*enabled=*/false);
-    return disabled;
-  }
+  return std::make_shared<Abort>(enabled, behavior);
 }
 
 } // namespace comms::fault_tolerance
