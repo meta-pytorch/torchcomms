@@ -1,3 +1,0 @@
-nccl4py[cu12]
-cupy-cuda12x
-numpy

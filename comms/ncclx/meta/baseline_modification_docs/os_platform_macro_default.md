@@ -43,8 +43,10 @@ to anything the test does.
 
 ## Versions Affected
 
-v2_31. `v2_29` and `v2_30` carry an equivalent block; only the 2.31 import lacks
-it.
+Applied to v2_31, which has since been removed. `v2_32` still needs it: its
+import has the same bare `#if NCCL_OS_LINUX` / `#if NCCL_OS_WINDOWS` tests in
+`src/include/socket.h` and `src/include/os.h`, and no defaulting block. `v2_30`
+carries an equivalent (valueless) block in `src/include/os.h`.
 
 ## Baseline Files Modified
 
