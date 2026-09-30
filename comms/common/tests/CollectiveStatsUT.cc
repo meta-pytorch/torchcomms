@@ -196,6 +196,60 @@ TEST(CollectiveStatsTest, DisagreeingGeometryWithinOneBucketReportsUnknown) {
   EXPECT_EQ(out.at("alltoallv.ctran.0"), expected);
 }
 
+TEST(CollectiveStatsTest, MergeKeepsTheMaxOfEachQuantile) {
+  CollectiveStat merged{
+      .count = 1,
+      .total_us = 10,
+      .min_us = 10,
+      .max_us = 10,
+      .p50_us = 8,
+      .p90_us = 9,
+      .p99_us = 10,
+      .queue_p99_us = 3};
+  const CollectiveStat other{
+      .count = 1,
+      .total_us = 20,
+      .min_us = 20,
+      .max_us = 20,
+      .p50_us = 18,
+      .p90_us = 19,
+      .p99_us = 20,
+      .queue_p99_us = 1};
+
+  merged.merge(other);
+
+  const CollectiveStat expected{
+      .count = 2,
+      .total_us = 30,
+      .min_us = 10,
+      .max_us = 20,
+      .p50_us = 18,
+      .p90_us = 19,
+      .p99_us = 20,
+      .queue_p99_us = 3};
+  EXPECT_EQ(merged, expected);
+}
+
+TEST(CollectiveStatsTest, MergeKeepsKnownQuantilesOverUnknown) {
+  CollectiveStat merged{.count = 1, .total_us = 10, .min_us = 10, .max_us = 10};
+  const CollectiveStat withQuantiles{
+      .count = 1,
+      .total_us = 10,
+      .min_us = 10,
+      .max_us = 10,
+      .p50_us = 8,
+      .p90_us = 9,
+      .p99_us = 10,
+      .queue_p99_us = 2};
+
+  merged.merge(withQuantiles);
+
+  EXPECT_EQ(merged.p50_us, 8);
+  EXPECT_EQ(merged.p90_us, 9);
+  EXPECT_EQ(merged.p99_us, 10);
+  EXPECT_EQ(merged.queue_p99_us, 2);
+}
+
 TEST(CollectiveStatsTest, SmTimeFallsBackToGridWhenOccupancyUnknown) {
   CollectiveStats stats;
   stats.record("allreduce", "allreduce.ctdirect.8", 10, 32, 640, 0);
