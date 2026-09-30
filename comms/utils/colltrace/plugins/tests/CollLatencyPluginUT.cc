@@ -98,6 +98,44 @@ TEST(CollLatencyPluginTest, BucketsLikeTheGpe) {
   EXPECT_EQ(plugin.takeCollectiveStats(), expected);
 }
 
+TEST(CollLatencyPluginTest, LaunchGeometryAttributesSmTime) {
+  CollLatencyPlugin plugin;
+  std::vector<CollTraceEvent> events;
+  events.push_back(
+      makeEvent(opMetadata("AllReduce"), microseconds{50}, microseconds{100}));
+  events.push_back(
+      makeEvent(opMetadata("AllReduce"), microseconds{50}, microseconds{300}));
+  for (auto& event : events) {
+    event.collRecord->getLaunchInfo().set(8, 512, 2);
+  }
+  endCollectives(plugin, events);
+
+  // 8 blocks at 2 per SM hold 4 SMs.
+  auto expected = timing(2, 400, 100, 300);
+  expected.num_blocks = 8;
+  expected.block_size = 512;
+  expected.blocks_per_sm = 2;
+  expected.total_sm_us = 4 * 400;
+  const auto stats = plugin.takeCollectiveStats();
+  EXPECT_EQ(stats.at("allreduce.ring.1024"), expected);
+  EXPECT_EQ(
+      stats.at("allreduce.all"), withQuantiles(expected, 200, 300, 300, 50));
+}
+
+TEST(CollLatencyPluginTest, UnknownOccupancyCountsOneBlockPerSm) {
+  CollLatencyPlugin plugin;
+  std::vector<CollTraceEvent> events;
+  events.push_back(
+      makeEvent(opMetadata("AllReduce"), microseconds{50}, microseconds{100}));
+  events.back().collRecord->getLaunchInfo().set(8, 512);
+  endCollectives(plugin, events);
+
+  const auto stat = plugin.takeCollectiveStats().at("allreduce.ring.1024");
+  EXPECT_EQ(stat.num_blocks, 8);
+  EXPECT_EQ(stat.blocks_per_sm, 0);
+  EXPECT_EQ(stat.total_sm_us, 8 * 100);
+}
+
 TEST(CollLatencyPluginTest, TakeStartsANewWindow) {
   CollLatencyPlugin plugin;
   std::vector<CollTraceEvent> events;

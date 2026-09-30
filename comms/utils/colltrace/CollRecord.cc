@@ -125,6 +125,14 @@ CollTimingRecord& CollRecord::getTimingInfo() {
   return timingInfo_;
 }
 
+CollLaunchInfo& CollRecord::getLaunchInfo() {
+  return launchInfo_;
+}
+
+const CollLaunchInfo& CollRecord::getLaunchInfo() const {
+  return launchInfo_;
+}
+
 std::size_t CollRecord::hash() const {
   // Hash the collId and timingInfo
   std::size_t seed = folly::hash::hash_combine(collId_, timingInfo_.hash());
