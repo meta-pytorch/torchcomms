@@ -246,7 +246,8 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
           "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
   mccl::cuda::CudaStream stream;
 
@@ -305,7 +306,8 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
           "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
@@ -346,7 +348,8 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
@@ -397,7 +400,8 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
@@ -447,7 +451,8 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
@@ -495,7 +500,8 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
           folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
