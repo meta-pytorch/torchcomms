@@ -70,9 +70,9 @@ inline constexpr const char* kDeadlineExpiredContext =
  * timeout. Its call overhead is negligible, while duplicating it into every
  * collective specialization has a large static cost.
  *
- * This is load-bearing for correctness of the hot path, not just for code size.
- * A device `printf` is an external `vprintf` call that cannot be inlined; if
- * the emitter is `__forceinline__`, that call graph lands in every function
+ * This is load-bearing for correctness of the hot path, not just for code
+ * size. A device `printf` is an external `vprintf` call that cannot be inlined;
+ * if the emitter is `__forceinline__`, that call graph lands in every function
  * that inlines an abort check, even though the branch is never taken.
  * `checkExpired()` is inlined into every FT wait loop, and
  * `comms::prims::groupAborted()` is itself `__forceinline__`, so a single
@@ -313,6 +313,8 @@ deviceCheckExpiredSlow(AbortState* state, bool deadlineDue) {
 }
 
 } // namespace detail
+
+#undef COMMS_FT_COLD_PATH_LINKAGE
 
 /**
  * Non-owning CUDA device view of an `Abort` object's shared state.

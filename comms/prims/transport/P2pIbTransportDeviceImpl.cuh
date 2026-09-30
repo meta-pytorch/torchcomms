@@ -54,6 +54,7 @@ __device__ __forceinline__ void trace_allreduce_event(
   trace_allreduce_event(
       context, type, qpLane, context == nullptr ? 0 : context->bytes);
 }
+
 } // namespace detail
 
 #if PIPES_IS_DEVICE_COMPILE
@@ -225,7 +226,7 @@ template <typename P, typename Transport>
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const AbortDevice& abortDevice = AbortDevice());
+    const AbortDevice& abortDevice);
 
 template <typename P, typename Transport>
 __device__ __forceinline__ void record_send_completion(
@@ -400,7 +401,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
  *                        when max_signal_bytes is set.
  * @param max_signal_bytes Max bytes per signaled sub-chunk within one
  *                        perBlockSlot. 0 means one signal per perBlockSlot.
- * @param abortDevice         Optional abortDevice for wait operations.
+ * @param abortDevice         Caller-supplied abort handle for wait operations.
  */
 // Per-call geometry for the blocking send()/recv() loops. One definition serves
 // both directions -- send and recv share the same layout, so the caller
@@ -1121,8 +1122,8 @@ __device__ __forceinline__ void send_impl(
     IbOps* ibOps,
     const void* __restrict__ src,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     std::size_t max_signal_bytes = 0,
-    const AbortDevice& abortDevice = AbortDevice(),
     const PipesTraceAllReduceContext* traceContext = nullptr,
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
@@ -1645,8 +1646,8 @@ __device__ __forceinline__ void send(
     ThreadGroup& group,
     const void* __restrict__ src,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     std::size_t max_signal_bytes = 0,
-    const AbortDevice& abortDevice = AbortDevice(),
     Args... args) {
   send_impl<Transport, CopyOp, void, Proto>(
       transport,
@@ -1654,8 +1655,8 @@ __device__ __forceinline__ void send(
       nullptr,
       src,
       nbytes,
-      max_signal_bytes,
       abortDevice,
+      max_signal_bytes,
       nullptr,
       args...);
 }
@@ -1680,8 +1681,8 @@ __device__ __forceinline__ void send_with_fine_trace(
       nullptr,
       src,
       nbytes,
-      max_signal_bytes,
       abortDevice,
+      max_signal_bytes,
       &traceContext,
       args...);
 }
@@ -1711,7 +1712,7 @@ __device__ __forceinline__ void send_with_fine_trace(
  * @param max_signal_bytes Max bytes per signaled sub-chunk within one
  *                        perBlockSlot. 0 means one signal per perBlockSlot.
  *                        Must match the sender's value.
- * @param abortDevice         Optional abortDevice for wait operations.
+ * @param abortDevice         Caller-supplied abort handle for wait operations.
  */
 template <
     typename Transport,
@@ -1725,8 +1726,8 @@ __device__ __forceinline__ void recv_impl(
     IbOps* ibOps,
     void* __restrict__ dst,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     std::size_t max_signal_bytes = 0,
-    const AbortDevice& abortDevice = AbortDevice(),
     const PipesTraceAllReduceContext* traceContext = nullptr,
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
@@ -2071,8 +2072,8 @@ __device__ __forceinline__ void recv(
     ThreadGroup& group,
     void* __restrict__ dst,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     std::size_t max_signal_bytes = 0,
-    const AbortDevice& abortDevice = AbortDevice(),
     Args... args) {
   recv_impl<Transport, CopyOp, void, Proto>(
       transport,
@@ -2080,8 +2081,8 @@ __device__ __forceinline__ void recv(
       nullptr,
       dst,
       nbytes,
-      max_signal_bytes,
       abortDevice,
+      max_signal_bytes,
       nullptr,
       args...);
 }
@@ -2106,8 +2107,8 @@ __device__ __forceinline__ void recv_with_fine_trace(
       nullptr,
       dst,
       nbytes,
-      max_signal_bytes,
       abortDevice,
+      max_signal_bytes,
       &traceContext,
       args...);
 }
@@ -2161,7 +2162,7 @@ __device__ __forceinline__ void recv_with_fine_trace(
  * @param nbytes          Bytes to receive and forward.
  * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 =
  * perBlockSlot.
- * @param abortDevice         Optional abortDevice for wait operations.
+ * @param abortDevice         Caller-supplied abort handle for wait operations.
  * @param args            Extra args forwarded to CopyOp::forward.
  */
 template <
@@ -2177,8 +2178,8 @@ __device__ __forceinline__ void forward_impl(
     void* __restrict__ dst,
     Transport& fwdTransport,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     std::size_t max_signal_bytes = 0,
-    const AbortDevice& abortDevice = AbortDevice(),
     const PipesTraceAllReduceContext* recvTraceContext = nullptr,
     const PipesTraceAllReduceContext* sendTraceContext = nullptr,
     Args... args) {
@@ -2563,8 +2564,8 @@ __device__ __forceinline__ void forward(
     void* __restrict__ dst,
     Transport& fwdTransport,
     std::size_t nbytes,
+    const AbortDevice& abortDevice,
     std::size_t max_signal_bytes = 0,
-    const AbortDevice& abortDevice = AbortDevice(),
     Args... args) {
   forward_impl<CopyOp, Transport, void, Proto>(
       transport,
@@ -2573,8 +2574,8 @@ __device__ __forceinline__ void forward(
       dst,
       fwdTransport,
       nbytes,
-      max_signal_bytes,
       abortDevice,
+      max_signal_bytes,
       nullptr,
       nullptr,
       args...);
@@ -2603,8 +2604,8 @@ __device__ __forceinline__ void forward_with_fine_trace(
       dst,
       fwdTransport,
       nbytes,
-      max_signal_bytes,
       abortDevice,
+      max_signal_bytes,
       &recvTraceContext,
       &sendTraceContext,
       args...);

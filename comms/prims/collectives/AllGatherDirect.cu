@@ -130,7 +130,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
 
     const char* send_src = tile_src + off;
     next.template send<MemcpyAndSelfCopy>(
-        group, send_src, window, max_sig, abortDevice, own_dst + off);
+        group, send_src, window, abortDevice, max_sig, own_dst + off);
 
     int fwd_current_rank = args.ib_rank;
     for (int step = 0; step < W - 1; step++) {
@@ -142,9 +142,9 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(group, dst, next, window, max_sig, abortDevice);
+        prev.forward(group, dst, next, window, abortDevice, max_sig);
       } else {
-        prev.recv(group, dst, window, max_sig, abortDevice);
+        prev.recv(group, dst, window, abortDevice, max_sig);
       }
     }
   }
