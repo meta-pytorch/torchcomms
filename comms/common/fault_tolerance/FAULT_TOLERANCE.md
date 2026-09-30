@@ -463,7 +463,7 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    group leaves the rest at `group.sync()` / `__syncwarp()` naming threads that
    have exited, which is undefined behavior.
 3. **If you must return early, make the decision group-uniform first.**
-   `ThreadGroup` (`comms/prims/core/ThreadGroup.cuh`) offers exactly two
+   `ThreadGroup` (`comms/mccl/prims/core/ThreadGroup.cuh`) offers exactly two
    reductions, and both barrier, so every thread in the group must reach them:
    - Leader-owned decision — the leader computes, then publishes with
      `group.broadcast<uint32_t>(stop)`. This is the preferred shape (principle
