@@ -84,13 +84,7 @@ set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.cpp
 )
 
-set(UNIFLOW_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/Result.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Segment.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Connection.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/MultiTransport.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.h
-)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
 # Included via add_subdirectory: build STATIC library for parent to consume
 if(UNIFLOW_STANDALONE)
@@ -101,7 +95,7 @@ endif()
 
 add_library(uniflow ${UNIFLOW_LIB_TYPE}
     ${UNIFLOW_SOURCES}
-    ${UNIFLOW_HEADERS}
+    ${UNIFLOW_PUBLIC_HEADERS}
     ${UNIFLOW_CORE_HEADERS}
     ${UNIFLOW_CORE_SOURCES}
     $<TARGET_OBJECTS:uniflow_controller>
