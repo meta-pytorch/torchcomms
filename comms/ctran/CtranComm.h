@@ -60,6 +60,9 @@ class memCacheAllocator;
 namespace ctran {
 struct CtranWin;
 } // namespace ctran
+namespace comms {
+class AsyncErrorState;
+}
 
 using comms::fault_tolerance::Abort;
 using ctran::utils::AsyncError;
@@ -72,7 +75,8 @@ class CtranComm {
   explicit CtranComm(
       std::shared_ptr<Abort> abort =
           comms::fault_tolerance::createAbort(/*enabled=*/false),
-      ctranConfig commConfig = ctranConfig{});
+      ctranConfig commConfig = ctranConfig{},
+      std::shared_ptr<comms::AsyncErrorState> asyncError = nullptr);
 
   // The MemCache allocator is destroyed in a different time than all
   // other Ctran resources. To accommodate this, we split the CtranComm
@@ -90,19 +94,15 @@ class CtranComm {
   // to avoid unexpected hang due to absence of remote ranks.
   commResult_t finalize();
 
-  inline Exception getAsyncException() const {
-    return asyncErr_->getAsyncException();
-  }
-
-  inline void setAsyncException(const Exception& e) {
+  void setAsyncException(const Exception& e) {
     asyncErr_->setAsyncException(e);
   }
 
-  inline commResult_t getAsyncResult() const {
+  commResult_t getAsyncResult() const {
     return asyncErr_->getAsyncResult();
   }
 
-  inline std::shared_ptr<AsyncError> getAsyncError() const {
+  std::shared_ptr<AsyncError> getAsyncError() const {
     return asyncErr_;
   }
 
