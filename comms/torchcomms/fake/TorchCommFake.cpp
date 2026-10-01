@@ -151,7 +151,8 @@ c10::intrusive_ptr<TorchWork> TorchCommFake::all_reduce(
     at::Tensor& /* tensor */,
     const ReduceOp& /* op */,
     bool /* async_op */,
-    const AllReduceOptions& /* options */) {
+    const AllReduceOptions& options) {
+  lastAllReduceOptions_ = options;
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 

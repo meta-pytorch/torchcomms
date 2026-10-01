@@ -475,6 +475,10 @@ using PostHookArgs = std::variant<
 
 using PostHook = std::function<void(size_t op_id, const PostHookArgs& args)>;
 
+// Reconfigure hook - called after membership is refreshed following a
+// successful reconfiguration.
+using ReconfigureHook = std::function<void()>;
+
 // Abort hook - called before aborting when a collective times out or fails.
 // This allows users to capture debug information before the abort.
 using AbortHook = std::function<void()>;

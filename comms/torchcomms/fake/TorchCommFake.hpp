@@ -139,11 +139,11 @@ class TorchCommFake : public TorchCommBackend {
 
   // Fault Tolerance
   InitHandle getInitHandle() const override {
-    return "fake:" + std::to_string(rank_);
+    return initHandle_;
   }
 
   bool supportsReconfigure() const override {
-    return true;
+    return supportsReconfigure_;
   }
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
@@ -167,6 +167,10 @@ class TorchCommFake : public TorchCommBackend {
 
   void setReconfigureFailure(bool fail) {
     shouldFailReconfigure_ = fail;
+  }
+
+  void setSupportsReconfigure(bool supported) {
+    supportsReconfigure_ = supported;
   }
 
   // Communicator Management
@@ -254,6 +258,9 @@ class TorchCommFake : public TorchCommBackend {
   int getLastRecvSrcForTest() const {
     return lastRecvSrc_;
   }
+  std::optional<AllReduceOptions> getLastAllReduceOptionsForTest() const {
+    return lastAllReduceOptions_;
+  }
 
  private:
   bool initialized_;
@@ -266,6 +273,8 @@ class TorchCommFake : public TorchCommBackend {
   bool aborted_{false};
   std::optional<std::chrono::milliseconds> timeout_;
   std::unordered_map<std::string, std::string> hints_;
+  InitHandle initHandle_{"fake:0"};
+  bool supportsReconfigure_{true};
   bool shouldFailReconfigure_{false};
   std::optional<ReconfigureOptions> lastReconfigureOptions_;
   std::unordered_set<void*> registered_addrs_;
@@ -273,6 +282,7 @@ class TorchCommFake : public TorchCommBackend {
   int lastSendDst_{-1};
   std::optional<RecvOptions> lastRecvOptions_;
   int lastRecvSrc_{-1};
+  std::optional<AllReduceOptions> lastAllReduceOptions_;
 };
 
 } // namespace torch::comms
