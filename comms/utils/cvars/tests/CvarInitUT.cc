@@ -133,8 +133,8 @@ TEST_F(CvarInitTest, McclIbgdaCollapsedCqModeParsesAllModes) {
   }
 }
 
-// auto is the dp_ordering default: request ooo_rw, fall back to ibta on a NIC
-// that cannot do it.
+// auto is the dp_ordering default: walk ooo_all -> ooo_rw -> ibta locally,
+// then select the weaker endpoint result for each lazy peer connection.
 TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticDefaultsToAuto) {
   MCCL_IBGDA_QP_ORDERING_SEMANTIC = MCCL_IBGDA_QP_ORDERING_SEMANTIC::ooo_all;
   ncclCvarInit();
