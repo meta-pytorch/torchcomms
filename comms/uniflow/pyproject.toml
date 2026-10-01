@@ -1,0 +1,38 @@
+# Packaging for the `uniflow` Python package, whose `_core` extension SGLang's
+# uniflow KV transfer backend imports.
+#
+# The distribution is named `torchcomms-uniflow` because the `uniflow` name on
+# PyPI belongs to an unrelated project. The import name is unaffected: this
+# installs the `uniflow` package, and `import uniflow._core` is what consumers
+# use.
+#
+# Building from source needs a GPU toolkit, either the CUDA toolkit or ROCm, and
+# spdlog, fmt and pybind11. See README.md for which of those to take from the
+# system and which to point at header trees, and for the ROCm invocation.
+
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "torchcomms-uniflow"
+version = "0.0.1"
+description = "UniFlow point-to-point transport, and its Python binding"
+readme = "python/README.md"
+requires-python = ">=3.9"
+
+[project.urls]
+Homepage = "https://github.com/meta-pytorch/torchcomms"
+
+[tool.scikit-build]
+# CMakeLists.txt sits in this directory and installs the package under uniflow/,
+# so the install tree maps onto the wheel unchanged.
+cmake.version = ">=3.20"
+cmake.source-dir = "."
+# The extension is only built when asked; this is the build that asks.
+cmake.define.UNIFLOW_BUILD_PYTHON = "ON"
+wheel.install-dir = "."
+# An sdist would otherwise sweep up the whole directory, including build
+# configuration and test trees that are not part of the distribution.
+sdist.exclude = ["**/BUCK", "**/TARGETS", "**/*.bzl", "**/PACKAGE", ".clang-tidy",
+                 "fb", "docs", ".claude"]

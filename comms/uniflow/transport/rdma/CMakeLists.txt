@@ -1,14 +1,26 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-set(UNIFLOW_RDMA_TRANSPORT_SOURCES
+# The sources that name cuda* types are translated on AMD, together with the
+# headers that declare those types; RdmaRegistrationHandle.cpp stays neutral.
+uniflow_hipify(UNIFLOW_RDMA_TRANSPORT_TRANSLATED
     ${CMAKE_CURRENT_SOURCE_DIR}/RdmaTransport.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/RdmaRegistrationHandle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RdmaSlabPool.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CopyEngine.cpp
 )
 
-set(UNIFLOW_RDMA_TRANSPORT_HEADERS
+uniflow_hipify(UNIFLOW_RDMA_TRANSPORT_TRANSLATED_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/RdmaTransport.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/RdmaSlabPool.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/CopyEngine.h
 )
+
+set(UNIFLOW_RDMA_TRANSPORT_SOURCES
+    ${UNIFLOW_RDMA_TRANSPORT_TRANSLATED}
+    ${CMAKE_CURRENT_SOURCE_DIR}/RdmaRegistrationHandle.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/RdmaResources.cpp
+)
+
+set(UNIFLOW_RDMA_TRANSPORT_HEADERS ${UNIFLOW_RDMA_TRANSPORT_TRANSLATED_HEADERS})
 
 add_library(uniflow_rdma_transport OBJECT
     ${UNIFLOW_RDMA_TRANSPORT_SOURCES}
@@ -24,3 +36,5 @@ target_include_directories(uniflow_rdma_transport PUBLIC
 )
 
 target_link_libraries(uniflow_rdma_transport PUBLIC uniflow_ibv_api)
+
+uniflow_target_hipified(uniflow_rdma_transport)

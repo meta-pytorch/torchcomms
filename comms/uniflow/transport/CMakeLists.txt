@@ -23,8 +23,14 @@ target_include_directories(uniflow_transport PUBLIC
     ${ROOT}
 )
 
-# Sub-components
-add_subdirectory(nvlink)
+# Sub-components. The intra-node GPU tier is vendor-split: NVLink on NVIDIA,
+# P2P/XGMI on AMD. MultiTransport.cpp compiles NVLink out behind
+# __HIP_PLATFORM_AMD__ and registers P2pTransportFactory in its place.
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  add_subdirectory(nvlink)
+else()
+  add_subdirectory(p2p)
+endif()
 add_subdirectory(rdma)
 if(UNIFLOW_ENABLE_TCP_TRANSPORT)
   add_subdirectory(tcp)
