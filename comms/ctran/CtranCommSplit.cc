@@ -147,6 +147,8 @@ commResult_t buildSplitShareChild(
   const uint64_t commHash =
       makeSplitCommHash(parentStatex, parentRanks, commDesc);
 
+  // Split-share children share the parent's cancellation domain but keep an
+  // independent async-error result, matching ordinary communicator splits.
   auto child = std::make_shared<CtranComm>(parent->getAbort(), parent->config_);
   child->config_.commDesc = commDesc;
   child->logMetaData_ = parent->logMetaData_;

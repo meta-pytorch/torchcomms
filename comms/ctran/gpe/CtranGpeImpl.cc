@@ -19,6 +19,7 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -907,9 +908,9 @@ void CtranGpe::Impl::gpeThreadFn() {
               statex->commHash());
           // Ensure async error is set so callers see a non-success result
           // via getResult(). The abort flag may have been set externally
-          // (e.g. comm->abort()) without setting the async exception.
-          if (comm->getAsyncError()->getAsyncResult() == commSuccess) {
-            comm->getAsyncError()->setAsyncException(
+          // (e.g. comm->abort()) without recording an async error.
+          if (comm->getAsyncResult() == commSuccess) {
+            comm->setAsyncException(
                 ctran::utils::Exception(
                     "collective skipped: communicator aborted",
                     commRemoteError));

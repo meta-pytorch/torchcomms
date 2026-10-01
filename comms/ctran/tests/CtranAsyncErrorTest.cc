@@ -3,6 +3,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <thread>
+#include <vector>
+
+#include "comms/common/AsyncErrorState.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/utils/Exception.h"
 
@@ -21,7 +25,11 @@ TEST(CtranAsyncErrorTest, SetAndGet) {
   constexpr int rank = 1;
   constexpr uint64_t commHash = 0x12345;
 
-  auto comm = std::make_unique<CtranComm>();
+  auto state = std::make_shared<comms::AsyncErrorState>();
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/false),
+      ctranConfig{},
+      state);
   // Expect no asyncError before set
   EXPECT_EQ(comm->getAsyncResult(), commSuccess);
 
@@ -38,13 +46,14 @@ TEST(CtranAsyncErrorTest, SetAndGet) {
             }
 
             // Expect the asyncError is set.
-            auto asyncError = comm->getAsyncException();
-            EXPECT_EQ(asyncError.result(), commRemoteError);
-            EXPECT_EQ(asyncError.rank(), rank);
-            EXPECT_EQ(asyncError.commHash(), commHash);
+            const auto asyncError = state->get();
+            EXPECT_EQ(asyncError.code, commRemoteError);
             EXPECT_THAT(
-                asyncError.what(),
-                ::testing::HasSubstr("test error on thread 0"));
+                asyncError.message,
+                ::testing::AllOf(
+                    ::testing::HasSubstr("test error on thread 0"),
+                    ::testing::HasSubstr("rank: 1"),
+                    ::testing::HasSubstr("commHash: 12345")));
           }
         },
         i);
