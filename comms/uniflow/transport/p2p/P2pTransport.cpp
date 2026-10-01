@@ -8,6 +8,7 @@
 #include <array>
 #include <limits>
 #include <string_view>
+#include <variant>
 
 #include "comms/uniflow/logging/Logger.h"
 
@@ -489,7 +490,14 @@ P2pTransportFactory::importSegment(
     std::span<const uint8_t> payload) {
   auto parsed = P2pRegistrationHandle::deserialize(payload);
   CHECK_RETURN(parsed);
-  const auto& p = parsed.value();
+  const auto* ipc =
+      std::get_if<P2pRegistrationHandle::IpcPayload>(&parsed.value());
+  if (ipc == nullptr) {
+    return Err(
+        ErrCode::NotImplemented,
+        "P2P importSegment: POSIX-fd VMM payloads are not supported");
+  }
+  const auto& p = *ipc;
 
   if (segmentLength != static_cast<size_t>(p.size)) {
     return Err(
@@ -519,11 +527,7 @@ P2pTransportFactory::importSegment(
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     auto* base = reinterpret_cast<void*>(p.base);
     return std::make_unique<P2pRemoteRegistrationHandle>(
-        base,
-        p.offset,
-        static_cast<size_t>(p.size),
-        /*ownedByIpc=*/false,
-        cudaApi_);
+        base, p.offset, static_cast<size_t>(p.size), /*mapping=*/nullptr);
   }
 
   auto mapped = cudaApi_->ipcOpenMemHandle(p.ipcHandle);
@@ -532,8 +536,7 @@ P2pTransportFactory::importSegment(
       mapped.value(),
       p.offset,
       static_cast<size_t>(p.size),
-      /*ownedByIpc=*/true,
-      cudaApi_);
+      std::make_unique<P2pIpcMapping>(mapped.value(), cudaApi_));
 }
 
 Result<std::unique_ptr<Transport>> P2pTransportFactory::createTransport(
