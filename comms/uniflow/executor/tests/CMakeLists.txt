@@ -11,7 +11,7 @@ target_link_libraries(uniflow_event_base_test PRIVATE
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
-    spdlog::spdlog
+    ${UNIFLOW_SPDLOG_TARGET}
     uniflow_logging
 )
 add_test(NAME EventBaseTest COMMAND uniflow_event_base_test)
@@ -25,7 +25,7 @@ target_link_libraries(uniflow_scoped_event_base_thread_test PRIVATE
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
-    spdlog::spdlog
+    ${UNIFLOW_SPDLOG_TARGET}
     uniflow_logging
 )
 add_test(NAME ScopedEventBaseThreadTest COMMAND uniflow_scoped_event_base_thread_test)
@@ -39,7 +39,7 @@ target_link_libraries(uniflow_stress_flood_test PRIVATE
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
-    spdlog::spdlog
+    ${UNIFLOW_SPDLOG_TARGET}
     uniflow_logging
 )
 add_test(NAME StressFloodTest COMMAND uniflow_stress_flood_test)

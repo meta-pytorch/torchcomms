@@ -8,6 +8,7 @@ add_executable(uniflow_tcp_server_client_test
 target_compile_features(uniflow_tcp_server_client_test PRIVATE cxx_std_20)
 target_include_directories(uniflow_tcp_server_client_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_tcp_server_client_test PRIVATE
+    uniflow_logging
     uniflow_controller
     GTest::gtest
     GTest::gtest_main
@@ -21,6 +22,7 @@ add_executable(uniflow_tcp_conn_test
 target_compile_features(uniflow_tcp_conn_test PRIVATE cxx_std_20)
 target_include_directories(uniflow_tcp_conn_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_tcp_conn_test PRIVATE
+    uniflow_logging
     uniflow_controller
     GTest::gtest
     GTest::gtest_main
@@ -34,6 +36,7 @@ add_executable(uniflow_tcp_async_accept_test
 target_compile_features(uniflow_tcp_async_accept_test PRIVATE cxx_std_20)
 target_include_directories(uniflow_tcp_async_accept_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_tcp_async_accept_test PRIVATE
+    uniflow_logging
     uniflow_controller
     uniflow_executor
     GTest::gtest
@@ -48,6 +51,7 @@ add_executable(uniflow_tcp_async_connect_test
 target_compile_features(uniflow_tcp_async_connect_test PRIVATE cxx_std_20)
 target_include_directories(uniflow_tcp_async_connect_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_tcp_async_connect_test PRIVATE
+    uniflow_logging
     uniflow_controller
     uniflow_executor
     GTest::gtest
@@ -62,6 +66,7 @@ add_executable(uniflow_tcp_async_send_recv_test
 target_compile_features(uniflow_tcp_async_send_recv_test PRIVATE cxx_std_20)
 target_include_directories(uniflow_tcp_async_send_recv_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_tcp_async_send_recv_test PRIVATE
+    uniflow_logging
     uniflow_controller
     uniflow_executor
     GTest::gtest

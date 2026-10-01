@@ -1,8 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-set(UNIFLOW_NVML_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/NvmlApi.cpp
-)
+# NVML is NVIDIA-only. Both files define the same methods and createNvmlApi();
+# exactly one is built, and the stub loads no library.
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  set(UNIFLOW_NVML_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/NvmlApi.cpp)
+else()
+  set(UNIFLOW_NVML_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/NvmlApiStub.cpp)
+endif()
 
 set(UNIFLOW_NVML_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/NvmlApi.h
