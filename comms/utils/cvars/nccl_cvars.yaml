@@ -2001,6 +2001,15 @@ cvars:
      PRiMS may be unsupported. This setting does not change NCCLX or standalone
      CTRAN policy.
 
+ - name        : MCCL_CTRAN_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Construct and initialize the MCCL-owned per-communicator CTRAN runtime.
+     When false, MCCL does not create CtranComm, CommStateX, or call ctranInit.
+     This setting is independent of NCCLX and standalone CTRAN policy. At
+     least one of MCCL_PRIMS_ENABLE and MCCL_CTRAN_ENABLE must be enabled.
+
  - name        : MCCL_SENDRECV_BLOCKING
    type        : bool
    default     : false
