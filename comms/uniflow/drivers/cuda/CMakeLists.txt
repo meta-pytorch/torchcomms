@@ -4,6 +4,7 @@ set(UNIFLOW_CUDA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDriverApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDeviceAdapter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CudaTopologyDiscovery.cpp
 )
 
 # Every source here names cuda*/cu* types, so all of them are translated on AMD,
@@ -17,7 +18,6 @@ uniflow_hipify(UNIFLOW_CUDA_TRANSLATED_HEADERS
 
 add_library(uniflow_cuda OBJECT
     ${UNIFLOW_CUDA_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/CudaTopologyDiscovery.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaTopologyDiscovery.h
     ${UNIFLOW_CUDA_TRANSLATED_HEADERS}
     # Carries no vendor types, so it is shared as-is.
@@ -36,4 +36,10 @@ target_compile_options(uniflow_cuda PRIVATE -fPIC)
 target_link_libraries(uniflow_cuda PUBLIC
     uniflow_build_config
     ${UNIFLOW_GPU_LIBRARIES}
+    uniflow_nvml
+    uniflow_sysfs
 )
+
+if(UNIFLOW_ENABLE_RDMA)
+  target_link_libraries(uniflow_cuda PUBLIC uniflow_ibv)
+endif()
