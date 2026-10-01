@@ -33,8 +33,7 @@ target_compile_features(uniflow_cuda PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_cuda PRIVATE -fPIC)
 
-target_include_directories(uniflow_cuda PUBLIC
-    ${ROOT}
+target_link_libraries(uniflow_cuda PUBLIC
+    uniflow_build_config
+    ${UNIFLOW_GPU_LIBRARIES}
 )
-
-target_link_libraries(uniflow_cuda PUBLIC ${UNIFLOW_GPU_LIBRARIES})

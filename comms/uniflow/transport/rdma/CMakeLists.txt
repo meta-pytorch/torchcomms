@@ -31,10 +31,9 @@ target_compile_features(uniflow_rdma_transport PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_rdma_transport PRIVATE -fPIC)
 
-target_include_directories(uniflow_rdma_transport PUBLIC
-    ${ROOT}
+target_link_libraries(uniflow_rdma_transport PUBLIC
+    uniflow_build_config
+    uniflow_ibv_api
 )
-
-target_link_libraries(uniflow_rdma_transport PUBLIC uniflow_ibv_api)
 
 uniflow_target_hipified(uniflow_rdma_transport)
