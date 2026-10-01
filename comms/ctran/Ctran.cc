@@ -8,6 +8,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -182,10 +183,17 @@ commResult_t CtranComm::finalize() {
   return commSuccess;
 }
 
-CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
-    : config_(commConfig), abort_(abort) {
-  asyncErr_ =
-      std::make_shared<AsyncError>(NCCL_CTRAN_ABORT_ON_ERROR, "CtranComm");
+CtranComm::CtranComm(
+    std::shared_ptr<Abort> abort,
+    ctranConfig commConfig,
+    std::shared_ptr<comms::AsyncErrorState> asyncError)
+    : config_(std::move(commConfig)),
+      asyncErr_(
+          std::make_shared<AsyncError>(
+              NCCL_CTRAN_ABORT_ON_ERROR,
+              "CtranComm",
+              std::move(asyncError))),
+      abort_(std::move(abort)) {
   if (!abort_) {
     throw ctran::utils::Exception("abort must not be empty", commInternalError);
   }
