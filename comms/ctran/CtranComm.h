@@ -19,6 +19,7 @@
 #include <folly/container/F14Set.h>
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
@@ -42,12 +43,15 @@ struct ctranConfig {
   // The creator supplies this; ctran does not read the sampling cvar
   // itself, so a comm-split child inherits the parent's decision.
   bool enableProfiler{false};
+  // Per-comm IB transport overrides. Every field unset means the IB backend
+  // resolves from cvars/topology exactly as it does without a caller config.
+  CtranIbConfig ibConfig;
 
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
         backends == other.backends && trafficClass == other.trafficClass &&
-        enableProfiler == other.enableProfiler);
+        enableProfiler == other.enableProfiler && ibConfig == other.ibConfig);
   }
 };
 

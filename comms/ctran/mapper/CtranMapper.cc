@@ -168,7 +168,8 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
   /* enable available backends */
   if (enableBackends_[CtranMapperBackend::IB]) {
     try {
-      this->ctranIb = std::make_unique<class CtranIb>(comm);
+      this->ctranIb =
+          std::make_unique<class CtranIb>(comm, comm->config_.ibConfig);
     } catch ([[maybe_unused]] const std::bad_alloc& e) {
       ctranIb = nullptr;
       enableBackends_[CtranMapperBackend::IB] = false;

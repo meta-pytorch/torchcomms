@@ -548,11 +548,21 @@ demultiplexing — notifications are demultiplexed naturally by
 
 ## 9. Configuration
 
-All sizing comes from operator cvars; the consumer does not pass
-sizing parameters.
+Sizing comes from operator cvars by default. A consumer may override it per
+comm by supplying a `CtranIbConfig`: any field it sets wins over the cvar and
+over the connection-class `NCCL_CTRAN_IB_QP_CONFIG_*` override, which lets two
+process groups in one job run different QP, CQ, and NIC budgets. Unset fields
+fall back to the cvar path described below.
+
+A `CtranIbConfig` field is one value for the whole comm, applied after the
+connection-class override. So a `numQps` set on a comm replaces the XZONE and
+XDC values for *every* peer class at once — the per-class distinction is lost
+for that comm. Leave `numQps` unset on a comm that needs per-class QP sizing.
 
 - `NCCL_CTRAN_IB_DEVICES_PER_RANK` (`numNics`) — number of physical IB
-  devices CtranIb owns. One VCG per NIC.
+  devices CtranIb owns. One VCG per NIC. Overridable per comm via
+  `CtranIbConfig::maxNumNic`, which must stay within
+  `[1, NCCL_CTRAN_IB_DEVICES_PER_RANK]`.
 - `NCCL_CTRAN_IB_NUM_VCS_PER_RANK` (`maxVcsPerPeer`) — number of
   per-peer VCs `connectVcs(peerRank)` returns. Normalised to `1` if unset
   or `<= 0`. Also acts as the divisor for the per-VC data-QP slice
@@ -564,17 +574,21 @@ sizing parameters.
 - `NCCL_CTRAN_IB_MAX_QPS` — default per-peer data-QP budget. Each per-peer
   VC ends up with `MAX_QPS / maxVcsPerPeer` data QPs unless the connection
   class overrides MAX_QPS via the `NCCL_CTRAN_IB_QP_CONFIG_*` lists
-  (see below). Must be `>= maxVcsPerPeer`.
+  (see below) or the consumer sets `CtranIbConfig::numQps`. Must be
+  `>= maxVcsPerPeer` and a multiple of it.
 - `NCCL_CTRAN_IB_QP_CONFIG_XRACK / XZONE / XDC`
   — per-connection-class tuning. The MAX_QPS field of the matching
   configList replaces `NCCL_CTRAN_IB_MAX_QPS` for that peer; the per-VC
   slice is then that value divided by `maxVcsPerPeer`. The override
   must be a multiple of `maxVcsPerPeer`.
 - `NCCL_CTRAN_IB_QP_SCALING_THRESHOLD`, `NCCL_CTRAN_IB_QP_MAX_MSGS`,
-  `NCCL_CTRAN_IB_VC_MODE` — apply per VC.
+  `NCCL_CTRAN_IB_VC_MODE` — apply per VC. Each is overridable per comm via
+  the matching `CtranIbConfig` field.
 - `NCCL_CTRAN_IB_MAX_NUM_CQE` — sizes each NIC's shared CQ. Each
   VCG[d]'s CQ now hosts every VC whose `activeDevices` contains NIC
-  `d`. Re-tune as VC counts grow.
+  `d`. Re-tune as VC counts grow. Overridable per comm via
+  `CtranIbConfig::maxNumCqe`; the CQ is a per-`CtranIb` resource, so this is
+  genuinely per-comm.
 
 Derived sizes (computed once at `CtranIb` init via the
 `ctran::ib::VcLayout(numNics, maxVcsPerPeer)` ctor):
@@ -589,8 +603,9 @@ The concrete per-VC configuration is resolved by each VC at connection time.
 For the default
 cvar path its QP count is `NCCL_CTRAN_IB_MAX_QPS / maxVcsPerPeer`; for an
 overridden connection class it is the overridden MAX_QPS divided by
-`maxVcsPerPeer`. When `maxVcsPerPeer == 1` this division is a no-op and the
-VC owns the full MAX_QPS.
+`maxVcsPerPeer`; a `CtranIbConfig::numQps` supplied by the consumer replaces
+the pre-division value in either case. When `maxVcsPerPeer == 1` this division
+is a no-op and the VC owns the full MAX_QPS.
 
 Both endpoints must agree on the three input cvars; mismatch is
 detected at the first `connectVcs(peer)` rendezvous (§ 4) by the

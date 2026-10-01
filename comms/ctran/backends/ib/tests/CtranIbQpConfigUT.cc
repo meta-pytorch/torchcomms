@@ -189,6 +189,28 @@ TEST(CtranIbQpConfigDeathTest, RejectsUnevenQpDivisionAcrossVcs) {
       "per-peer MAX_QPS.*must be a multiple of numVcs");
 }
 
+// A per-comm numQps is not checkable at the config boundary: numVcs derives
+// later from NCCL_CTRAN_IB_NUM_VCS_PER_RANK. The abort below is therefore the
+// only guard on the one constraint a config author can still violate.
+TEST(CtranIbQpConfigDeathTest, RejectsUnevenCallerConfigQpDivisionAcrossVcs) {
+  ncclCvarInit();
+  // The cvar would divide evenly; the caller config is what makes it uneven.
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 4);
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+
+  EXPECT_DEATH(
+      CtranIbVirtualConn(
+          dummyDevices,
+          /*peerRank=*/0,
+          /*comm=*/nullptr,
+          /*trafficClass=*/0,
+          /*cudaDev=*/0,
+          /*activeDevices=*/std::vector<int>{0},
+          /*numVcs=*/2,
+          CtranIbConfig{.numQps = 3}),
+      "per-peer MAX_QPS.*must be a multiple of numVcs");
+}
+
 TEST(CtranIbQpConfigTest, AlignmentDoesNotExceedBusCardCapacity) {
   ncclCvarInit();
   EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 129);

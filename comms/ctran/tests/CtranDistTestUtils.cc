@@ -111,7 +111,8 @@ void CtranDistTestFixture::TearDown() {
 
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
     bool noLocal,
-    bool tmpbufEagerAlloc) {
+    bool tmpbufEagerAlloc,
+    const CtranIbConfig& ibConfig) {
   const std::string uuid{"0"};
   uint64_t commHash =
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
@@ -126,6 +127,8 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
   comm->logMetaData_.nRanks = numRanks;
   // Mirrors the standalone-ctran-comm creator policy.
   comm->config_.enableProfiler = NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0;
+  // Set before ctranInit so CtranMapper forwards it when it builds CtranIb.
+  comm->config_.ibConfig = ibConfig;
 
   int cudaDev;
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));

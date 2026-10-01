@@ -29,6 +29,8 @@ struct CtranIbConfig {
   std::optional<int> maxNumNic;
   // IB traffic class in [0, 255].
   std::optional<int64_t> trafficClass;
+
+  bool operator==(const CtranIbConfig& other) const = default;
 };
 
 #endif

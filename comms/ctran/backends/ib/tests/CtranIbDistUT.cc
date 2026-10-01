@@ -2195,6 +2195,68 @@ TEST_F(CtranIbTest, trafficClassMalformedEnvEntryRejectedRegardlessOfOrder) {
   }
 }
 
+// The struct on ctranConfig must reach the IB VCs: CtranMapper forwards
+// comm->config_.ibConfig into CtranIb, whose resolveVcConfig then prefers it
+// over the cvars.
+TEST_F(CtranIbTest, perCommIbConfigReachesVcs) {
+  this->printTestDesc(
+      "perCommIbConfigReachesVcs",
+      "Expect a CtranIbConfig set on ctranConfig to win over the QP cvars for every VC.");
+
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 8);
+  EnvRAII envScalingTh(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, uint64_t{1048576});
+  EnvRAII envQpMaxMsgs(NCCL_CTRAN_IB_QP_MAX_MSGS, uint64_t{128});
+  EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::spray);
+
+  const CtranIbConfig perCommConfig{
+      .numQps = 4,
+      .qpScalingTh = 262144,
+      .vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb,
+      .qpMsgs = 64,
+  };
+  auto perCommComm = makeCtranComm(
+      /*noLocal=*/false, /*tmpbufEagerAlloc=*/true, perCommConfig);
+  ASSERT_NE(perCommComm, nullptr);
+
+  auto* ctranIb = perCommComm->ctran_->mapper->ctranIbPtr();
+  if (ctranIb == nullptr) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+
+  CtranIbEpochRAII epochRAII(ctranIb);
+  const int peer =
+      (perCommComm->statex_->rank() + 1) % perCommComm->statex_->nRanks();
+  COMMCHECK_TEST(ctranIb->preConnect({peer}));
+
+  CtranIbConfig resolved;
+  ASSERT_EQ(ctranIb->getVcConfig(peer, resolved), commSuccess);
+  EXPECT_EQ(resolved.numQps, 4);
+  EXPECT_EQ(resolved.qpScalingTh, 262144u);
+  EXPECT_EQ(resolved.vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
+  EXPECT_EQ(resolved.qpMsgs, 64);
+}
+
+// The comm's traffic class is the one knob that already travelled per-PG; a
+// CtranIbConfig::trafficClass on ctranConfig must beat the env-map, so the
+// new path does not regress the existing precedence.
+TEST_F(CtranIbTest, perCommIbConfigTrafficClassWinsOverEnvMap) {
+  std::vector<std::string> pgTrafficClass = {
+      trafficClassPgPrefix(this->comm) + ":200"};
+  EnvRAII env1(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+
+  auto perCommComm = makeCtranComm(
+      /*noLocal=*/false,
+      /*tmpbufEagerAlloc=*/true,
+      CtranIbConfig{.trafficClass = 144});
+  ASSERT_NE(perCommComm, nullptr);
+
+  auto* ctranIb = perCommComm->ctran_->mapper->ctranIbPtr();
+  if (ctranIb == nullptr) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+  EXPECT_EQ(ctranIb->getTrafficClass(), 144u);
+}
+
 TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
   const std::string eth = "eth0";
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);
