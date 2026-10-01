@@ -281,4 +281,22 @@ TEST_F(CollRecordTest, NullMetadata) {
   EXPECT_FALSE(collRecord_->equals(*recordWithNullMetadata));
 }
 
+TEST_F(CollRecordTest, LaunchInfoStartsUnknown) {
+  const auto& launch = collRecord_->getLaunchInfo();
+  EXPECT_EQ(launch.numBlocks(), 0);
+  EXPECT_EQ(launch.blockSize(), 0);
+  EXPECT_EQ(launch.blocksPerSm(), 0);
+}
+
+TEST_F(CollRecordTest, LaunchInfoCopiesToAnotherRecord) {
+  collRecord_->getLaunchInfo().set(16, 640, 1);
+  CollRecord replay(124, collRecord_->getCollMetadata());
+
+  replay.getLaunchInfo().copyFrom(collRecord_->getLaunchInfo());
+
+  EXPECT_EQ(replay.getLaunchInfo().numBlocks(), 16);
+  EXPECT_EQ(replay.getLaunchInfo().blockSize(), 640);
+  EXPECT_EQ(replay.getLaunchInfo().blocksPerSm(), 1);
+}
+
 } // namespace

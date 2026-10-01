@@ -129,6 +129,7 @@ CommsMaybeVoid CollLatencyPlugin::afterCollKernelEnd(
   // CollTrace names operations "AllReduce"; the GPE keys use "allreduce".
   auto collective = stringField(fields, "opName");
   folly::toLowerAscii(collective);
+  const auto& launch = curEvent.collRecord->getLaunchInfo();
   stats_.record(
       collective,
       fmt::format(
@@ -136,7 +137,10 @@ CommsMaybeVoid CollLatencyPlugin::afterCollKernelEnd(
           collective,
           stringField(fields, "algoName"),
           messageBytes(fields)),
-      roundUs(*duration));
+      roundUs(*duration),
+      launch.numBlocks(),
+      launch.blockSize(),
+      launch.blocksPerSm());
 
   auto window = window_.wlock();
   auto& opWindow = (*window)[std::move(collective)];

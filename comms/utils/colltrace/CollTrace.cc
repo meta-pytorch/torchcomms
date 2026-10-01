@@ -900,6 +900,7 @@ void CollTrace::pollGraphEvents(
               collId_.fetch_add(1), prev->getCollMetadata());
           frozenRecord->getTimingInfo().setCollEnqueueTs(timestamp);
           frozenRecord->getTimingInfo().setCollStartTs(timestamp);
+          frozenRecord->getLaunchInfo().copyFrom(prev->getLaunchInfo());
 
           auto replayEvent = std::make_unique<CollTraceEvent>(CollTraceEvent{
               .collRecord = std::move(frozenRecord),

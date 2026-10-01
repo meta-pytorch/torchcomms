@@ -4,6 +4,7 @@
 
 #include <folly/dynamic.h>
 
+#include "comms/utils/colltrace/CollLaunchInfo.h"
 #include "comms/utils/colltrace/CollMetadata.h"
 #include "comms/utils/colltrace/CollWaitEvent.h"
 
@@ -60,8 +61,10 @@ class CollRecord : public ICollRecord {
   uint64_t getCollId() const noexcept override;
   const std::shared_ptr<ICollMetadata>& getCollMetadata() const;
 
-  // Timing info is the only field that we could modify after init
+  // Timing and launch info are the only fields that we could modify after init
   CollTimingRecord& getTimingInfo();
+  CollLaunchInfo& getLaunchInfo();
+  const CollLaunchInfo& getLaunchInfo() const;
 
   std::size_t hash() const;
   bool equals(const CollRecord& other) const noexcept;
@@ -73,5 +76,6 @@ class CollRecord : public ICollRecord {
   uint64_t collId_;
   std::shared_ptr<ICollMetadata> collMetadata_;
   CollTimingRecord timingInfo_;
+  CollLaunchInfo launchInfo_;
 };
 } // namespace meta::comms::colltrace
