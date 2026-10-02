@@ -116,15 +116,18 @@ bool isVmmAt(CudaDriverApi& driver, int deviceId, uint64_t addr) {
 
 // Finds the chunks covering [begin, end) without retaining any, so a segment
 // that cannot be exported leaves no retained handle behind.
-Result<std::vector<ChunkSpan>>
-findChunks(CudaDriverApi& driver, int deviceId, uint64_t begin, uint64_t end) {
+Result<std::vector<ChunkSpan>> findChunks(
+    CudaDriverApi& driver,
+    int deviceId,
+    uint64_t begin,
+    uint64_t end,
+    size_t maxChunks) {
   std::vector<ChunkSpan> spans;
   for (uint64_t cursor = begin; cursor < end;) {
-    if (spans.size() == kP2pMaxVmmChunks) {
+    if (spans.size() == maxChunks) {
       return vmmError(
           ErrCode::ResourceExhausted,
-          "segment spans more than " + std::to_string(kP2pMaxVmmChunks) +
-              " chunks");
+          "segment spans more than " + std::to_string(maxChunks) + " chunks");
     }
     // Checked per chunk because retaining non-VMM memory crashes.
     if (!isVmmAt(driver, deviceId, cursor)) {
@@ -417,6 +420,41 @@ bool P2pVmm::isVmm(const void* ptr) const {
       isVmmAt(*driver_, deviceId_, reinterpret_cast<uint64_t>(ptr));
 }
 
+Result<bool> P2pVmm::grantPeerAccess(
+    void* ptr,
+    size_t len,
+    std::span<const int> peerDevices) const {
+  const auto begin = reinterpret_cast<uint64_t>(ptr);
+  if (len == 0 || len > std::numeric_limits<uint64_t>::max() - begin) {
+    return vmmError(ErrCode::InvalidArgument, "invalid segment range");
+  }
+  if (peerDevices.empty()) {
+    return true;
+  }
+  auto spans = findChunks(
+      *driver_,
+      deviceId_,
+      begin,
+      begin + len,
+      std::numeric_limits<size_t>::max());
+  if (spans.hasError()) {
+    return false;
+  }
+  // The owner's device is listed again in case a runtime replaces, rather
+  // than amends, the access of the locations it is not given.
+  std::vector<CUmemAccessDesc> descs{readWriteAccess(deviceId_)};
+  for (const int device : peerDevices) {
+    descs.push_back(readWriteAccess(device));
+  }
+  // One call per chunk: a single call across chunks is not documented to
+  // work on every runtime.
+  for (const auto& span : spans.value()) {
+    CHECK_EXPR(driver_->cuMemSetAccess(
+        toDevicePtr(span.base), span.size, descs.data(), descs.size()));
+  }
+  return true;
+}
+
 Result<std::unique_ptr<P2pRegistrationHandle>> P2pVmm::exportSegment(
     void* ptr,
     size_t len) const {
@@ -427,7 +465,8 @@ Result<std::unique_ptr<P2pRegistrationHandle>> P2pVmm::exportSegment(
   // Before any retain: a failure past that point leaves the chunks retained.
   auto scope = currentProcessScope();
   CHECK_RETURN(scope);
-  auto spans = findChunks(*driver_, deviceId_, begin, begin + len);
+  auto spans =
+      findChunks(*driver_, deviceId_, begin, begin + len, kP2pMaxVmmChunks);
   CHECK_RETURN(spans);
   CHECK_EXPR(checkFdBudget(spans.value().size()));
   auto retained = retainChunks(*driver_, begin, spans.value());

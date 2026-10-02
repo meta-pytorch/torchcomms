@@ -365,6 +365,10 @@ class P2pTransportFactoryTest : public ::testing::Test {
     // for hipMalloc memory.
     ON_CALL(*driver_, cuMemGetAccess(_, _, _))
         .WillByDefault(Return(Err(ErrCode::InvalidArgument, "not VMM")));
+    // VMM registration grants access to every peer device.
+    ON_CALL(*mock_, getDeviceCount()).WillByDefault(Return(Result<int>(2)));
+    ON_CALL(*mock_, deviceCanAccessPeer(_, _))
+        .WillByDefault(Return(Result<bool>(true)));
 #endif
   }
 
@@ -646,6 +650,7 @@ TEST_F(P2pTransportFactoryTest, RegisterNonVmmUsesIpcWithoutRetaining) {
         return Err(ErrCode::InvalidArgument, "not VMM");
       });
   EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, _, _, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
 
   auto factory = makeFactory();
@@ -673,6 +678,7 @@ TEST_F(P2pTransportFactoryTest, RegisterWithVmmDisabledExportsVmmThroughIpc) {
   alloc.serveExport(*driver_);
   EXPECT_CALL(*driver_, isCuMemSupported()).Times(0);
   EXPECT_CALL(*driver_, cuMemGetAccess(_, _, _)).Times(0);
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, _, _, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
 
   auto factory = makeFactory(/*enableVmm=*/false);
@@ -711,6 +717,83 @@ TEST_F(P2pTransportFactoryTest, RegisterVmmExportsEachChunkAtOffset) {
     ASSERT_NE(flags, -1) << "exported fd " << fd << " is closed";
     EXPECT_NE(flags & FD_CLOEXEC, 0) << "fd " << fd;
   }
+}
+
+TEST_F(P2pTransportFactoryTest, RegisterVmmGrantsPeersAccessBeforeExport) {
+  const FakeVmmAllocation alloc(kExportVa, {2 * kMiB, 4 * kMiB});
+  alloc.serveExport(*driver_);
+  ON_CALL(*mock_, getDeviceCount()).WillByDefault(Return(Result<int>(3)));
+  // Device 2 cannot reach device 0 and gets no access.
+  ON_CALL(*mock_, deviceCanAccessPeer(2, 0))
+      .WillByDefault(Return(Result<bool>(false)));
+  std::vector<int> first;
+  std::vector<int> second;
+  {
+    InSequence seq;
+    EXPECT_CALL(
+        *driver_, cuMemSetAccess(toDevicePtr(kExportVa), 2 * kMiB, _, _))
+        .WillOnce(recordGrantedDevices(first));
+    EXPECT_CALL(
+        *driver_,
+        cuMemSetAccess(toDevicePtr(kExportVa + 2 * kMiB), 4 * kMiB, _, _))
+        .WillOnce(recordGrantedDevices(second));
+    EXPECT_CALL(*driver_, cuMemExportToShareableHandle(_, _, _, _)).Times(2);
+  }
+
+  auto factory = makeFactory();
+  Segment segment(hostPtr(kExportVa + 0x1000), 5 * kMiB, MemoryType::VRAM, 0);
+  auto handle = factory.registerSegment(segment);
+  ASSERT_FALSE(handle.hasError());
+  EXPECT_FALSE(sharesOverIpc(*handle.value()));
+  // The owner's device is listed with the peer.
+  EXPECT_EQ(first, (std::vector<int>{0, 1}));
+  EXPECT_EQ(second, (std::vector<int>{0, 1}));
+}
+
+TEST_F(P2pTransportFactoryTest, RegisterVmmOnLoneDeviceGrantsNothing) {
+  const FakeVmmAllocation alloc(kExportVa, {2 * kMiB});
+  alloc.serveExport(*driver_);
+  ON_CALL(*mock_, getDeviceCount()).WillByDefault(Return(Result<int>(1)));
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, _, _, _)).Times(0);
+
+  auto factory = makeFactory();
+  Segment segment(hostPtr(kExportVa), 2 * kMiB, MemoryType::VRAM, 0);
+  auto handle = factory.registerSegment(segment);
+  ASSERT_FALSE(handle.hasError());
+  EXPECT_FALSE(sharesOverIpc(*handle.value()));
+}
+
+TEST_F(P2pTransportFactoryTest, RegisterVmmFailsWhenGrantFails) {
+  // Falling back to IPC would leave peer get() copies faulting on the
+  // segment.
+  const FakeVmmAllocation alloc(kExportVa, {2 * kMiB});
+  alloc.serveExport(*driver_);
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, _, _, _))
+      .WillOnce(Return(Err(ErrCode::DriverError, "set access failed")));
+  EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
+  EXPECT_CALL(*mock_, ipcGetMemHandle(_)).Times(0);
+
+  auto factory = makeFactory();
+  Segment segment(hostPtr(kExportVa), 2 * kMiB, MemoryType::VRAM, 0);
+  auto handle = factory.registerSegment(segment);
+  ASSERT_TRUE(handle.hasError());
+  EXPECT_THAT(handle.error().message(), HasSubstr("set access failed"));
+}
+
+TEST_F(P2pTransportFactoryTest, RegisterVmmFailsWhenPeerQueryFails) {
+  const FakeVmmAllocation alloc(kExportVa, {2 * kMiB});
+  alloc.serveExport(*driver_);
+  ON_CALL(*mock_, deviceCanAccessPeer(_, _))
+      .WillByDefault(Return(Err(ErrCode::DriverError, "peer query failed")));
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, _, _, _)).Times(0);
+  EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
+  EXPECT_CALL(*mock_, ipcGetMemHandle(_)).Times(0);
+
+  auto factory = makeFactory();
+  Segment segment(hostPtr(kExportVa), 2 * kMiB, MemoryType::VRAM, 0);
+  auto handle = factory.registerSegment(segment);
+  ASSERT_TRUE(handle.hasError());
+  EXPECT_THAT(handle.error().message(), HasSubstr("peer query failed"));
 }
 
 TEST_F(P2pTransportFactoryTest, RegisterVmmExportFailureFallsBackToIpc) {
@@ -757,9 +840,9 @@ TEST_F(P2pTransportFactoryTest, RegisterReportsBothErrorsWhenVmmAndIpcFail) {
 TEST_F(P2pTransportFactoryTest, RegisterVmmOverFdBudgetFallsBackToIpc) {
   const FakeVmmAllocation alloc(kExportVa, {2 * kMiB, 2 * kMiB});
   alloc.serveExport(*driver_);
-  // The walk finds both chunks, then the budget rejects them before any
-  // chunk is retained.
-  EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _)).Times(2);
+  // The grant and then the export walk both chunks; the budget rejects them
+  // before any chunk is retained.
+  EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _)).Times(4);
   EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
   EXPECT_CALL(*driver_, cuMemExportToShareableHandle(_, _, _, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
@@ -788,7 +871,9 @@ TEST_F(
           SetArgPointee<1>(size_t{kMiB}),
           Return(Ok())));
   EXPECT_CALL(*driver_, cuMemGetAccess(_, _, _)).Times(AnyNumber());
-  EXPECT_CALL(*driver_, cuMemGetAccess(_, _, tail));
+  // Once for the grant and once for the export; neither proceeds.
+  EXPECT_CALL(*driver_, cuMemGetAccess(_, _, tail)).Times(2);
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, _, _, _)).Times(0);
   EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
   EXPECT_CALL(*driver_, cuMemExportToShareableHandle(_, _, _, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
@@ -801,14 +886,16 @@ TEST_F(
 }
 
 TEST_F(P2pTransportFactoryTest, RegisterVmmOverChunkCapFallsBackToIpc) {
-  // One page-sized chunk more than a payload may carry: the walk stops at
-  // the cap without retaining any chunk.
+  // One page-sized chunk more than a payload may carry: the grant covers
+  // every chunk, then the export walk stops at the cap without retaining any.
   static constexpr uint64_t kChunk = 4096;
   serveChunkRanges([](uint64_t addr) {
     return std::pair<uint64_t, size_t>{addr / kChunk * kChunk, kChunk};
   });
   EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _))
-      .Times(kP2pMaxVmmChunks);
+      .Times(2 * kP2pMaxVmmChunks + 1);
+  EXPECT_CALL(*driver_, cuMemSetAccess(_, kChunk, _, _))
+      .Times(kP2pMaxVmmChunks + 1);
   EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
 
@@ -829,7 +916,7 @@ TEST_F(P2pTransportFactoryTest, RegisterVmmRejectsRangeMissingItsAddress) {
   serveChunkRanges([](uint64_t addr) {
     return std::pair<uint64_t, size_t>{addr + 4096, 2 * kMiB};
   });
-  EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _)).Times(1);
+  EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _)).Times(2);
   EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
 
@@ -848,7 +935,7 @@ TEST_F(P2pTransportFactoryTest, RegisterVmmRejectsOverlappingChunks) {
         addr < kExportVa + 2 * kMiB ? kExportVa : kExportVa + kMiB;
     return std::pair<uint64_t, size_t>{base, 2 * kMiB};
   });
-  EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _)).Times(2);
+  EXPECT_CALL(*driver_, cuMemGetAddressRange_v2(_, _, _)).Times(4);
   EXPECT_CALL(*driver_, cuMemRetainAllocationHandle(_, _)).Times(0);
   EXPECT_CALL(*mock_, ipcGetMemHandle(_)).WillOnce(Return(makePatternHandle()));
 

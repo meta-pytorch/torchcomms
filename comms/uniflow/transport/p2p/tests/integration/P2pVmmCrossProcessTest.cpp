@@ -3,8 +3,9 @@
 /// Cross-process integration test for VMM segments over the P2P (XGMI)
 /// transport. Two MPI ranks on one host each own a GPU and a VMM segment, and
 /// each imports the other's segment through pidfd_getfd: the import path whose
-/// POSIX-fd handle convention differs across ROCm runtimes. Runs with 2 ranks
-/// on one host (nnodes=1, ppn=2).
+/// POSIX-fd handle convention differs across ROCm runtimes. Each rank also gets
+/// from the peer's hipMalloc segment, shared over HIP IPC, into its VMM
+/// segment. Runs with 2 ranks on one host (nnodes=1, ppn=2).
 
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
@@ -14,6 +15,7 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -93,6 +95,12 @@ std::optional<int> yamaPtraceScope() {
   return scope;
 }
 
+struct CudaFree {
+  void operator()(void* ptr) const {
+    (void)cudaFree(ptr);
+  }
+};
+
 class P2pVmmCrossProcessTest : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
@@ -115,6 +123,8 @@ class P2pVmmCrossProcessTest : public MpiBaseTestFixture {
     if (transport_) {
       transport_->shutdown();
     }
+    // Close the peer's IPC mapping before the peer frees the memory behind it.
+    peerDevice_.reset();
     MPI_Barrier(MPI_COMM_WORLD);
     // Withdraw the ptrace grant once the peer can no longer pull fds, so it
     // does not outlive the case.
@@ -174,6 +184,26 @@ class P2pVmmCrossProcessTest : public MpiBaseTestFixture {
     exportId_ = std::move(id.value());
   }
 
+  // A hipMalloc segment beside the VMM one, which the P2P tier shares over HIP
+  // IPC.
+  void registerDeviceSegment() {
+    ASSERT_CUDA(cudaSetDevice(localRank));
+    void* ptr = nullptr;
+    ASSERT_CUDA(cudaMalloc(&ptr, len()));
+    deviceBuffer_.reset(ptr);
+    deviceSegment_.emplace(ptr, len(), MemoryType::VRAM, localRank);
+    auto reg = factory_->registerSegment(*deviceSegment_);
+    ASSERT_TRUE(reg.hasValue()) << reg.error().message();
+    deviceReg_.emplace(std::move(reg.value()));
+    const auto* p2p = dynamic_cast<const P2pRegistrationHandle*>(
+        SegmentTest::findHandle(*deviceReg_, TransportType::NVLink));
+    ASSERT_NE(p2p, nullptr) << "no P2P handle";
+    ASSERT_EQ(p2p->sharingMode(), P2pSharingMode::Ipc);
+    auto id = deviceReg_->exportId();
+    ASSERT_TRUE(id.hasValue()) << id.error().message();
+    deviceExportId_ = std::move(id.value());
+  }
+
   void bindTransport(const std::vector<uint8_t>& peerTopology) {
     auto transport = factory_->createTransport(peerTopology);
     ASSERT_TRUE(transport.hasValue()) << transport.error().message();
@@ -230,6 +260,34 @@ class P2pVmmCrossProcessTest : public MpiBaseTestFixture {
     EXPECT_EQ(readWords(localRank, buffer_.ptr(), len()), pattern);
   }
 
+  void importPeerDeviceSegment(const std::vector<uint8_t>& peerId) {
+    auto peer = factory_->importSegment(peerId);
+    ASSERT_TRUE(peer.hasValue()) << peer.error().message();
+    peerDevice_.emplace(std::move(peer.value()));
+  }
+
+  // The initiator clears its VMM segment and gets bytes from the peer's
+  // hipMalloc segment into it. Only the first bytes land, so a get that
+  // writes past its length or misses a chunk fails the check.
+  void getFromPeerDevice(
+      int initiator,
+      size_t bytes,
+      const std::vector<uint32_t>& pattern) {
+    if (globalRank != initiator) {
+      return;
+    }
+    ASSERT_NO_FATAL_FAILURE(zeroDevice(localRank, buffer_.ptr(), len()));
+    auto status =
+        transport_->get(wholeSegment(*reg_, *peerDevice_, bytes)).get();
+    ASSERT_FALSE(status.hasError()) << status.error().message();
+    std::vector<uint32_t> expected(len() / sizeof(uint32_t), 0);
+    std::copy(
+        pattern.begin(),
+        pattern.begin() + bytes / sizeof(uint32_t),
+        expected.begin());
+    EXPECT_EQ(readWords(localRank, buffer_.ptr(), len()), expected);
+  }
+
   size_t len() const {
     return buffer_.size();
   }
@@ -240,13 +298,18 @@ class P2pVmmCrossProcessTest : public MpiBaseTestFixture {
   ScopedEventBaseThread evbThread_;
   // Declared before the factory so the buffer outlives every registration.
   VmmBuffer buffer_{driver_};
+  std::unique_ptr<void, CudaFree> deviceBuffer_;
   std::optional<Segment> segment_;
+  std::optional<Segment> deviceSegment_;
   std::unique_ptr<MultiTransportFactory> factory_;
   std::optional<RegisteredSegment> reg_;
+  std::optional<RegisteredSegment> deviceReg_;
   std::vector<uint8_t> exportId_;
+  std::vector<uint8_t> deviceExportId_;
   std::unique_ptr<MultiTransport> transport_;
   std::vector<uint8_t> bindInfo_;
   std::optional<RemoteRegisteredSegment> peer_;
+  std::optional<RemoteRegisteredSegment> peerDevice_;
 };
 
 // Each rank imports the other's VMM segment across processes, then each in
@@ -271,6 +334,42 @@ TEST_F(P2pVmmCrossProcessTest, PutAndGetBetweenProcessesOverP2p) {
   EXPECT_EQ(
       transferCounts(*transport_),
       (TransferCounts{.p2p = 2, .rdma = 0, .tcp = 0}));
+}
+
+// Each rank in turn gets from the peer's hipMalloc segment, imported over HIP
+// IPC, into its own VMM segment. ROCm runs such a copy on the peer's device,
+// which can write the VMM segment only through the access its registration
+// granted; without it the copy faults the GPU.
+TEST_F(P2pVmmCrossProcessTest, GetFromPeerIpcSegmentIntoVmmSegment) {
+  ASSERT_NO_FATAL_FAILURE(step([this] { registerSegment(); }));
+  ASSERT_NO_FATAL_FAILURE(step([this] { registerDeviceSegment(); }));
+  const auto peerTopology = mpiExchange(factory_->getTopology(), globalRank);
+  ASSERT_NO_FATAL_FAILURE(step([&] { bindTransport(peerTopology); }));
+  const auto peerInfo = mpiExchange(bindInfo_, globalRank);
+  ASSERT_NO_FATAL_FAILURE(step([&] { connectTransport(peerInfo); }));
+  const auto peerId = mpiExchange(deviceExportId_, globalRank);
+  ASSERT_NO_FATAL_FAILURE(step([&] { importPeerDeviceSegment(peerId); }));
+
+  // 32 KiB is the smallest get that faulted without the grant; the whole
+  // segment spans both chunks.
+  const std::vector<size_t> sizes{size_t{32} << 10, len()};
+  for (int initiator = 0; initiator < kRanks; ++initiator) {
+    const auto pattern = roundPattern(initiator);
+    ASSERT_NO_FATAL_FAILURE(step([&] {
+      if (globalRank != initiator) {
+        writeWords(localRank, deviceBuffer_.get(), pattern);
+      }
+    }));
+    for (const size_t bytes : sizes) {
+      ASSERT_NO_FATAL_FAILURE(
+          step([&] { getFromPeerDevice(initiator, bytes, pattern); }));
+    }
+  }
+
+  // Each rank initiated one get per size.
+  EXPECT_EQ(
+      transferCounts(*transport_),
+      (TransferCounts{.p2p = sizes.size(), .rdma = 0, .tcp = 0}));
 }
 
 } // namespace

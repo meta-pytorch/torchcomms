@@ -139,6 +139,11 @@ class P2pTransportFactory : public TransportFactory {
   /// whose retain adds a reference, VMM memory the owner frees after it was
   /// registered stays allocated until process exit.
   ///
+  /// Registering VMM memory first grants read-write access to it to every
+  /// other device that can access this one, since peers run get() copies into
+  /// it; a failed grant fails the registration. The grant changes the owner's
+  /// mapping and is kept after deregistration.
+  ///
   /// @p enableVmm false restores IPC-only sharing: VMM memory is exported
   /// through IPC and peer VMM payloads are rejected without driver calls.
   P2pTransportFactory(

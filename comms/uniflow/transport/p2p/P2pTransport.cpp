@@ -53,6 +53,26 @@ Result<int32_t> decodeDeviceId(
   return deviceId;
 }
 
+#if defined(__HIP_PLATFORM_AMD__)
+// The devices other than deviceId that can access its memory.
+Result<std::vector<int>> peerDevices(CudaApi& cudaApi, int deviceId) {
+  auto count = cudaApi.getDeviceCount();
+  CHECK_RETURN(count);
+  std::vector<int> peers;
+  for (int device = 0; device < count.value(); ++device) {
+    if (device == deviceId) {
+      continue;
+    }
+    auto canAccess = cudaApi.deviceCanAccessPeer(device, deviceId);
+    CHECK_RETURN(canAccess);
+    if (canAccess.value()) {
+      peers.push_back(device);
+    }
+  }
+  return peers;
+}
+#endif
+
 // TODO(D110509654): the event-completion machinery below (poll -> re-dispatch
 // on the EventBase) is structurally shared with NVLinkTransport::transfer, but
 // the two are not interchangeable today: NVLink fulfills promises via
@@ -484,6 +504,20 @@ P2pTransportFactory::registerSegment(Segment& segment) {
 
   std::optional<Err> vmmFailure;
   if (enableVmm_ && vmm_.isVmm(segment.mutable_data())) {
+    // Peer devices write this segment when they run a get() from an
+    // IPC-imported buffer, whichever way the segment itself is shared. Without
+    // the grant that copy faults the GPU, so a failed grant fails the
+    // registration instead of falling back.
+    auto peers = peerDevices(*cudaApi_, deviceId_);
+    CHECK_RETURN(peers);
+    auto granted = vmm_.grantPeerAccess(
+        segment.mutable_data(), segment.len(), peers.value());
+    CHECK_RETURN(granted);
+    if (!granted.value()) {
+      UNIFLOW_LOG_WARN(
+          "P2P registerSegment: segment is not a well-formed VMM range; peer "
+          "access was not granted");
+    }
     auto vmm = vmm_.exportSegment(segment.mutable_data(), segment.len());
     if (vmm.hasValue()) {
       return std::move(vmm).value();
