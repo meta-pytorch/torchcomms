@@ -3557,9 +3557,10 @@ cvars:
      lifts the ordering fence in front of an atomic, and every prims signal is
      an ATOMIC_FETCH_AND_ADD. ConnectX-7 reports ooo_rw but not ooo_all, so it
      resolves one rung lower. Set ibta to get the pre-change behaviour back.
-     Because ranks resolve independently, a job spanning both NIC generations
-     will resolve different tiers and be rejected at peer connect; pin every
-     rank to ooo_rw in that case.
+     Each rank first narrows across its local NICs. When two peers lazily
+     connect, they select the weaker endpoint result before creating that
+     pair's QPs. A ConnectX-8/ConnectX-7 pair therefore resolves to ooo_rw
+     without downgrading unrelated ConnectX-8 pairs.
      ibta leaves the QPC dp_ordering bits untouched, so it is a wire-level
      no-op and the QP keeps whatever the NIC's mlxreg admin default gives it.
      Note this does NOT mean the QP runs strict IBTA: on a ConnectX-8 rail with
@@ -3574,9 +3575,11 @@ cvars:
      tier fails transport initialization when the NIC lacks it; there is no
      silent downgrade, because that would turn an A/B into a no-op. Only auto
      falls back.
-     All ranks must end up on the same tier or peer connection fails. Under
-     auto that is reachable without anyone misconfiguring anything, if the job
-     spans NICs of differing capability; pin every rank to ibta in that case.
+     Both endpoints use the per-peer tier selected during lazy materialization.
+     The subsequent QP exchange verifies the tier as a defensive invariant.
+     Every rank must use the same policy. Auto performs an additional pairwise
+     bootstrap exchange, while explicit policies skip it so ibta remains a
+     deployment rollback path.
      Host-only loopback QPs always use ibta.
      This policy is NVIDIA-only and ignored on AMD.
 
