@@ -1485,12 +1485,15 @@ commResult_t ctranAllReduceRing(
             func, numThreads, config.launchSharedMemBytes())
       : 0;
   config.args.devState_d = comm->ctran_->algo->getDevState();
+  const float avgPreMul =
+      redOp == commAvg ? static_cast<float>(1.0 / nRanks) : 1.0f;
   ctran::allreduce::ring::KernArgs kernArgs{
       .sendbuff = sendbuff,
       .recvbuff = recvbuff,
       .datatype = datatype,
       .redOp = redOp,
       .count = count,
+      .avgPreMul = avgPreMul,
       .chunkSize = hostResource.chunkSize,
       .numChunks = hostResource.numChunks,
       .minShardSize = hostArgs.minShardSize,
