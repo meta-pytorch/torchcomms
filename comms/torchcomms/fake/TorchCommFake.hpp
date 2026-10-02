@@ -169,6 +169,10 @@ class TorchCommFake : public TorchCommBackend {
     shouldFailReconfigure_ = fail;
   }
 
+  void setReconfigureThrows(bool shouldThrow) {
+    shouldThrowReconfigure_ = shouldThrow;
+  }
+
   void setSupportsReconfigure(bool supported) {
     supportsReconfigure_ = supported;
   }
@@ -276,6 +280,7 @@ class TorchCommFake : public TorchCommBackend {
   InitHandle initHandle_{"fake:0"};
   bool supportsReconfigure_{true};
   bool shouldFailReconfigure_{false};
+  bool shouldThrowReconfigure_{false};
   std::optional<ReconfigureOptions> lastReconfigureOptions_;
   std::unordered_set<void*> registered_addrs_;
   std::optional<SendOptions> lastSendOptions_;

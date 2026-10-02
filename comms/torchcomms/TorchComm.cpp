@@ -502,17 +502,31 @@ InitHandle TorchComm::getInitHandle() const {
 
 c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
     const ReconfigureOptions& opts) {
-  auto work = impl_->reconfigure(opts);
-  work->waitBlocking();
+  // The previous membership is no longer authoritative while reconfiguration
+  // is in progress. A failed backend that remains initialized restores its
+  // current membership below.
+  ranks_.clear();
+  try {
+    auto work = impl_->reconfigure(opts);
+    work->waitBlocking();
 
-  if (work->isCompleted()) {
-    initRanks();
-    runReconfigureHooks();
-  } else {
-    ranks_.clear();
+    if (work->isCompleted()) {
+      initRanks();
+      runReconfigureHooks();
+    } else if (impl_->isInitialized()) {
+      // A backend may reject a reconfigure without invalidating its existing
+      // communicator. Keep the wrapper's membership consistent with the
+      // backend in that case.
+      initRanks();
+    }
+
+    return work;
+  } catch (...) {
+    if (impl_->isInitialized()) {
+      initRanks();
+    }
+    throw;
   }
-
-  return work;
 }
 
 void TorchComm::abort() {

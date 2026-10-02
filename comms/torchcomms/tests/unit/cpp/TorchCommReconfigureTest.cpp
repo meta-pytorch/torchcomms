@@ -146,4 +146,38 @@ TEST_F(TorchCommReconfigureTest, ReconfigureSuccessThenFailureClearsRanks) {
   EXPECT_TRUE(comm->getRanks().empty());
 }
 
+TEST_F(TorchCommReconfigureTest, ReconfigureExceptionClearsRanksAndCanRecover) {
+  auto comm = createComm(/*enable_reconfigure=*/true);
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+
+  comm->reconfigure(makeOpts());
+  ASSERT_EQ(comm->getRanks(), std::vector<int>{0});
+
+  backend->setReconfigureThrows(true);
+  EXPECT_THROW(comm->reconfigure(makeOpts()), std::runtime_error);
+  EXPECT_TRUE(comm->getRanks().empty());
+
+  backend->setReconfigureThrows(false);
+  EXPECT_NO_THROW(comm->reconfigure(makeOpts()));
+  EXPECT_EQ(comm->getRanks(), std::vector<int>{0});
+}
+
+TEST_F(TorchCommReconfigureTest, UnsupportedReconfigurePreservesMembership) {
+  auto comm = createComm();
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->setSupportsReconfigure(false);
+  ASSERT_TRUE(backend->isInitialized());
+  ASSERT_EQ(comm->getRanks(), std::vector<int>{0});
+
+  EXPECT_THROW(comm->reconfigure(makeOpts()), std::runtime_error);
+
+  EXPECT_TRUE(backend->isInitialized());
+  EXPECT_EQ(comm->getRanks(), std::vector<int>{0});
+  EXPECT_NE(comm->split({0}, "child"), nullptr);
+}
+
 } // namespace torch::comms
