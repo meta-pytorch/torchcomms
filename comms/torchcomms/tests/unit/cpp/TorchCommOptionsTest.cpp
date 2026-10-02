@@ -5,6 +5,7 @@
 
 #include <ATen/ATen.h>
 #include <cstdlib>
+#include <string>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
@@ -14,6 +15,7 @@
 
 using ::testing::_;
 using ::testing::DoAll;
+using ::testing::HasSubstr;
 using ::testing::InSequence;
 using ::testing::Invoke;
 using ::testing::NiceMock;
@@ -165,7 +167,70 @@ TEST_F(BackendWrapperTest, SendThreadsTagToBackend) {
   EXPECT_EQ(fake->getLastSendDstForTest(), 1);
 }
 
+TEST_F(BackendWrapperTest, OperationTimeoutPrecedence) {
+  const auto defaultTimeout = std::chrono::milliseconds(7654);
+  CommOptions options;
+  options.timeout = defaultTimeout;
+  auto comm = new_comm(
+      kBackendName, at::Device(at::kCPU), "collective_timeout", options);
+  ASSERT_NE(comm, nullptr);
+  auto* fake = dynamic_cast<TorchCommFake*>(comm->getBackendImpl().get());
+  ASSERT_NE(fake, nullptr);
+  auto wrapper = c10::make_intrusive<BackendWrapper>(comm);
+
+  std::vector<at::Tensor> tensors = {at::ones({4}, at::kFloat)};
+  c10d::AllreduceOptions opts;
+  ASSERT_EQ(opts.timeout, c10d::kUnsetTimeout);
+  EXPECT_TRUE(wrapper->allreduce(tensors, opts)->wait());
+
+  ASSERT_TRUE(fake->getLastAllReduceOptionsForTest().has_value());
+  EXPECT_EQ(fake->getLastAllReduceOptionsForTest()->timeout, kNoTimeout);
+  EXPECT_EQ(comm->getOptions().timeout, defaultTimeout);
+
+  const auto runtimeTimeout = std::chrono::milliseconds(4321);
+  wrapper->setTimeout(runtimeTimeout);
+  EXPECT_TRUE(wrapper->allreduce(tensors, opts)->wait());
+  ASSERT_TRUE(fake->getLastAllReduceOptionsForTest().has_value());
+  EXPECT_EQ(fake->getLastAllReduceOptionsForTest()->timeout, runtimeTimeout);
+  EXPECT_EQ(wrapper->getOptions()->timeout, runtimeTimeout);
+
+  wrapper->send(tensors, /*dstRank=*/0, /*tag=*/1);
+  ASSERT_TRUE(fake->getLastSendOptionsForTest().has_value());
+  EXPECT_EQ(fake->getLastSendOptionsForTest()->timeout, runtimeTimeout);
+
+  const auto perOperationTimeout = std::chrono::milliseconds(1234);
+  opts.timeout = perOperationTimeout;
+  EXPECT_TRUE(wrapper->allreduce(tensors, opts)->wait());
+  ASSERT_TRUE(fake->getLastAllReduceOptionsForTest().has_value());
+  EXPECT_EQ(
+      fake->getLastAllReduceOptionsForTest()->timeout, perOperationTimeout);
+}
+
 #ifdef C10D_BACKEND_HAS_RECONFIGURE
+TEST_F(BackendWrapperTest, UnsupportedReconfigureReportsBackendName) {
+  auto* fake = getFakeBackend();
+  ASSERT_NE(fake, nullptr);
+  fake->setSupportsReconfigure(false);
+  EXPECT_FALSE(wrapper_->supportsReconfigure());
+
+  try {
+    wrapper_->get_reconfigure_handle();
+    FAIL() << "Expected get_reconfigure_handle failure";
+  } catch (const c10::Error& error) {
+    EXPECT_THAT(error.what(), HasSubstr(kBackendName));
+    EXPECT_THAT(error.what(), HasSubstr("does not support reconfigure"));
+  }
+
+  c10d::ReconfigureOptions opts;
+  try {
+    wrapper_->reconfigure(opts);
+    FAIL() << "Expected reconfigure failure";
+  } catch (const c10::Error& error) {
+    EXPECT_THAT(error.what(), HasSubstr(kBackendName));
+    EXPECT_THAT(error.what(), HasSubstr("does not support reconfigure"));
+  }
+}
+
 TEST_F(BackendWrapperTest, UninitializedCommDefersMembershipUntilReconfigure) {
   CommOptions options;
   options.enable_reconfigure = true;
@@ -177,6 +242,14 @@ TEST_F(BackendWrapperTest, UninitializedCommDefersMembershipUntilReconfigure) {
   EXPECT_EQ(backend->getSize(), -1);
   EXPECT_TRUE(backend->supportsReconfigure());
   EXPECT_EQ(backend->get_reconfigure_handle(), comm->getInitHandle());
+
+  auto* fake = dynamic_cast<TorchCommFake*>(comm->getBackendImpl().get());
+  ASSERT_NE(fake, nullptr);
+  fake->setRank(1);
+  fake->setSize(2);
+  EXPECT_EQ(backend->getRank(), -1);
+  EXPECT_EQ(backend->getSize(), -1);
+  EXPECT_EQ(backend->get_reconfigure_handle(), "fake:0");
 
   c10d::ReconfigureOptions opts;
   opts.uuid = 44;
@@ -217,7 +290,7 @@ TEST_F(BackendWrapperTest, ReconfigureForwardsOptionsAndRefreshesMembership) {
 
 TEST_F(
     BackendWrapperTest,
-    ReconfigurePreservesUnorderedHandlesAndDefaultTimeout) {
+    ReconfigurePreservesUnorderedHandlesAndUnsetTimeout) {
   c10d::ReconfigureOptions opts;
   opts.uuid = 43;
   opts.handles = std::unordered_set<c10d::ReconfigureHandle>{"fake:0", "peer"};
@@ -229,12 +302,62 @@ TEST_F(
   EXPECT_TRUE(received->hints.empty());
 }
 
-TEST_F(BackendWrapperTest, FailedReconfigureDoesNotPublishMembership) {
+TEST_F(BackendWrapperTest, ReconfigureUsesRuntimeTimeoutWhenUnset) {
+  const auto runtimeTimeout = std::chrono::milliseconds(2345);
+  wrapper_->setTimeout(runtimeTimeout);
+  c10d::ReconfigureOptions opts;
+  opts.handles = std::vector<c10d::ReconfigureHandle>{"fake:0"};
+
+  EXPECT_TRUE(wrapper_->reconfigure(opts)->wait());
+
+  const auto& received = getFakeBackend()->getLastReconfigureOptions();
+  ASSERT_TRUE(received.has_value());
+  EXPECT_EQ(received->timeout, runtimeTimeout);
+}
+
+TEST_F(BackendWrapperTest, ReconfigureForwardsDuplicateOpaqueHandles) {
+  const std::vector<c10d::ReconfigureHandle> handles{"fake:0", "fake:0"};
+  getFakeBackend()->setSize(2);
+  c10d::ReconfigureOptions opts;
+  opts.handles = handles;
+
+  EXPECT_TRUE(wrapper_->reconfigure(opts)->wait());
+
+  const auto& received = getFakeBackend()->getLastReconfigureOptions();
+  ASSERT_TRUE(received.has_value());
+  EXPECT_EQ(
+      std::get<std::vector<c10d::ReconfigureHandle>>(received->handles),
+      handles);
+}
+
+TEST_F(BackendWrapperTest, ReconfigureRejectsEmptyOrMissingLocalHandle) {
+  c10d::ReconfigureOptions opts;
+
+  opts.handles = std::vector<c10d::ReconfigureHandle>{};
+  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
+
+  opts.handles = std::vector<c10d::ReconfigureHandle>{"peer"};
+  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
+}
+
+TEST_F(
+    BackendWrapperTest,
+    FailedReconfigureReportsDiagnosticAndDoesNotPublishMembership) {
   c10d::ReconfigureOptions opts;
   opts.handles = std::vector<c10d::ReconfigureHandle>{"fake:0"};
   getFakeBackend()->setSize(1);
   getFakeBackend()->setReconfigureFailure(true);
-  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
+  try {
+    wrapper_->reconfigure(opts);
+    FAIL() << "Expected reconfigure failure";
+  } catch (const c10::Error& error) {
+    EXPECT_THAT(error.what(), HasSubstr(kBackendName));
+    EXPECT_THAT(
+        error.what(),
+        HasSubstr(
+            "work status=" +
+            std::to_string(static_cast<int>(TorchWork::WorkStatus::ERROR))));
+  }
   EXPECT_EQ(wrapper_->getSize(), 4);
 
   getFakeBackend()->setReconfigureFailure(false);

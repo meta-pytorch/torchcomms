@@ -211,8 +211,14 @@ class BackendWrapper : public c10d::Backend {
 #endif
 
  private:
+  std::chrono::milliseconds toTorchCommTimeout(
+      std::chrono::milliseconds timeout) const;
+
   std::shared_ptr<TorchComm> comm_;
   c10::intrusive_ptr<Options> options_;
+
+  // Absence preserves the default owned by the underlying communicator.
+  std::optional<std::chrono::milliseconds> runtimeTimeoutOverride_;
 
   // Active coalescing batch. Engaged between startCoalescing() and
   // endCoalescing(); send()/recv() append into it instead of issuing

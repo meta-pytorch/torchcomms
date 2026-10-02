@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
@@ -506,6 +507,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
 
   if (work->isCompleted()) {
     initRanks();
+    runReconfigureHooks();
   } else {
     ranks_.clear();
   }
@@ -652,6 +654,17 @@ std::unique_ptr<RemovableHandle> TorchComm::registerPostHook(
   });
 }
 
+std::unique_ptr<RemovableHandle> TorchComm::registerReconfigureHook(
+    TorchComm::ReconfigureHook hook) {
+  auto hookId = nextHookId_++;
+  reconfigureHooks_.emplace(hookId, std::move(hook));
+  return RemovableHandle::create([self = weak_from_this(), hookId]() {
+    if (auto selfPtr = self.lock()) {
+      selfPtr->reconfigureHooks_.erase(hookId);
+    }
+  });
+}
+
 std::unique_ptr<RemovableHandle> TorchComm::registerAbortHook(
     TorchComm::AbortHook hook) {
   auto hookId = nextHookId_++;
@@ -683,6 +696,25 @@ void TorchComm::preHook(size_t op_id, PreHookArgs&& args) {
 void TorchComm::postHook(size_t op_id, PostHookArgs&& args) {
   for (auto& hook : postHooks_) {
     hook.second(op_id, args);
+  }
+}
+
+void TorchComm::runReconfigureHooks() {
+  std::vector<ReconfigureHook> hooks;
+  hooks.reserve(reconfigureHooks_.size());
+  for (const auto& hook : reconfigureHooks_) {
+    hooks.push_back(hook.second);
+  }
+  for (auto& hook : hooks) {
+    try {
+      hook();
+    } catch (const std::exception& error) {
+      TC_LOG(WARNING, impl_.get())
+          << "Ignoring exception from reconfigure hook: " << error.what();
+    } catch (...) {
+      TC_LOG(WARNING, impl_.get())
+          << "Ignoring unknown exception from reconfigure hook";
+    }
   }
 }
 

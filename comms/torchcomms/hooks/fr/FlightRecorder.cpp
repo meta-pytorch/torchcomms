@@ -972,17 +972,32 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
   std::string pg_desc(comm->getBackend());
 
   auto pgName = std::make_tuple(comm_name, pg_desc);
-  // Get ranks from the communicator - for split comms this will be the
-  // global ranks from the parent
-  auto comm_ranks = comm->getRanks();
-  std::vector<uint64_t> pg_ranks;
-  pg_ranks.reserve(comm_ranks.size());
-  for (int rank : comm_ranks) {
-    pg_ranks.push_back(static_cast<uint64_t>(rank));
-  }
-  recorder_->record_pg_ranks(pgName, pg_ranks);
-
   auto self = shared_from_this();
+  std::weak_ptr<TorchComm> comm_weak = comm;
+  auto record_comm_metadata = [self, pgName, comm_weak]() {
+    auto registered_comm = comm_weak.lock();
+    if (!registered_comm ||
+        !registered_comm->getBackendImpl()->isInitialized()) {
+      return;
+    }
+    // For split comms, getRanks() contains global ranks from the parent.
+    const auto comm_ranks = registered_comm->getRanks();
+    const int local_rank = registered_comm->getRank();
+    if (local_rank < 0 ||
+        static_cast<size_t>(local_rank) >= comm_ranks.size()) {
+      return;
+    }
+    const int rank = comm_ranks[local_rank];
+    std::vector<uint64_t> pg_ranks;
+    pg_ranks.reserve(comm_ranks.size());
+    for (int comm_rank : comm_ranks) {
+      pg_ranks.push_back(static_cast<uint64_t>(comm_rank));
+    }
+    self->recorder_->record_pg_ranks(pgName, pg_ranks);
+    self->recorder_->setRank(rank);
+  };
+  record_comm_metadata();
+  comm->registerReconfigureHook(record_comm_metadata);
 
   auto device = comm->getDevice();
 
@@ -1002,14 +1017,6 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
 
   // Register abort hook - called before crashing to wait for health check
   // that would request flight recorder dump.
-  // Derive the global rank of this process from the comm's member ranks
-  // (`getRanks()`) indexed by this process's rank-within-comm (`getRank()`).
-  // This works for both the world comm and sub-PGs, so every registered
-  // communicator yields the same stable global identifier.
-  // Use .at() to satisfy facebook-hte-LocalUncheckedArrayBounds; for a
-  // well-formed comm, getRank() is always within bounds of getRanks().
-  int rank = comm_ranks.at(comm->getRank());
-  recorder_->setRank(rank);
   comm->registerAbortHook([]() {
     TorchCommsHealthCheck::get()->setTimedOut();
     auto wait_ms = env_to_value("TORCHCOMM_HEALTH_CHECK_WAIT_MS", 15000);

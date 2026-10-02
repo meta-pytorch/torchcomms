@@ -299,6 +299,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHook = ::torch::comms::PreHook;
   using PostHook = ::torch::comms::PostHook;
+  using ReconfigureHook = ::torch::comms::ReconfigureHook;
   using AbortHook = ::torch::comms::AbortHook;
   using GraphReplayHook = ::torch::comms::GraphReplayHook;
 
@@ -306,6 +307,10 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // is in progress)
   std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
   std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
+  // Registration or removal during dispatch takes effect on the next
+  // successful reconfiguration.
+  std::unique_ptr<RemovableHandle> registerReconfigureHook(
+      ReconfigureHook hook);
   std::unique_ptr<RemovableHandle> registerAbortHook(AbortHook hook);
   std::unique_ptr<RemovableHandle> registerGraphReplayHook(
       GraphReplayHook hook);
@@ -337,6 +342,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   void preHook(size_t op_id, PreHookArgs&& args);
   void postHook(size_t op_id, PostHookArgs&& args);
+  void runReconfigureHooks();
 
   // Rank validation helper
   void validateRank(int rank, const char* param_name) const;
@@ -353,6 +359,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   int64_t nextHookId_ = 0;
   std::unordered_map<int64_t, PreHook> preHooks_;
   std::unordered_map<int64_t, PostHook> postHooks_;
+  std::unordered_map<int64_t, ReconfigureHook> reconfigureHooks_;
   // Global ranks of the members of this communicator.
   // For root communicators: [0, 1, 2, ..., size-1]
   // For split communicators: global ranks from the parent communicator

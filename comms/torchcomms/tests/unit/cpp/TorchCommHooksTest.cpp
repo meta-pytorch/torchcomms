@@ -6,6 +6,7 @@
 #include <comms/torchcomms/hooks/common/OpNameHelper.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include <stdexcept>
 #include <vector>
 
 namespace torch::comms {
@@ -13,6 +14,10 @@ namespace torch::comms {
 namespace {
 constexpr const char* kBackendName = "fake_test";
 constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
+
+[[noreturn]] void throwObserverFailure() {
+  throw std::runtime_error("observer failure");
+}
 } // namespace
 
 class TorchCommHooksTest : public ::testing::Test {
@@ -380,6 +385,101 @@ TEST_F(TorchCommHooksTest, MultipleAbortHooksInvoked) {
   EXPECT_EQ(hook1CallCount, 1);
   EXPECT_EQ(hook2CallCount, 1);
   EXPECT_EQ(hook3CallCount, 1);
+}
+
+TEST_F(TorchCommHooksTest, ReconfigureHookRunsOnlyAfterSuccessAndCanBeRemoved) {
+  CommOptions options;
+  options.enable_reconfigure = true;
+  auto torchcomm = new_comm(
+      kBackendName, at::Device(at::kCPU), "dynamic_test_comm", options);
+  ASSERT_NE(torchcomm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->finalize();
+
+  int reconfigureHookCallCount = 0;
+  auto handle = torchcomm->registerReconfigureHook(
+      [&reconfigureHookCallCount]() { reconfigureHookCallCount++; });
+  ReconfigureOptions reconfigureOptions;
+  reconfigureOptions.handles = std::vector<InitHandle>{"fake:0"};
+
+  backend->setReconfigureFailure(true);
+  EXPECT_FALSE(torchcomm->reconfigure(reconfigureOptions)->isCompleted());
+  EXPECT_EQ(reconfigureHookCallCount, 0);
+
+  backend->setReconfigureFailure(false);
+  EXPECT_TRUE(torchcomm->reconfigure(reconfigureOptions)->isCompleted());
+  EXPECT_EQ(reconfigureHookCallCount, 1);
+
+  EXPECT_TRUE(torchcomm->reconfigure(reconfigureOptions)->isCompleted());
+  EXPECT_EQ(reconfigureHookCallCount, 2);
+
+  handle->remove();
+  EXPECT_TRUE(torchcomm->reconfigure(reconfigureOptions)->isCompleted());
+  EXPECT_EQ(reconfigureHookCallCount, 2);
+}
+
+TEST_F(TorchCommHooksTest, ReconfigureHookFailureDoesNotFailReconfigure) {
+  CommOptions options;
+  options.enable_reconfigure = true;
+  auto torchcomm = new_comm(
+      kBackendName, at::Device(at::kCPU), "dynamic_test_comm", options);
+  ASSERT_NE(torchcomm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->finalize();
+
+  int successfulHookCallCount = 0;
+  torchcomm->registerReconfigureHook(throwObserverFailure);
+  torchcomm->registerReconfigureHook(
+      [&successfulHookCallCount]() { successfulHookCallCount++; });
+
+  ReconfigureOptions reconfigureOptions;
+  reconfigureOptions.handles = std::vector<InitHandle>{"fake:0"};
+  c10::intrusive_ptr<TorchWork> work;
+  EXPECT_NO_THROW(work = torchcomm->reconfigure(reconfigureOptions));
+  ASSERT_NE(work, nullptr);
+  EXPECT_TRUE(work->isCompleted());
+  EXPECT_EQ(successfulHookCallCount, 1);
+}
+
+TEST_F(TorchCommHooksTest, ReconfigureHookCanRemoveItselfDuringDispatch) {
+  CommOptions options;
+  options.enable_reconfigure = true;
+  auto torchcomm = new_comm(
+      kBackendName, at::Device(at::kCPU), "dynamic_test_comm", options);
+  ASSERT_NE(torchcomm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(torchcomm->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->finalize();
+
+  int selfRemovingHookCallCount = 0;
+  int persistentHookCallCount = 0;
+  std::unique_ptr<RemovableHandle> selfRemovingHandle;
+  selfRemovingHandle = torchcomm->registerReconfigureHook([&]() {
+    selfRemovingHookCallCount++;
+    selfRemovingHandle->remove();
+  });
+  auto persistentHandle = torchcomm->registerReconfigureHook(
+      [&persistentHookCallCount]() { persistentHookCallCount++; });
+  ASSERT_NE(selfRemovingHandle, nullptr);
+  ASSERT_NE(persistentHandle, nullptr);
+
+  ReconfigureOptions reconfigureOptions;
+  reconfigureOptions.handles = std::vector<InitHandle>{"fake:0"};
+  EXPECT_TRUE(torchcomm->reconfigure(reconfigureOptions)->isCompleted());
+  EXPECT_EQ(selfRemovingHookCallCount, 1);
+  EXPECT_EQ(persistentHookCallCount, 1);
+
+  EXPECT_TRUE(torchcomm->reconfigure(reconfigureOptions)->isCompleted());
+  EXPECT_EQ(selfRemovingHookCallCount, 1);
+  EXPECT_EQ(persistentHookCallCount, 2);
 }
 
 } // namespace torch::comms
