@@ -104,6 +104,11 @@ extern char ncclLastError[];
 #define TRACE_LOC(FLAGS, fmt, ...)
 #endif
 
+// [META] Used by shared NCCLX meta code.
+#define NCCL_NAMED_THREAD_START_EXT(threadName, rank, commHash, commDesc) \
+  INFO(NCCL_INIT, "[NCCL THREAD] Starting %s thread for rank %d commHash %lx commDesc %s at %s", threadName, rank, \
+       commHash, commDesc.c_str(), __func__)
+
 void ncclSetThreadName(std::thread& thread, const char* fmt, ...);
 #ifdef __cplusplus
 extern "C" {

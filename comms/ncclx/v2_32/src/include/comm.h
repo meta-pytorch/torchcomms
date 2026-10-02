@@ -37,15 +37,24 @@
 #endif
 
 // [META] NCCLX state on ncclComm and its dependencies.
+#include <array>
 #include <memory>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/memory/SlabAllocator.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms::colltrace {
 class ICollTrace;
 } // namespace meta::comms::colltrace
+namespace ncclx::transport {
+class TransportProxy;
+} // namespace ncclx::transport
 
 #if CUDART_VERSION < 9000
 struct cudaLaunchParams {
@@ -418,6 +427,14 @@ struct ncclKernelPlan {
   void* groupApiEventHandle;
   void* kernelLaunchEventHandle;
   void* groupEventHandle;
+
+  // [META] Pointer of a hashmap to store the connection information of peers
+  // the usage is in transportConnect.cc
+  std::shared_ptr<void> peerReconnInfoMap{nullptr};
+  // buffer keys used in plan, used to reserve and release buffers
+  std::vector<std::string> bufKeys;
+  // pointer to be used to synchronize with the kernel for the current plan
+  uint64_t* channelsReadyPtr{nullptr};
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -567,6 +584,10 @@ struct ncclKernelPlanner {
   struct ncclIntruQueue<struct ncclKernelPlan, &ncclKernelPlan::next> planQueue;
   // First of the unlaunched kernels in `planQueue`
   struct ncclKernelPlan* unlaunchedPlansHead;
+  // track number of channels that need to be initialized in current plann
+  int nMaxChannelsNeedInit{0};
+  // track number of channels each algorithm needs to connect in current plan
+  std::array<int, NCCL_NUM_ALGORITHMS> algoMaxChannelsNeedConnect{0};
 };
 
 #define NCCL_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
@@ -637,6 +658,15 @@ struct ncclComm {
   bool channelMetadataOnHost{false};
   // Slab Allocator for baseline initChannel metadata allocation
   std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator{nullptr};
+  // if channels can/will be setup lazily for this communicator
+  bool lazySetupChannels{false};
+  // number of channels that are initialized and ready for use
+  int nChannelsReady{0};
+  // number of channels that are connected for each algorithm
+  std::array<int, NCCL_NUM_ALGORITHMS> algoConnectedChannels{0};
+  // metadata to be used for initializing channels lazily if enabled
+  std::optional<struct ncclKernelCommAndChannels*> devCommAndChans{std::nullopt};
+  std::optional<std::vector<int>> rings{std::nullopt};
 
   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect
                   // mismatches.
@@ -899,6 +929,11 @@ struct ncclComm {
   // Disable local transports (P2P and SHM); forces NET for all connections
   bool noLocal_{false};
 
+  // Used by meta/transport (lazy channel setup).
+  std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
+  std::vector<std::string> connSetupBufKeys;
+  std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
+
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> resumeTaskQueue;
@@ -913,6 +948,21 @@ inline bool ncclNvlsTransportEnabled(const struct ncclComm* comm) {
 inline bool ncclNvlsSymmetricMultimemEnabled(const struct ncclComm* comm) {
   return comm->nvlsSupport && !(comm->config.nvlsHostMode & ncclNvlsHostModeDisableSymmetricMultimem);
 }
+
+// [META] record how many interNode/intraNode connections are made in one ncclTransportP2pConnect call
+struct connectionSummary {
+  int intraSend = 0;
+  int intraRecv = 0;
+  int interSend = 0;
+  int interRecv = 0;
+
+  std::string toString() {
+    std::ostringstream oss;
+    oss << "intraSends: " << intraSend << " intraRecvs: " << intraRecv << " interSends: " << interSend
+        << " interRecvs: " << interRecv;
+    return oss.str();
+  }
+};
 
 // [META] ncclComm has C++ members (not standard-layout), so offsetof() is not portable.
 // static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");

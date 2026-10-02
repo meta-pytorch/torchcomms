@@ -746,6 +746,11 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
                 ret, fail);
   NCCLCHECKGOTO(ncclCudaCallocAsync(&devCommAndChans, 1, deviceStream, comm->memManager), ret, fail);
   ncclCommPushCudaFree(comm, devCommAndChans);
+
+  // [META]: Cache devCommAndChans to be used later for lazily allocating channels
+  if (comm->lazySetupChannels) {
+    comm->devCommAndChans = devCommAndChans;
+  }
   NCCLCHECKGOTO(ncclCudaCallocAsync(&tmpCommAndChans.comm.rankToLocalRank, comm->nRanks, deviceStream,
                                     comm->memManager),
                 ret, fail);
@@ -1003,7 +1008,7 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
   return ncclSuccess;
 }
 
-static ncclResult_t setupChannel(struct ncclComm* comm, int channelId, int rank, int nranks, int* ringRanks) {
+ncclResult_t setupChannel(struct ncclComm* comm, int channelId, int rank, int nranks, int* ringRanks) {
   TRACE(NCCL_INIT, "rank %d nranks %d", rank, nranks);
   NCCLCHECK(initChannel(comm, channelId));
 
@@ -1334,6 +1339,11 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
   // AllGather1 - end
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
+
+  // Check for lazy channel setup support.
+  // [META] Lazy setup hooks the legacy enqueue path only; NCCL_ENQUEUE_REARCH_ENABLE connects P2P during task
+  // preparation, before channels would be set up.
+  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS && !ncclParamEnqueueRearchEnable();
 
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
@@ -1831,7 +1841,20 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
 
   comm->runtimeConn = comm->cuMemSupport && ncclParamRuntimeConnect();
-  if (comm->runtimeConn) {
+
+  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
+    WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
+  }
+
+  if (comm->lazySetupChannels) {
+    INFO(NCCL_INIT,
+         "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed",
+         NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
+    // cache the ring info to be used for setupChannel later when needed
+    comm->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
+    // Attempt to setup NVLS
+    NCCLCHECKGOTO(ncclNvlsSetup(comm, parent), ret, fail);
+  } else if (comm->runtimeConn) {
     for (int c = 0; c < comm->nChannels; c++) {
       NCCLCHECKGOTO(setupChannel(comm, c, rank, nranks, rings + c * nranks), ret, fail);
     }

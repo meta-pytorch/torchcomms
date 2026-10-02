@@ -15,6 +15,8 @@ NCCL_PARAM(PatEnable, "PAT_ENABLE", 2);
 int ncclPatEnable(struct ncclComm* comm) {
   int patEnable = ncclParamPatEnable();
   if (comm->minCompCap < 60) return 0; // Need SM60 or higher for CUDA atomics
+  // [META] NCCLX lazy channel setup only connects PAT for one rank per node; multi-RPN PAT needs the upstream connect.
+  if (comm->lazySetupChannels && !comm->isOneRPN) return 0;
   if (patEnable != 2) return patEnable;
   if (!comm->isOneRPN) {
     if (comm->nNodes < 2) return 0;   // Multi-RPN PAT is inter-node only

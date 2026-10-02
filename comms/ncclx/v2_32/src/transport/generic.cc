@@ -11,7 +11,12 @@
 
 NCCL_PARAM(MultiSegmentRegister, "MULTI_SEGMENT_REGISTER", 1);
 
+#include "meta/transport/transportConnect.h"
+
 ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
+  if (comm && comm->lazySetupChannels) {
+    return ncclx::transportRingConnect(comm, comm->planner.algoMaxChannelsNeedConnect[NCCL_ALGO_RING]);
+  }
   struct ringConnInfo {
     bool useNetPXN;
     bool useGdr;
@@ -47,6 +52,9 @@ fail:
 }
 
 ncclResult_t ncclTransportTreeConnect(struct ncclComm* comm) {
+  if (comm && comm->lazySetupChannels) {
+    return ncclx::transportTreeConnect(comm, comm->planner.algoMaxChannelsNeedConnect[NCCL_ALGO_TREE]);
+  }
   ncclResult_t ret = ncclSuccess;
   if (comm && comm->nRanks > 1) {
     // Connect Trees
@@ -104,6 +112,10 @@ exit:
 ncclResult_t ncclTransportPatConnect(struct ncclComm* comm) {
   ncclResult_t ret = ncclSuccess;
   if (ncclPatEnable(comm) == 0) goto exit;
+  // [META] ncclPatEnable() limits PAT to one rank per node under lazy setup, where this connect is equivalent.
+  if (comm && comm->lazySetupChannels) {
+    return ncclx::transportPatConnect(comm, comm->planner.algoMaxChannelsNeedConnect[NCCL_ALGO_PAT]);
+  }
   if (comm && comm->nRanks > 1) {
     // Skip PAT setup on every rank for uneven local-rank layouts, so that no
     // rank enters connection setup while another skips it.
