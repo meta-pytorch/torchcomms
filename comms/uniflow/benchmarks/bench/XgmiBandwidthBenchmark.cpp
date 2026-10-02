@@ -2,8 +2,13 @@
 
 #include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
 
+#include <sys/resource.h>
+
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <string_view>
+#include <system_error>
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 
@@ -12,6 +17,8 @@
 #include "comms/uniflow/benchmarks/SegmentHelper.h"
 #include "comms/uniflow/benchmarks/Stats.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
+#include "comms/uniflow/drivers/cuda/CudaDevicePtr.h"
+#include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
@@ -23,7 +30,11 @@ namespace {
 
 constexpr uint8_t kFillByte = 0xAB;
 
-/// RAII wrapper for a plain device allocation.
+/// RAII device buffer: a plain allocation, which P2P shares through HIP IPC,
+/// or cuMem VMM chunks with a POSIX-fd handle type mapped back to back in one
+/// reservation, which it shares as one exported fd per chunk. size() is the
+/// requested size in every case, so all modes register and copy the same
+/// extent.
 class DeviceAllocation {
  public:
   DeviceAllocation() = default;
@@ -33,8 +44,23 @@ class DeviceAllocation {
   DeviceAllocation& operator=(DeviceAllocation&&) = delete;
 
   ~DeviceAllocation() {
+    if (driverApi_ == nullptr) {
+      if (ptr_ != nullptr) {
+        (void)cudaFree(ptr_);
+      }
+      return;
+    }
+    const auto base = reinterpret_cast<uintptr_t>(ptr_);
+    for (size_t i = 0; i < mappedChunks_; ++i) {
+      (void)driverApi_->cuMemUnmap(
+          toDevicePtr(base + i * chunkSize_), chunkSize_);
+    }
     if (ptr_ != nullptr) {
-      (void)cudaFree(ptr_);
+      (void)driverApi_->cuMemAddressFree(
+          toDevicePtr(base), chunkSize_ * chunkCount_);
+    }
+    for (const auto handle : handles_) {
+      (void)driverApi_->cuMemRelease(handle);
     }
   }
 
@@ -51,16 +77,70 @@ class DeviceAllocation {
     return Ok();
   }
 
+  /// Chunks of chunkSize (0: a single chunk), each rounded up to the
+  /// allocation granularity, mapped read-write for deviceId only; importers
+  /// grant their own access.
+  Status initVmm(
+      CudaDriverApi& driverApi,
+      int deviceId,
+      size_t size,
+      size_t chunkSize) {
+    driverApi_ = &driverApi;
+    CUmemAllocationProp prop{};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = deviceId;
+    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    size_t granularity = 0;
+    CHECK_EXPR(driverApi_->cuMemGetAllocationGranularity(
+        &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
+    const size_t requested = chunkSize == 0 ? size : std::min(chunkSize, size);
+    chunkSize_ = (requested + granularity - 1) / granularity * granularity;
+    chunkCount_ = (size + chunkSize_ - 1) / chunkSize_;
+    CUdeviceptr reservation{};
+    CHECK_EXPR(driverApi_->cuMemAddressReserve(
+        &reservation, chunkSize_ * chunkCount_, granularity, CUdeviceptr{}, 0));
+    // CUdeviceptr is an integer on NVIDIA.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    ptr_ = reinterpret_cast<void*>(reservation);
+    const auto base = reinterpret_cast<uintptr_t>(ptr_);
+    handles_.reserve(chunkCount_);
+    for (size_t i = 0; i < chunkCount_; ++i) {
+      CUmemGenericAllocationHandle handle{};
+      CHECK_EXPR(driverApi_->cuMemCreate(&handle, chunkSize_, &prop, 0));
+      handles_.push_back(handle);
+      CHECK_EXPR(driverApi_->cuMemMap(
+          toDevicePtr(base + i * chunkSize_), chunkSize_, 0, handle, 0));
+      ++mappedChunks_;
+    }
+    CUmemAccessDesc access{};
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = deviceId;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    CHECK_EXPR(driverApi_->cuMemSetAccess(
+        reservation, chunkSize_ * chunkCount_, &access, 1));
+    size_ = size;
+    return Ok();
+  }
+
   void* ptr() const {
     return ptr_;
   }
   size_t size() const {
     return size_;
   }
+  size_t chunkCount() const {
+    return chunkCount_;
+  }
 
  private:
   void* ptr_{nullptr};
   size_t size_{0};
+  CudaDriverApi* driverApi_{nullptr};
+  size_t chunkSize_{0};
+  size_t chunkCount_{1};
+  std::vector<CUmemGenericAllocationHandle> handles_;
+  size_t mappedChunks_{0};
 };
 
 /// Holds all resources for a benchmark transport session.
@@ -76,6 +156,8 @@ struct TransportSession {
   TransportSession(TransportSession&&) = delete;
   TransportSession& operator=(TransportSession&&) = delete;
 
+  XgmiOptions options;
+  std::shared_ptr<CudaDriverApi> driverApi; // allocates the VMM buffers
   std::unique_ptr<ScopedEventBaseThread> evbThread;
   std::unique_ptr<P2pTransportFactory> factory;
   std::unique_ptr<DeviceAllocation> srcAlloc;
@@ -83,7 +165,103 @@ struct TransportSession {
   std::unique_ptr<Transport> transport;
   std::unique_ptr<RegisteredSegment> localReg;
   std::unique_ptr<RemoteRegisteredSegment> remoteReg;
+  // The peer imports this registration. A VMM registration owns the exported
+  // fds the peer pulls with pidfd_getfd, so it must outlive the peer's import:
+  // it is kept until the next size (or the end of the sweep), after both ranks
+  // pass the teardown barrier.
+  std::unique_ptr<RegistrationHandle> dstReg;
+  // Size of the buffers above, for the teardown log.
+  size_t bufferSize{0};
 };
+
+// P2P exports VMM memory only if the chunk fds fit under RLIMIT_NOFILE with
+// this many descriptors to spare (kFdHeadroom in P2pVmm.cpp).
+constexpr size_t kP2pFdHeadroom = 256;
+
+bool hasVmm(const XgmiOptions& options) {
+  return options.srcMemory == XgmiMemory::Vmm ||
+      options.dstMemory == XgmiMemory::Vmm;
+}
+
+std::string_view memoryName(XgmiMemory memory) {
+  return memory == XgmiMemory::Vmm ? "vmm" : "device";
+}
+
+/// Transport column of the results: "xgmi" for the device/device baseline,
+/// otherwise suffixed with the buffer pair and the VMM chunk size, plus a
+/// disabled VMM switch, so every arm stays distinguishable in one CSV.
+std::string transportLabel(const XgmiOptions& options) {
+  std::string label{"xgmi"};
+  if (hasVmm(options)) {
+    label += fmt::format(
+        "_{}_{}", memoryName(options.srcMemory), memoryName(options.dstMemory));
+    if (options.vmmChunkSize != 0) {
+      label += fmt::format("_c{}", options.vmmChunkSize);
+    }
+  }
+  if (!options.p2pEnableVmm) {
+    label += "_vmm_off";
+  }
+  return label;
+}
+
+/// Whether P2P can export VMM buffers totalling this many chunks without
+/// exceeding its fd budget. Past it P2P would fall back to HIP IPC, which
+/// cannot share VMM memory and on some runtimes hands out a handle the peer
+/// cannot safely open, so the benchmark refuses the size instead.
+bool fitsP2pFdBudget(size_t chunks) {
+  rlimit limit{};
+  if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+    UNIFLOW_LOG_ERROR(
+        "XgmiBandwidthBenchmark: getrlimit(RLIMIT_NOFILE) failed");
+    return false;
+  }
+  if (limit.rlim_cur == RLIM_INFINITY) {
+    return true;
+  }
+  std::error_code ec;
+  size_t openFds = 0;
+  for (std::filesystem::directory_iterator it{"/proc/self/fd", ec};
+       !ec && it != std::filesystem::directory_iterator{};
+       it.increment(ec)) {
+    ++openFds;
+  }
+  if (ec) {
+    UNIFLOW_LOG_ERROR(
+        "XgmiBandwidthBenchmark: counting open fds failed: {}", ec.message());
+    return false;
+  }
+  if (openFds + chunks + kP2pFdHeadroom > limit.rlim_cur) {
+    UNIFLOW_LOG_ERROR(
+        "XgmiBandwidthBenchmark: {} VMM chunk fds with {} open and {} spare "
+        "exceed the RLIMIT_NOFILE soft limit {}; use a larger "
+        "--xgmi-vmm-chunk-size or raise the limit",
+        chunks,
+        openFds,
+        kP2pFdHeadroom,
+        limit.rlim_cur);
+    return false;
+  }
+  return true;
+}
+
+/// Sharing mode P2P must have picked for the configured memory; a registration
+/// that fell back to the other mode would measure the wrong export path.
+P2pSharingMode expectedSharingMode(XgmiMemory memory) {
+  return memory == XgmiMemory::Vmm ? P2pSharingMode::PosixFd
+                                   : P2pSharingMode::Ipc;
+}
+
+bool hasSharingMode(const RegistrationHandle& handle, P2pSharingMode mode) {
+  const auto* p2p = dynamic_cast<const P2pRegistrationHandle*>(&handle);
+  return p2p != nullptr && p2p->sharingMode() == mode;
+}
+
+double elapsedUs(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double, std::micro>(
+             std::chrono::steady_clock::now() - start)
+      .count();
+}
 
 /// Create factory, create transport, and connect to peer.
 ///
@@ -91,13 +269,18 @@ struct TransportSession {
 /// getTopology -> exchange -> createTransport -> bind -> exchange -> connect.
 std::unique_ptr<TransportSession> setupConnection(
     std::vector<PeerConnection>& peers,
-    const BootstrapConfig& bootstrap) {
+    const BootstrapConfig& bootstrap,
+    const XgmiOptions& options) {
   if (peers.empty()) {
     UNIFLOW_LOG_ERROR("XgmiBandwidthBenchmark: setupConnection: no peers");
     return nullptr;
   }
 
   auto session = std::make_unique<TransportSession>();
+  session->options = options;
+  if (hasVmm(options)) {
+    session->driverApi = std::make_shared<CudaDriverApi>();
+  }
 
   CudaApi cudaApi;
   auto setDevStatus = cudaApi.setDevice(bootstrap.localRank);
@@ -109,8 +292,17 @@ std::unique_ptr<TransportSession> setupConnection(
   }
 
   session->evbThread = std::make_unique<ScopedEventBaseThread>("bench-evb");
+#if defined(__HIP_PLATFORM_AMD__)
+  session->factory = std::make_unique<P2pTransportFactory>(
+      bootstrap.localRank,
+      session->evbThread->getEventBase(),
+      nullptr,
+      nullptr,
+      options.p2pEnableVmm);
+#else
   session->factory = std::make_unique<P2pTransportFactory>(
       bootstrap.localRank, session->evbThread->getEventBase());
+#endif
 
   auto localTopology = session->factory->getTopology();
   auto remoteTopologyResult =
@@ -154,6 +346,31 @@ std::unique_ptr<TransportSession> setupConnection(
   return session;
 }
 
+/// Free the previous size's buffers. After a completed setup, also time the
+/// P2P teardown each rank pays: unmapping the peer's buffer it imported, and
+/// deregistering its own buffer the peer imported.
+void releaseBuffers(TransportSession& session) {
+  if (session.remoteReg != nullptr) {
+    const auto unimportStart = std::chrono::steady_clock::now();
+    session.remoteReg.reset();
+    const double unimportUs = elapsedUs(unimportStart);
+    const auto deregisterStart = std::chrono::steady_clock::now();
+    session.dstReg.reset();
+    const double deregisterUs = elapsedUs(deregisterStart);
+    UNIFLOW_LOG_INFO(
+        "XgmiBandwidthBenchmark: teardown size={} unimport_us={:.1f} "
+        "dst_deregister_us={:.1f}",
+        session.bufferSize,
+        unimportUs,
+        deregisterUs);
+  }
+  session.remoteReg.reset();
+  session.dstReg.reset();
+  session.localReg.reset();
+  session.srcAlloc.reset();
+  session.dstAlloc.reset();
+}
+
 /// Allocate device buffers of the given size, register segments, and exchange
 /// handles with the peer. Re-done per message size so the registered extent
 /// matches the transfer size, as the NVIDIA benchmark does.
@@ -167,13 +384,20 @@ bool setupBuffersForSize(
     return false;
   }
 
-  session.localReg.reset();
-  session.remoteReg.reset();
-  session.srcAlloc.reset();
-  session.dstAlloc.reset();
+  releaseBuffers(session);
+  session.bufferSize = bufferSize;
+
+  auto allocate = [&](DeviceAllocation& alloc, XgmiMemory memory) {
+    return memory == XgmiMemory::Vmm ? alloc.initVmm(
+                                           *session.driverApi,
+                                           bootstrap.localRank,
+                                           bufferSize,
+                                           session.options.vmmChunkSize)
+                                     : alloc.init(bufferSize);
+  };
 
   session.srcAlloc = std::make_unique<DeviceAllocation>();
-  auto srcStatus = session.srcAlloc->init(bufferSize);
+  auto srcStatus = allocate(*session.srcAlloc, session.options.srcMemory);
   if (srcStatus.hasError()) {
     UNIFLOW_LOG_ERROR(
         "XgmiBandwidthBenchmark: src allocation failed: {}",
@@ -182,7 +406,7 @@ bool setupBuffersForSize(
   }
 
   session.dstAlloc = std::make_unique<DeviceAllocation>();
-  auto dstStatus = session.dstAlloc->init(bufferSize);
+  auto dstStatus = allocate(*session.dstAlloc, session.options.dstMemory);
   if (dstStatus.hasError()) {
     UNIFLOW_LOG_ERROR(
         "XgmiBandwidthBenchmark: dst allocation failed: {}",
@@ -214,12 +438,25 @@ bool setupBuffersForSize(
     return false;
   }
 
+  size_t vmmChunks = 0;
+  if (session.options.srcMemory == XgmiMemory::Vmm) {
+    vmmChunks += session.srcAlloc->chunkCount();
+  }
+  if (session.options.dstMemory == XgmiMemory::Vmm) {
+    vmmChunks += session.dstAlloc->chunkCount();
+  }
+  if (vmmChunks != 0 && !fitsP2pFdBudget(vmmChunks)) {
+    return false;
+  }
+
   Segment srcSeg(
       session.srcAlloc->ptr(),
       session.srcAlloc->size(),
       MemoryType::VRAM,
       bootstrap.localRank);
+  const auto srcRegisterStart = std::chrono::steady_clock::now();
   auto srcRegResult = session.factory->registerSegment(srcSeg);
+  const double srcRegisterUs = elapsedUs(srcRegisterStart);
   if (!srcRegResult) {
     UNIFLOW_LOG_ERROR(
         "XgmiBandwidthBenchmark: registerSegment(src) failed: {}",
@@ -232,7 +469,9 @@ bool setupBuffersForSize(
       session.dstAlloc->size(),
       MemoryType::VRAM,
       bootstrap.localRank);
+  const auto dstRegisterStart = std::chrono::steady_clock::now();
   auto dstRegResult = session.factory->registerSegment(dstSeg);
+  const double dstRegisterUs = elapsedUs(dstRegisterStart);
   if (!dstRegResult) {
     UNIFLOW_LOG_ERROR(
         "XgmiBandwidthBenchmark: registerSegment(dst) failed: {}",
@@ -240,7 +479,22 @@ bool setupBuffersForSize(
     return false;
   }
 
+  if (!hasSharingMode(
+          *srcRegResult.value(),
+          expectedSharingMode(session.options.srcMemory)) ||
+      !hasSharingMode(
+          *dstRegResult.value(),
+          expectedSharingMode(session.options.dstMemory))) {
+    UNIFLOW_LOG_ERROR(
+        "XgmiBandwidthBenchmark: P2P did not share the src={} dst={} buffers "
+        "as configured (vmm as POSIX fds, device as IPC handles)",
+        memoryName(session.options.srcMemory),
+        memoryName(session.options.dstMemory));
+    return false;
+  }
+
   auto dstPayload = dstRegResult.value()->serialize();
+  session.dstReg = std::move(dstRegResult).value();
   auto remotePayloadResult =
       exchangeMetadata(*peers[0].ctrl, dstPayload, bootstrap.isRank0());
   if (!remotePayloadResult) {
@@ -251,16 +505,32 @@ bool setupBuffersForSize(
   }
 
   // Cross-process: the peer's payload names a different PID, so this is the
-  // real ipcOpenMemHandle path rather than the same-process shortcut. That is
-  // the whole reason this benchmark runs as two ranks.
+  // real ipcOpenMemHandle (or pidfd_getfd and VMM import) path rather than the
+  // same-process shortcut. That is the whole reason this benchmark runs as two
+  // ranks.
+  const auto importStart = std::chrono::steady_clock::now();
   auto remoteHandleResult = session.factory->importSegment(
       session.dstAlloc->size(), std::move(remotePayloadResult).value());
+  const double importUs = elapsedUs(importStart);
   if (!remoteHandleResult) {
     UNIFLOW_LOG_ERROR(
         "XgmiBandwidthBenchmark: importSegment failed: {}",
         remoteHandleResult.error().toString());
     return false;
   }
+  UNIFLOW_LOG_INFO(
+      "XgmiBandwidthBenchmark: setup src={} dst={} p2p_vmm={} size={} "
+      "src_chunks={} dst_chunks={} src_register_us={:.1f} "
+      "dst_register_us={:.1f} import_us={:.1f}",
+      memoryName(session.options.srcMemory),
+      memoryName(session.options.dstMemory),
+      session.options.p2pEnableVmm ? "on" : "off",
+      bufferSize,
+      session.srcAlloc->chunkCount(),
+      session.dstAlloc->chunkCount(),
+      srcRegisterUs,
+      dstRegisterUs,
+      importUs);
 
   session.localReg = std::make_unique<RegisteredSegment>(
       SegmentTest::makeRegistered(srcSeg, std::move(srcRegResult.value())));
@@ -413,6 +683,7 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
     bool isActiveRank) {
   auto sizes = generateSizes(config.minSize, config.maxSize);
   std::vector<BenchmarkResult> results;
+  const std::string transport = transportLabel(session.options);
 
   // Latch rather than return: the peer is already entering the sweep.
   bool setupFailed = false;
@@ -526,7 +797,7 @@ std::vector<BenchmarkResult> runBenchmarkLoop(
 
       BenchmarkResult result{
           .benchmarkName = benchmarkName,
-          .transport = "xgmi",
+          .transport = transport,
           .direction = dir,
           .messageSize = size,
           .iterations = config.iterations,
@@ -576,7 +847,14 @@ std::vector<BenchmarkResult> XgmiBandwidthBenchmark::run(
     return {};
   }
 
-  auto session = setupConnection(peers, bootstrap);
+  if (!options_.p2pEnableVmm && hasVmm(options_)) {
+    UNIFLOW_LOG_ERROR(
+        "XgmiBandwidthBenchmark: VMM buffers need P2P VMM sharing enabled; "
+        "HIP IPC cannot share them");
+    return {};
+  }
+
+  auto session = setupConnection(peers, bootstrap, options_);
   if (!session) {
     return {};
   }
@@ -585,16 +863,24 @@ std::vector<BenchmarkResult> XgmiBandwidthBenchmark::run(
 
   UNIFLOW_LOG_INFO(
       "XgmiBandwidthBenchmark: rank {} setup complete, sweeping sizes {}-{}"
-      " (loopCount={}, {}directional, active={})",
+      " (src={}, dst={}, vmm_chunk_size={}, p2p_vmm={}, loopCount={}, "
+      "{}directional, active={})",
       bootstrap.rank,
       config.minSize,
       config.maxSize,
+      memoryName(options_.srcMemory),
+      memoryName(options_.dstMemory),
+      options_.vmmChunkSize,
+      options_.p2pEnableVmm ? "on" : "off",
       config.loopCount,
       config.bidirectional ? "bi" : "uni",
       isActiveRank);
 
   auto results = runBenchmarkLoop(
       config, peers, bootstrap, *session, name(), isActiveRank);
+  // The sweep ends after a teardown barrier, so both ranks are done with the
+  // last size; releasing it here logs its teardown like the earlier sizes.
+  releaseBuffers(*session);
 
   auto shutdownBarrier = barrier(peers, bootstrap);
   if (!shutdownBarrier) {
