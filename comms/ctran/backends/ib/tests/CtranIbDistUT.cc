@@ -193,7 +193,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
               key,
               notifyMode == NotifyMode::notifyAll ||
                   (i == numPuts - 1 && notifyMode == NotifyMode::notifyLast),
-              nullptr,
               localSignal || i == numPuts - 1 ? &putReq : nullptr,
               /* fast */ true));
         } else {
@@ -208,7 +207,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
               // receiver side progress
               notifyMode == NotifyMode::notifyAll ||
                   (i == numPuts - 1 && notifyMode == NotifyMode::notifyLast),
-              nullptr,
               localSignal || i == numPuts - 1 ? &putReq : nullptr));
         }
 
@@ -371,7 +369,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
             srcRank,
             handle,
             key,
-            nullptr,
             localSignal || i == numGets - 1 ? &getReq : nullptr));
 
         if (localSignal || i == numGets - 1) {
@@ -580,7 +577,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
             handle,
             key,
             false, // notify
-            nullptr,
             &fallbackPutReq));
       }
 
@@ -607,7 +603,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
             totalNotifications++;
           }
 
-          putMsg.config = nullptr;
           if (i == batchSize - 1) {
             requests.emplace_back(std::make_unique<CtranIbRequest>());
             putMsg.req = requests.back().get();
@@ -632,7 +627,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
               handle,
               key,
               true, // notify
-              nullptr,
               &putReq));
           totalNotifications++;
           COMMCHECK_TEST(waitIbReq(putReq, ctranIb));
@@ -649,7 +643,6 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
               handle,
               key,
               true, // notify (required for fast put)
-              nullptr,
               &fastPutReq,
               true)); // fast
           totalNotifications++;
@@ -1702,7 +1695,6 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
               handle,
               remoteKey,
               true,
-              nullptr,
               &putReqs[i]);
         }
       }
@@ -1765,15 +1757,7 @@ TEST_F(CtranIbTest, InvalidPeer) {
     CtranIbRemoteAccessKey key{};
     EXPECT_EQ(
         ctranIb->iput(
-            nullptr,
-            nullptr,
-            1024,
-            invalidPeer,
-            nullptr,
-            key,
-            true,
-            nullptr,
-            &req),
+            nullptr, nullptr, 1024, invalidPeer, nullptr, key, true, &req),
         commInternalError);
 
     EXPECT_EQ(ctranIb->notify(invalidPeer, &req), commInternalError);
@@ -1805,7 +1789,6 @@ TEST_F(CtranIbTest, NotReadyPeer) {
             nullptr,
             key,
             true,
-            nullptr,
             nullptr /*req*/),
         commInternalError);
 
@@ -1860,7 +1843,6 @@ TEST_F(CtranIbTest, InvalidMemoryWaitNotify) {
         handle,
         invalidKey, // Invalid rkey
         true, // notify
-        nullptr,
         &putReq);
     EXPECT_EQ(putResult, commSuccess);
 
@@ -2102,7 +2084,6 @@ TEST_F(CtranIbTest, pgTrafficClassConfig) {
             nullptr,
             key,
             true,
-            nullptr,
             nullptr /*req*/),
         commInternalError);
 
@@ -2303,7 +2284,6 @@ TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
             nullptr,
             key,
             true,
-            nullptr,
             nullptr /*req*/),
         commInternalError);
 
@@ -2499,7 +2479,6 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
         handle,
         key,
         /* notify */ true,
-        nullptr,
         &putReqFast,
         /* fast */ true);
     EXPECT_EQ(res, commSystemError);
@@ -2514,7 +2493,6 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
           handle,
           key,
           /* notify */ true,
-          nullptr,
           (i == NCCL_CTRAN_IB_QP_MAX_MSGS - 1) ? &putReqFast : nullptr,
           /* fast */ true);
       EXPECT_EQ(res, commSuccess);
@@ -2529,7 +2507,6 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
         handle,
         key,
         /* notify */ true,
-        nullptr,
         &putReqFast,
         /* fast */ true);
     EXPECT_EQ(res, commSystemError);
@@ -2546,7 +2523,6 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
         handle,
         key,
         /* notify */ true,
-        nullptr,
         &putReq));
     // Failure case 3: issuing fast iput without waiting on regular put
     // completion
@@ -2558,7 +2534,6 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
         handle,
         key,
         /* notify */ true,
-        nullptr,
         &putReqFast,
         /* fast */ true);
     EXPECT_EQ(res, commSystemError);
@@ -2575,7 +2550,6 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
         handle,
         key,
         /* notify */ true,
-        nullptr,
         &putReqFast,
         /* fast */ true));
     COMMCHECK_TEST(waitIbReq(putReqFast, ctranIb));
@@ -2666,7 +2640,6 @@ TEST_P(CtranIbTestParam, GpuMemPutNoSignalMixedFastRegular) {
           handle,
           key,
           /* notify */ true,
-          /* config */ nullptr,
           /* req */ nullptr,
           /* fast */ true)); // NoSignal
     }
@@ -2680,7 +2653,6 @@ TEST_P(CtranIbTestParam, GpuMemPutNoSignalMixedFastRegular) {
           handle,
           key,
           /* notify */ (i == numPuts - 1) ? true : false, // NoNotify
-          nullptr,
           (i == numPuts - 1) ? &putReq : nullptr)); // NoSignal
     }
     COMMCHECK_TEST(waitIbReq(putReq, ctranIb));
@@ -2767,7 +2739,6 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
           handle,
           key,
           /* notify */ false, // NoNotify
-          /* config */ nullptr,
           /* req */ nullptr, // NoSignal
           /* fast */ true));
     }
@@ -2781,7 +2752,6 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
           handle,
           key,
           /* notify */ (i == numPuts - 1) ? true : false, // notifyLast
-          nullptr,
           (i == numPuts - 1) ? &putReq : nullptr)); // NoSignal
     }
     COMMCHECK_TEST(waitIbReq(putReq, ctranIb));
