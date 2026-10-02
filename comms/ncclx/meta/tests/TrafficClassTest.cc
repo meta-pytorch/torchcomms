@@ -8,9 +8,10 @@
 #include <folly/init/Init.h>
 
 #include "comm.h"
+#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "nccl.h"
 
@@ -67,6 +68,59 @@ TEST_F(trafficClassTest, hintUnsetLeavesUndefSentinel) {
   EXPECT_EQ(comm->config.trafficClass, NCCL_CONFIG_UNDEF_INT);
   ASSERT_NE(nullptr, comm->ctranComm_);
   EXPECT_EQ(comm->ctranComm_->config_.trafficClass, NCCL_CONFIG_UNDEF_INT);
+}
+
+// Every ctranIb* hint must reach the CtranIbConfig that MetaFactory assembles
+// onto the CtranComm, which is what CtranMapper hands to the IB backend.
+TEST_F(trafficClassTest, ctranIbHintsPropagateToCtranIbConfig) {
+  EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
+
+  ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"ctranIbNumQps", "16"},
+      {"ctranIbQpScalingTh", "262144"},
+      {"ctranIbQpMsgs", "128"},
+      {"ctranIbVcMode", "dqplb"},
+      {"ctranIbMaxNumCqe", "4096"},
+      {"ctranIbMaxNumNic", "1"},
+      {"ctranIbEnableLocalFlush", "1"},
+      {"ctranIbTrafficClass", "200"},
+  });
+  inputConfig.hints = &hints;
+
+  ncclx::test::NcclCommRAII comm(
+      globalRank,
+      numRanks,
+      localRank,
+      bootstrap_.get(),
+      /*isMock=*/false,
+      &inputConfig);
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+  ASSERT_NE(nullptr, comm->ctranComm_);
+
+  const CtranIbConfig expected{
+      .numQps = 16,
+      .qpScalingTh = 262144,
+      .vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb,
+      .qpMsgs = 128,
+      .enableLocalFlush = true,
+      .maxNumCqe = 4096,
+      .maxNumNic = 1,
+      .trafficClass = 200,
+  };
+  EXPECT_EQ(comm->ctranComm_->config_.ibConfig, expected);
+}
+
+// With no ctranIb* hint, every field stays unset so the IB backend resolves
+// from cvars/topology exactly as it does today.
+TEST_F(trafficClassTest, ctranIbConfigUnsetByDefault) {
+  EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+  ASSERT_NE(nullptr, comm->ctranComm_);
+
+  EXPECT_EQ(comm->ctranComm_->config_.ibConfig, CtranIbConfig{});
 }
 
 int main(int argc, char* argv[]) {

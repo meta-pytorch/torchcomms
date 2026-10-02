@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -343,6 +344,232 @@ TEST(ConfigHintsUT, IbQpsPerConnectionDefaultUnset) {
   EXPECT_FALSE(ncclxCfg->ibQpsPerConnection.has_value());
 
   delete ncclxCfg;
+}
+
+// ----- ctranIb* per-comm CTran IB override tests -----
+
+TEST(ConfigHintsUT, CtranIbHintsSetAllFields) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbNumQps", "32");
+  hints.set("ctranIbQpScalingTh", "1048576");
+  hints.set("ctranIbQpMsgs", "256");
+  hints.set("ctranIbVcMode", "dqplb");
+  hints.set("ctranIbMaxNumCqe", "4096");
+  hints.set("ctranIbMaxNumNic", "1");
+  hints.set("ctranIbEnableLocalFlush", "1");
+  hints.set("ctranIbTrafficClass", "200");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_EQ(ncclxCfg->ctranIbNumQps, 32);
+  EXPECT_EQ(ncclxCfg->ctranIbQpScalingTh, 1048576u);
+  EXPECT_EQ(ncclxCfg->ctranIbQpMsgs, 256);
+  EXPECT_EQ(ncclxCfg->ctranIbVcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
+  EXPECT_EQ(ncclxCfg->ctranIbMaxNumCqe, 4096);
+  EXPECT_EQ(ncclxCfg->ctranIbMaxNumNic, 1);
+  EXPECT_EQ(ncclxCfg->ctranIbEnableLocalFlush, true);
+  EXPECT_EQ(ncclxCfg->ctranIbTrafficClass, 200);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, CtranIbHintsDefaultAllUnset) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_FALSE(ncclxCfg->ctranIbNumQps.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbQpScalingTh.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbQpMsgs.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbVcMode.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbMaxNumCqe.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbMaxNumNic.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbEnableLocalFlush.has_value());
+  EXPECT_FALSE(ncclxCfg->ctranIbTrafficClass.has_value());
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, CtranIbVcModeAcceptsSpray) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbVcMode", "spray");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  EXPECT_EQ(ncclxCfg->ctranIbVcMode, NCCL_CTRAN_IB_VC_MODE::spray);
+
+  delete ncclxCfg;
+}
+
+// An unrecognized mode fails parsing rather than silently selecting one.
+TEST(ConfigHintsUT, CtranIbVcModeRejectsUnknownMode) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbVcMode", "roundrobin");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument);
+}
+
+// A bad value fails parsing rather than reverting to the cvar: a silently
+// dropped override produces a run that looks tuned but is not.
+TEST(ConfigHintsUT, CtranIbNumQpsRejectsNonPositive) {
+  for (const char* bad : {"0", "-4", "notanumber"}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("ctranIbNumQps", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument)
+        << "value: " << bad;
+  }
+}
+
+TEST(ConfigHintsUT, CtranIbQpMsgsRejectsNonPositive) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbQpMsgs", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument);
+}
+
+// Zero is meaningful: it divides an operation evenly over the QPs.
+TEST(ConfigHintsUT, CtranIbQpScalingThAcceptsZero) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbQpScalingTh", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ctranIbQpScalingTh.has_value());
+  EXPECT_EQ(*ncclxCfg->ctranIbQpScalingTh, 0u);
+
+  delete ncclxCfg;
+}
+
+TEST(ConfigHintsUT, CtranIbQpScalingThRejectsNegative) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbQpScalingTh", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument);
+}
+
+// resolveFirstIbvDevice hard-errors outside [1, DEVICES_PER_RANK]. Rejecting
+// here reports the bad value by name instead of deeper in the transport.
+TEST(ConfigHintsUT, CtranIbMaxNumNicRejectsOutOfRange) {
+  for (const char* bad : {"0", "-1", "9999", "notanumber"}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("ctranIbMaxNumNic", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument)
+        << "value: " << bad;
+  }
+}
+
+// An out-of-range traffic class would hard-error in resolveTrafficClass.
+TEST(ConfigHintsUT, CtranIbTrafficClassRejectsOutOfRange) {
+  for (const char* bad : {"-1", "256", "1024"}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("ctranIbTrafficClass", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument)
+        << "value: " << bad;
+  }
+}
+
+TEST(ConfigHintsUT, CtranIbTrafficClassAcceptsRangeBounds) {
+  for (const auto& [str, expected] :
+       std::vector<std::pair<const char*, int64_t>>{{"0", 0}, {"255", 255}}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("ctranIbTrafficClass", str);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+    auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+    ASSERT_TRUE(ncclxCfg->ctranIbTrafficClass.has_value()) << "value: " << str;
+    EXPECT_EQ(*ncclxCfg->ctranIbTrafficClass, expected);
+
+    delete ncclxCfg;
+  }
+}
+
+// Unset must stay unset so CtranIb keeps its arch-derived default.
+TEST(ConfigHintsUT, CtranIbEnableLocalFlushAcceptsFalse) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbEnableLocalFlush", "0");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ctranIbEnableLocalFlush.has_value());
+  EXPECT_FALSE(*ncclxCfg->ctranIbEnableLocalFlush);
+
+  delete ncclxCfg;
+}
+
+// A negative CQE cap is meaningful: it selects the device-reported maximum.
+TEST(ConfigHintsUT, CtranIbMaxNumCqeAcceptsNonPositive) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints;
+  hints.set("ctranIbMaxNumCqe", "-1");
+  config.hints = &hints;
+
+  EXPECT_EQ(ncclxParseCommConfig(&config), ncclSuccess);
+
+  auto* ncclxCfg = static_cast<ncclx::Config*>(config.ncclxConfig);
+  ASSERT_TRUE(ncclxCfg->ctranIbMaxNumCqe.has_value());
+  EXPECT_EQ(*ncclxCfg->ctranIbMaxNumCqe, -1);
+
+  delete ncclxCfg;
+}
+
+// A present-but-unparseable bool fails config parsing. Falling back to unset
+// would resolve to the arch default, which for local flush can be the opposite
+// of what the caller asked for. Explicit true/false stay valid.
+TEST(ConfigHintsUT, CtranIbEnableLocalFlushRejectsMalformed) {
+  for (const char* bad : {"flase", "tru", "maybe", "2x", ""}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("ctranIbEnableLocalFlush", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument)
+        << "value: " << bad;
+  }
+}
+
+// stoll stops at the first non-numeric character, so trailing text must be
+// rejected rather than silently truncating the value.
+TEST(ConfigHintsUT, CtranIbIntHintsRejectTrailingGarbage) {
+  for (const char* bad : {"1e6", "8!", "4 2", "0x10"}) {
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints;
+    hints.set("ctranIbQpScalingTh", bad);
+    config.hints = &hints;
+
+    EXPECT_EQ(ncclxParseCommConfig(&config), ncclInvalidArgument)
+        << "value: " << bad;
+  }
 }
 
 TEST(ConfigHintsUT, UseCtranHintOverride) {

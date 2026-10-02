@@ -3,6 +3,10 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/NcclxConfig.h"
@@ -82,6 +86,37 @@ TEST_F(CommSetConfigTest, RejectImmutableHintKeyNcclBuffSize) {
   newConfig.hints = &hints;
 
   EXPECT_EQ(ncclInvalidUsage, ncclx::commSetConfig(comm, &newConfig));
+}
+
+// Every ctranIb* key sizes a resource created at init, so commSetConfig must
+// reject it rather than silently accepting an update that cannot take effect.
+// Config::update rejects any knownHintKeys() entry absent from
+// mutableHintKeys(), so this pins the contract rather than ctran-specific
+// logic.
+TEST_F(CommSetConfigTest, RejectImmutableCtranIbHintKeys) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  const std::vector<std::pair<std::string, std::string>> ctranIbHints = {
+      {"ctranIbNumQps", "8"},
+      {"ctranIbQpScalingTh", "262144"},
+      {"ctranIbQpMsgs", "64"},
+      {"ctranIbVcMode", "dqplb"},
+      {"ctranIbMaxNumCqe", "4096"},
+      {"ctranIbMaxNumNic", "1"},
+      {"ctranIbEnableLocalFlush", "1"},
+      {"ctranIbTrafficClass", "200"},
+  };
+
+  for (const auto& [key, value] : ctranIbHints) {
+    ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+    ncclx::Hints hints({{key, value}});
+    newConfig.hints = &hints;
+
+    EXPECT_EQ(ncclInvalidUsage, ncclx::commSetConfig(comm, &newConfig))
+        << "hint: " << key;
+  }
 }
 
 TEST_F(CommSetConfigTest, RejectFlatFieldBlocking) {

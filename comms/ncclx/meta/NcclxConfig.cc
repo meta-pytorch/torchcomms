@@ -12,6 +12,8 @@
 #include "meta/algoconf/AlgoStrConv.h"
 
 #include <algorithm>
+#include <cctype>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -122,6 +124,69 @@ Config::Config(const ncclConfig_t* config) {
       WARN("NCCLX hint '%s': invalid integer value '%s'", key, val.c_str());
       return envDef;
     }
+  };
+
+  // Helper: parse an integer hint constrained to [lo, hi]. The optional stays
+  // unset only when the key is absent. A present value that is malformed or
+  // out of range fails config parsing rather than falling back to the cvar:
+  // silently reverting a per-comm override produces a run that looks tuned but
+  // is not, and the WARN alone is easy to miss on an otherwise healthy job.
+  auto parseRangedIntHint =
+      [&](const char* key, int64_t lo, int64_t hi) -> std::optional<int64_t> {
+    if (!hasHint(key)) {
+      return std::nullopt;
+    }
+    const std::string val = getHintStr(key);
+    try {
+      // stoll stops at the first non-numeric character, so "1e6" would parse
+      // as 1. Reject anything it did not consume.
+      size_t consumed = 0;
+      const int64_t parsed = std::stoll(val, &consumed);
+      if (consumed != val.size()) {
+        WARN("NCCLX hint '%s': invalid value '%s'", key, val.c_str());
+        throw std::invalid_argument("invalid integer hint value");
+      }
+      if (parsed < lo || parsed > hi) {
+        WARN(
+            "NCCLX hint '%s': value %lld must be in [%lld, %lld]",
+            key,
+            static_cast<long long>(parsed),
+            static_cast<long long>(lo),
+            static_cast<long long>(hi));
+        throw std::invalid_argument("out-of-range integer hint value");
+      }
+      return parsed;
+    } catch (const std::invalid_argument&) {
+      throw;
+    } catch (const std::exception&) {
+      WARN("NCCLX hint '%s': invalid value '%s'", key, val.c_str());
+      throw std::invalid_argument("invalid integer hint value");
+    }
+  };
+
+  // Helper: parse a bool hint that stays unset only when the key is absent.
+  // A present-but-unparseable value fails config parsing rather than falling
+  // back: unset resolves to the transport's own default, which for
+  // enableLocalFlush can be the opposite of what the caller asked for.
+  auto parseOptionalBoolHint = [&](const char* key) -> std::optional<bool> {
+    if (!hasHint(key)) {
+      return std::nullopt;
+    }
+    const std::string val = getHintStr(key);
+    std::string lower(val.size(), '\0');
+    std::transform(val.begin(), val.end(), lower.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (lower == "1" || lower == "yes" || lower == "true" || lower == "y" ||
+        lower == "t") {
+      return true;
+    }
+    if (lower == "0" || lower == "no" || lower == "false" || lower == "n" ||
+        lower == "f") {
+      return false;
+    }
+    WARN("NCCLX hint '%s': invalid boolean value '%s'", key, val.c_str());
+    throw std::invalid_argument("invalid boolean hint value");
   };
 
   // commDesc
@@ -235,6 +300,57 @@ Config::Config(const ncclConfig_t* config) {
       } catch (const std::exception&) {
         WARN(
             "NCCLX hint 'ibQpsPerConnection': invalid value '%s'", val.c_str());
+      }
+    }
+  }
+
+  // CTran IB per-comm overrides: hint only, validated here so a bad value
+  // falls back to the cvar instead of hard-failing deep in the transport.
+  {
+    constexpr int64_t kMaxTrafficClass = 255;
+    if (const auto v = parseRangedIntHint(
+            "ctranIbNumQps", 1, std::numeric_limits<int>::max())) {
+      ctranIbNumQps = static_cast<int>(*v);
+    }
+    if (const auto v = parseRangedIntHint(
+            "ctranIbQpScalingTh", 0, std::numeric_limits<int64_t>::max())) {
+      ctranIbQpScalingTh = static_cast<size_t>(*v);
+    }
+    if (const auto v = parseRangedIntHint(
+            "ctranIbQpMsgs", 1, std::numeric_limits<int>::max())) {
+      ctranIbQpMsgs = static_cast<int>(*v);
+    }
+    if (const auto v = parseRangedIntHint(
+            "ctranIbMaxNumCqe",
+            std::numeric_limits<int>::min(),
+            std::numeric_limits<int>::max())) {
+      ctranIbMaxNumCqe = static_cast<int>(*v);
+    }
+    // The transport hard-errors outside this range rather than clamping, so
+    // reject here to keep a typo from killing PG creation. The cvar is
+    // readable: the ctor calls initEnv() before any hint is parsed.
+    if (const auto v = parseRangedIntHint(
+            "ctranIbMaxNumNic", 1, NCCL_CTRAN_IB_DEVICES_PER_RANK)) {
+      ctranIbMaxNumNic = static_cast<int>(*v);
+    }
+    if (const auto v =
+            parseRangedIntHint("ctranIbTrafficClass", 0, kMaxTrafficClass)) {
+      ctranIbTrafficClass = *v;
+    }
+    ctranIbEnableLocalFlush = parseOptionalBoolHint("ctranIbEnableLocalFlush");
+    // Unlike the algo hints, which fall back to `orig`, an unrecognized mode
+    // fails parsing rather than silently selecting one.
+    if (hasHint("ctranIbVcMode")) {
+      const std::string vcMode = getHintStr("ctranIbVcMode");
+      if (vcMode == "spray") {
+        ctranIbVcMode = NCCL_CTRAN_IB_VC_MODE::spray;
+      } else if (vcMode == "dqplb") {
+        ctranIbVcMode = NCCL_CTRAN_IB_VC_MODE::dqplb;
+      } else {
+        WARN(
+            "NCCLX hint 'ctranIbVcMode': value '%s' must be 'spray' or 'dqplb'",
+            vcMode.c_str());
+        throw std::invalid_argument("invalid ctranIbVcMode hint value");
       }
     }
   }
@@ -388,6 +504,20 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     appendIfSet("ncclBuffSize", xCfg->ncclBuffSize);
     appendIfSet("ibSplitDataOnQps", xCfg->ibSplitDataOnQps);
     appendIfSet("ibQpsPerConnection", xCfg->ibQpsPerConnection);
+    appendIfSet("ctranIbNumQps", xCfg->ctranIbNumQps);
+    appendIfSet("ctranIbQpScalingTh", xCfg->ctranIbQpScalingTh);
+    appendIfSet("ctranIbQpMsgs", xCfg->ctranIbQpMsgs);
+    appendIfSet("ctranIbMaxNumCqe", xCfg->ctranIbMaxNumCqe);
+    appendIfSet("ctranIbMaxNumNic", xCfg->ctranIbMaxNumNic);
+    appendIfSet("ctranIbEnableLocalFlush", xCfg->ctranIbEnableLocalFlush);
+    appendIfSet("ctranIbTrafficClass", xCfg->ctranIbTrafficClass);
+    if (xCfg->ctranIbVcMode.has_value()) {
+      append(
+          fmt::format(
+              "ctranIbVcMode={}",
+              *xCfg->ctranIbVcMode == NCCL_CTRAN_IB_VC_MODE::spray ? "spray"
+                                                                   : "dqplb"));
+    }
   }
 
   INFO(
