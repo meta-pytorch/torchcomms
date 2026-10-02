@@ -35,6 +35,52 @@ Returns:
 )",
           py::call_guard<py::gil_scoped_release>())
       .def("get_nccl_comm_ptr", &TorchCommNCCLX::getCommPtr)
+      .def(
+          "colltrace_get_comm_id",
+          [](TorchCommNCCLX& self) -> py::object {
+            std::optional<uint64_t> commId;
+            {
+              py::gil_scoped_release release;
+              commId = self.getLifecycleCommId();
+            }
+            return commId.has_value() ? py::cast(*commId) : py::none();
+          })
+      .def(
+          "colltrace_get_latest_coll_id",
+          [](TorchCommNCCLX& self) -> py::object {
+            std::optional<uint64_t> collId;
+            {
+              py::gil_scoped_release release;
+              collId = self.getLatestLifecycleCollectiveId();
+            }
+            return collId.has_value() ? py::cast(*collId) : py::none();
+          })
+      .def(
+          "colltrace_describe_coll",
+          [](TorchCommNCCLX& self,
+             uint64_t commId,
+             uint64_t capturedCollId) -> py::object {
+            std::optional<meta::comms::colltrace::CapturedCollDescription>
+                described;
+            {
+              py::gil_scoped_release release;
+              described =
+                  self.describeCapturedCollective(commId, capturedCollId);
+            }
+            if (!described.has_value()) {
+              return py::none();
+            }
+            py::dict result;
+            result["op_name"] = described->opName;
+            result["algo_name"] = described->algoName;
+            result["data_type"] = described->dataType;
+            result["count"] = described->count.has_value()
+                ? py::cast(*described->count)
+                : py::none();
+            return result;
+          },
+          py::arg("comm_id"),
+          py::arg("captured_coll_id"))
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
       .def(
           "reduce_scatter_quantized",

@@ -1185,9 +1185,22 @@ ncclResult_t getCollTraceCommId(ncclComm_t comm, uint64_t& commId);
 // ncclInvalidUsage if the lifecycle feed is disabled.
 ncclResult_t getLatestCollTraceCollectiveId(ncclComm_t comm, uint64_t& collId);
 
+// Returns the latest one-based collective ID submitted on the communicator
+// whose lifecycle events carry `commId`, for a caller that has the id but not
+// the communicator. Returns ncclInvalidUsage if no lifecycle-enabled
+// communicator in this process stamps that id.
+ncclResult_t latestCollTraceCollectiveIdForCommId(
+    uint64_t commId,
+    uint64_t& collId);
+
 // Destructively drains lifecycle events across all lifecycle-enabled
-// communicators in this process. This call blocks until every registered
-// colltrace instance finishes a flush. Events are ordered by timestamp.
+// communicators in this process, ordered by timestamp.
+//
+// Bounded: it waits for every registered colltrace instance to finish a flush,
+// but only up to a budget shared across all of them, so a stuck instance cannot
+// hold the caller. Returns ncclSuccess either way. A drain cut short leaves
+// those events for the next one and increments
+// meta::comms::colltrace::lifecycleFeedFailures().
 ncclResult_t drainUnreadLifecycleEvents(std::vector<LifecycleEvent>& events);
 
 } // namespace ncclx::colltrace
