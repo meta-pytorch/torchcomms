@@ -2,7 +2,15 @@
 
 #include "comms/ctran/ibverbx/ib_injection/InjectionEngine.h"
 
+#include <fmt/core.h>
+
 #include <algorithm>
+#include <cerrno>
+#include <charconv>
+#include <cstdlib>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace ibverbx::injection {
@@ -42,7 +50,598 @@ bool isSetupVerb(IbInjectionVerb verb) {
   return false;
 }
 
+// --- spec parsing ---
+
+constexpr const char* kSpecEnv = "IB_INJECTION_SPEC";
+constexpr const char* kRankEnv = "RANK";
+
+struct NamedValue {
+  std::string_view name;
+  int32_t value;
+};
+
+constexpr NamedValue kVerbs[] = {
+    {"poll_cq", IB_INJECTION_VERB_POLL_CQ},
+    {"post_send", IB_INJECTION_VERB_POST_SEND},
+    {"post_recv", IB_INJECTION_VERB_POST_RECV},
+    {"open_device", IB_INJECTION_VERB_OPEN_DEVICE},
+    {"alloc_pd", IB_INJECTION_VERB_ALLOC_PD},
+    {"reg_mr", IB_INJECTION_VERB_REG_MR},
+    {"create_cq", IB_INJECTION_VERB_CREATE_CQ},
+    {"create_qp", IB_INJECTION_VERB_CREATE_QP},
+    {"modify_qp", IB_INJECTION_VERB_MODIFY_QP},
+};
+
+constexpr NamedValue kActions[] = {
+    {"api_error", IB_INJECTION_ACTION_API_ERROR},
+    {"wc_status", IB_INJECTION_ACTION_WC_STATUS},
+};
+
+// The errnos a verb failure plausibly reports. Deliberately short: an unlisted
+// name is rejected rather than guessed, and a bare integer always works.
+constexpr NamedValue kErrnos[] = {
+    {"EPERM", EPERM},
+    {"EIO", EIO},
+    {"EAGAIN", EAGAIN},
+    {"ENOMEM", ENOMEM},
+    {"EFAULT", EFAULT},
+    {"EBUSY", EBUSY},
+    {"ENODEV", ENODEV},
+    {"EINVAL", EINVAL},
+    {"ENOSPC", ENOSPC},
+    {"EOPNOTSUPP", EOPNOTSUPP},
+    {"ECONNRESET", ECONNRESET},
+    {"ETIMEDOUT", ETIMEDOUT},
+};
+
+// Full names here, unlike opcode's short forms: ibv_wc_status has one
+// namespace, so there is nothing to disambiguate, and the raw numbers are
+// meaningless to a reader of a job's env.
+constexpr NamedValue kWcStatuses[] = {
+    {"IBV_WC_LOC_LEN_ERR", IBV_WC_LOC_LEN_ERR},
+    {"IBV_WC_LOC_QP_OP_ERR", IBV_WC_LOC_QP_OP_ERR},
+    {"IBV_WC_LOC_PROT_ERR", IBV_WC_LOC_PROT_ERR},
+    {"IBV_WC_WR_FLUSH_ERR", IBV_WC_WR_FLUSH_ERR},
+    {"IBV_WC_BAD_RESP_ERR", IBV_WC_BAD_RESP_ERR},
+    {"IBV_WC_LOC_ACCESS_ERR", IBV_WC_LOC_ACCESS_ERR},
+    {"IBV_WC_REM_INV_REQ_ERR", IBV_WC_REM_INV_REQ_ERR},
+    {"IBV_WC_REM_ACCESS_ERR", IBV_WC_REM_ACCESS_ERR},
+    {"IBV_WC_REM_OP_ERR", IBV_WC_REM_OP_ERR},
+    {"IBV_WC_RETRY_EXC_ERR", IBV_WC_RETRY_EXC_ERR},
+    {"IBV_WC_RNR_RETRY_EXC_ERR", IBV_WC_RNR_RETRY_EXC_ERR},
+    {"IBV_WC_REM_ABORT_ERR", IBV_WC_REM_ABORT_ERR},
+    {"IBV_WC_FATAL_ERR", IBV_WC_FATAL_ERR},
+    {"IBV_WC_RESP_TIMEOUT_ERR", IBV_WC_RESP_TIMEOUT_ERR},
+    {"IBV_WC_GENERAL_ERR", IBV_WC_GENERAL_ERR},
+};
+
+// Short opcode names, resolved against the namespace the verb reports in. The
+// two tables share names on purpose -- that is the whole point of deriving the
+// domain from `fn` rather than asking a spec author to name it.
+constexpr NamedValue kWcOpcodes[] = {
+    {"SEND", IBV_WC_SEND},
+    {"RDMA_WRITE", IBV_WC_RDMA_WRITE},
+    {"RDMA_READ", IBV_WC_RDMA_READ},
+    {"COMP_SWAP", IBV_WC_COMP_SWAP},
+    {"FETCH_ADD", IBV_WC_FETCH_ADD},
+    {"RECV", IBV_WC_RECV},
+    {"RECV_RDMA_WITH_IMM", IBV_WC_RECV_RDMA_WITH_IMM},
+};
+
+constexpr NamedValue kWrOpcodes[] = {
+    {"RDMA_WRITE", IBV_WR_RDMA_WRITE},
+    {"RDMA_WRITE_WITH_IMM", IBV_WR_RDMA_WRITE_WITH_IMM},
+    {"SEND", IBV_WR_SEND},
+    {"SEND_WITH_IMM", IBV_WR_SEND_WITH_IMM},
+    {"RDMA_READ", IBV_WR_RDMA_READ},
+    {"ATOMIC_CMP_AND_SWP", IBV_WR_ATOMIC_CMP_AND_SWP},
+    {"ATOMIC_FETCH_AND_ADD", IBV_WR_ATOMIC_FETCH_AND_ADD},
+};
+
+template <size_t N>
+bool lookupName(
+    const NamedValue (&table)[N],
+    std::string_view name,
+    int32_t* out) {
+  for (const auto& entry : table) {
+    if (entry.name == name) {
+      *out = entry.value;
+      return true;
+    }
+  }
+  return false;
+}
+
+template <size_t N>
+bool tableHasValue(const NamedValue (&table)[N], int32_t value) {
+  for (const auto& entry : table) {
+    if (entry.value == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <size_t N>
+std::string nameList(const NamedValue (&table)[N]) {
+  std::string out;
+  for (const auto& entry : table) {
+    if (!out.empty()) {
+      out += " ";
+    }
+    out.append(entry.name);
+  }
+  return out;
+}
+
+std::string_view trim(std::string_view s) {
+  const auto notSpace = [](char c) {
+    return c != ' ' && c != '\t' && c != '\n';
+  };
+  while (!s.empty() && !notSpace(s.front())) {
+    s.remove_prefix(1);
+  }
+  while (!s.empty() && !notSpace(s.back())) {
+    s.remove_suffix(1);
+  }
+  return s;
+}
+
+std::vector<std::string_view> split(std::string_view s, char sep) {
+  std::vector<std::string_view> parts;
+  size_t start = 0;
+  while (true) {
+    const size_t at = s.find(sep, start);
+    if (at == std::string_view::npos) {
+      parts.push_back(trim(s.substr(start)));
+      return parts;
+    }
+    parts.push_back(trim(s.substr(start, at - start)));
+    start = at + 1;
+  }
+}
+
+bool parseU32(std::string_view s, uint32_t* out) {
+  if (s.empty()) {
+    return false;
+  }
+  const auto res = std::from_chars(s.data(), s.data() + s.size(), *out);
+  return res.ec == std::errc{} && res.ptr == s.data() + s.size();
+}
+
+bool parseI32(std::string_view s, int32_t* out) {
+  if (s.empty()) {
+    return false;
+  }
+  const auto res = std::from_chars(s.data(), s.data() + s.size(), *out);
+  return res.ec == std::errc{} && res.ptr == s.data() + s.size();
+}
+
+// One rule's worth of spec, before the verb-dependent fields are resolved.
+struct RuleFields {
+  std::string_view verb;
+  std::string_view action;
+  std::string_view errnoValue;
+  std::string_view status;
+  std::string_view rank;
+  std::string_view dev;
+  std::string_view qp;
+  std::string_view opcode;
+  std::string_view first;
+  std::string_view every;
+  std::string_view count;
+};
+
+// The one place a spec key is named. Both the lookup in assignField and the
+// "unknown key" message read this table, so adding a key cannot leave the two
+// disagreeing.
+struct FieldSlot {
+  std::string_view name;
+  std::string_view RuleFields::* slot;
+};
+
+constexpr FieldSlot kFieldSlots[] = {
+    {"fn", &RuleFields::verb},
+    {"action", &RuleFields::action},
+    {"errno", &RuleFields::errnoValue},
+    {"status", &RuleFields::status},
+    {"rank", &RuleFields::rank},
+    {"dev", &RuleFields::dev},
+    {"qp", &RuleFields::qp},
+    {"opcode", &RuleFields::opcode},
+    {"first", &RuleFields::first},
+    {"every", &RuleFields::every},
+    {"count", &RuleFields::count},
+};
+
+std::string fieldSlotNames() {
+  std::string out;
+  for (const auto& entry : kFieldSlots) {
+    if (!out.empty()) {
+      out += " ";
+    }
+    out.append(entry.name);
+  }
+  return out;
+}
+
+// `field` is the whole "key=value" token, quoted verbatim in any error so the
+// message points at what the operator actually typed.
+bool assignField(RuleFields& f, std::string_view field, std::string* error) {
+  const size_t eq = field.find('=');
+  if (eq == std::string_view::npos) {
+    *error = fmt::format("field '{}' is not key=value", field);
+    return false;
+  }
+  const std::string_view key = trim(field.substr(0, eq));
+  const std::string_view value = trim(field.substr(eq + 1));
+  if (value.empty()) {
+    *error = fmt::format("field '{}' has an empty value", field);
+    return false;
+  }
+
+  std::string_view* slot = nullptr;
+  for (const auto& entry : kFieldSlots) {
+    if (key == entry.name) {
+      slot = &(f.*entry.slot);
+      break;
+    }
+  }
+  if (slot == nullptr) {
+    // Name the two planned-but-absent mechanisms explicitly. Both appear in the
+    // README's planned shape, so an operator who read it will reach for them,
+    // and "unknown key" alone would read like a typo rather than a feature that
+    // has not landed.
+    if (key == "after_dev" || key == "after_count" || key == "manual") {
+      *error = fmt::format(
+          "key '{}' belongs to skew injection (cq_gate/call_delay), which the "
+          "engine does not implement yet",
+          key);
+    } else {
+      *error = fmt::format(
+          "unknown key '{}' in field '{}'; expected one of {}",
+          key,
+          field,
+          fieldSlotNames());
+    }
+    return false;
+  }
+
+  if (!slot->empty()) {
+    *error = fmt::format("key '{}' appears twice in one rule", key);
+    return false;
+  }
+  *slot = value;
+  return true;
+}
+
+// Resolve one rule's fields into an IbInjectionRule. Only shape is checked
+// here; the sparse verb/action matrix, the positive-errno requirement and the
+// wildcard-only selector constraints all belong to addRule, which every front
+// end shares.
+bool buildRule(const RuleFields& f, IbInjectionRule* rule, std::string* error) {
+  if (f.verb.empty()) {
+    *error = "rule has no fn=; expected one of " + nameList(kVerbs);
+    return false;
+  }
+  if (f.action.empty()) {
+    *error = "rule has no action=; expected one of " + nameList(kActions);
+    return false;
+  }
+
+  int32_t verb = 0;
+  if (!lookupName(kVerbs, f.verb, &verb)) {
+    *error = fmt::format(
+        "unknown fn '{}'; expected one of {}", f.verb, nameList(kVerbs));
+    return false;
+  }
+  int32_t action = 0;
+  if (!lookupName(kActions, f.action, &action)) {
+    // cq_gate and call_delay are the planned skew actions; say so rather than
+    // letting them read as a misspelling.
+    if (f.action == "cq_gate" || f.action == "call_delay") {
+      *error = fmt::format(
+          "action '{}' is skew injection, which the engine does not implement "
+          "yet; today's actions are {}",
+          f.action,
+          nameList(kActions));
+    } else {
+      *error = fmt::format(
+          "unknown action '{}'; expected one of {}",
+          f.action,
+          nameList(kActions));
+    }
+    return false;
+  }
+
+  *rule = {};
+  rule->verb = verb;
+  rule->action = action;
+  rule->selector.deviceId = IB_INJECTION_ANY_DEVICE;
+  rule->selector.hwQpNum = IB_INJECTION_ANY_QP;
+  rule->selector.opcode = IB_INJECTION_ANY_OPCODE;
+  rule->repeat.firstMatch = 1;
+  rule->repeat.everyNth = 1;
+  rule->repeat.count = 1;
+
+  if (action == IB_INJECTION_ACTION_API_ERROR) {
+    if (f.errnoValue.empty()) {
+      *error = "action=api_error needs errno=";
+      return false;
+    }
+    if (!lookupName(kErrnos, f.errnoValue, &rule->errnoValue) &&
+        !parseI32(f.errnoValue, &rule->errnoValue)) {
+      *error = fmt::format(
+          "errno '{}' is neither an integer nor one of {}",
+          f.errnoValue,
+          nameList(kErrnos));
+      return false;
+    }
+    if (!f.status.empty()) {
+      *error = "status= applies to action=wc_status, not api_error";
+      return false;
+    }
+  } else {
+    if (f.status.empty()) {
+      *error = "action=wc_status needs status=";
+      return false;
+    }
+    if (!lookupName(kWcStatuses, f.status, &rule->wcStatus) &&
+        !parseI32(f.status, &rule->wcStatus)) {
+      *error = fmt::format(
+          "status '{}' is neither an integer nor one of {}",
+          f.status,
+          nameList(kWcStatuses));
+      return false;
+    }
+    if (!f.errnoValue.empty()) {
+      *error = "errno= applies to action=api_error, not wc_status";
+      return false;
+    }
+  }
+
+  if (!f.dev.empty() && f.dev != "*") {
+    if (!parseI32(f.dev, &rule->selector.deviceId)) {
+      *error = fmt::format("dev '{}' is not an integer or *", f.dev);
+      return false;
+    }
+    // A value equal to the wildcard sentinel would be indistinguishable from
+    // having named no device at all, so a spec asking for one specific thing
+    // would silently match everything. Say so rather than widen the rule.
+    if (rule->selector.deviceId == IB_INJECTION_ANY_DEVICE) {
+      *error = fmt::format(
+          "dev {} is the any-device wildcard, not a device; omit dev or pass "
+          "dev=* to match every device",
+          f.dev);
+      return false;
+    }
+    // Device ids are handed out from 0 upward as CQs appear, so nothing
+    // negative can ever be assigned one.
+    if (rule->selector.deviceId < 0) {
+      *error = fmt::format(
+          "dev {} is negative; device ids start at 0, so this rule could never "
+          "fire",
+          f.dev);
+      return false;
+    }
+  }
+
+  if (!f.qp.empty() && f.qp != "*") {
+    // The role form the README plans -- qp=data:3 -- needs the engine to tag
+    // QPs by role at registration, which it does not do. Reject it by name so
+    // an operator who tries it learns that, rather than seeing "not a number".
+    if (f.qp.find(':') != std::string_view::npos) {
+      *error = fmt::format(
+          "qp '{}' uses the role form, which is not implemented; pass a "
+          "hardware qp_num, which a spec generally cannot know -- prefer a "
+          "C++ test for QP-specific rules",
+          f.qp);
+      return false;
+    }
+    if (!parseU32(f.qp, &rule->selector.hwQpNum)) {
+      *error = fmt::format("qp '{}' is not a qp_num or *", f.qp);
+      return false;
+    }
+    // Same trap as dev above: qp_num 0 is the any-QP wildcard (and never a real
+    // RC QP), so accepting it would turn a QP-specific rule into a global one.
+    if (rule->selector.hwQpNum == IB_INJECTION_ANY_QP) {
+      *error = fmt::format(
+          "qp {} is the any-QP wildcard and never a real RC qp_num; omit qp or "
+          "pass qp=* to match every QP",
+          f.qp);
+      return false;
+    }
+  }
+
+  if (!f.opcode.empty() && f.opcode != "*") {
+    // Derived, never spelled: the verb already says which namespace it reports
+    // in, and addRule rejects a mismatch, so resolving here means a spec cannot
+    // express the cross-namespace comparison at all.
+    const bool wc = verb == IB_INJECTION_VERB_POLL_CQ;
+    rule->selector.opcodeDomain =
+        wc ? IB_INJECTION_OPCODE_WC : IB_INJECTION_OPCODE_WR;
+    const bool found = wc
+        ? lookupName(kWcOpcodes, f.opcode, &rule->selector.opcode)
+        : lookupName(kWrOpcodes, f.opcode, &rule->selector.opcode);
+    // The numeric form has to land on the same set the names do. These tables
+    // list only the opcodes ctran and ctranx actually issue, so a number
+    // outside them -- opcode=99, or the any-opcode sentinel -- describes
+    // traffic that never appears and yields a rule that could never fire.
+    if (!found) {
+      const bool numeric = parseI32(f.opcode, &rule->selector.opcode) &&
+          (wc ? tableHasValue(kWcOpcodes, rule->selector.opcode)
+              : tableHasValue(kWrOpcodes, rule->selector.opcode));
+      if (!numeric) {
+        *error = fmt::format(
+            "unknown opcode '{}' for fn={}; expected one of {}",
+            f.opcode,
+            f.verb,
+            wc ? nameList(kWcOpcodes) : nameList(kWrOpcodes));
+        return false;
+      }
+    }
+  }
+
+  if (!f.first.empty() && !parseU32(f.first, &rule->repeat.firstMatch)) {
+    *error = fmt::format("first '{}' is not a positive integer", f.first);
+    return false;
+  }
+  if (!f.every.empty() && !parseU32(f.every, &rule->repeat.everyNth)) {
+    *error = fmt::format("every '{}' is not a positive integer", f.every);
+    return false;
+  }
+  if (!f.count.empty()) {
+    if (f.count == "inf") {
+      rule->repeat.unbounded = 1;
+      rule->repeat.count = 0;
+    } else if (!parseU32(f.count, &rule->repeat.count)) {
+      *error =
+          fmt::format("count '{}' is not a positive integer or inf", f.count);
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
+
+SpecParseResult parseInjectionSpec(
+    const std::string& spec,
+    std::optional<int32_t> rank) {
+  SpecParseResult result;
+  uint32_t ordinal = 0;
+  for (const std::string_view chunk : split(spec, ';')) {
+    if (chunk.empty()) {
+      continue; // tolerate a trailing or doubled ';'
+    }
+    ++ordinal;
+
+    RuleFields fields;
+    std::string error;
+    for (const std::string_view field : split(chunk, ',')) {
+      if (field.empty()) {
+        continue;
+      }
+      if (!assignField(fields, field, &error)) {
+        result.error = fmt::format("rule {}: {}", ordinal, error);
+        return result;
+      }
+    }
+
+    bool armsThisRank = true;
+    if (!fields.rank.empty() && fields.rank != "*") {
+      int32_t want = 0;
+      if (!parseI32(fields.rank, &want)) {
+        result.error = fmt::format(
+            "rule {}: rank '{}' is not an integer or *", ordinal, fields.rank);
+        return result;
+      }
+      if (!rank.has_value()) {
+        // Refuse to guess. Assuming rank 0 would make rank=1 arm nothing and
+        // rank=0 arm every process, both silently -- the one outcome an
+        // injector must never produce.
+        result.error = fmt::format(
+            "rule {}: rank={} needs $RANK, which is unset or not an integer; "
+            "refusing to assume a rank, since guessing arms either nothing or "
+            "every process with no way to tell",
+            ordinal,
+            want);
+        return result;
+      }
+      armsThisRank = want == *rank;
+    }
+
+    // Validated whatever rank it names, so a typo in a rule addressed elsewhere
+    // still fails here. Skipping validation with the arming would let a spec
+    // whose rules all target ranks outside this job be checked by nobody: it
+    // would arm nothing, anywhere, and report success on every rank.
+    IbInjectionRule rule;
+    if (!buildRule(fields, &rule, &error)) {
+      result.error = fmt::format("rule {}: {}", ordinal, error);
+      return result;
+    }
+
+    if (armsThisRank) {
+      result.rules.push_back(rule);
+    } else {
+      ++result.skippedForRank;
+    }
+  }
+  return result;
+}
+
+Engine::Engine() {
+  applyEnvSpec();
+}
+
+void Engine::applyEnvSpec() {
+  const char* spec = getenv(kSpecEnv);
+  if (spec == nullptr || *spec == '\0') {
+    return;
+  }
+
+  // Left empty when the environment does not usably name a rank, including an
+  // unparseable value: only a rule that actually says rank= needs one, and
+  // parseInjectionSpec is where that is known. Failing here instead would take
+  // down a process over a variable its spec never reads.
+  std::optional<int32_t> rank;
+  if (const char* r = getenv(kRankEnv); r != nullptr && *r != '\0') {
+    int32_t value = 0;
+    if (parseI32(r, &value)) {
+      rank = value;
+    }
+  }
+
+  const SpecParseResult parsed = parseInjectionSpec(spec, rank);
+  if (!parsed.error.empty()) {
+    fmt::print(
+        stderr,
+        "ib_injection: {} is malformed: {}\n  spec: {}\n",
+        kSpecEnv,
+        parsed.error,
+        spec);
+    abort();
+  }
+
+  // A spec that was set but yielded nothing armed nothing, which is the silent
+  // no-op this whole mechanism exists to remove: a stray ';' or an
+  // all-whitespace value would otherwise run completely uninjected and green.
+  // Rules addressed to other ranks are a different case and counted separately.
+  if (parsed.rules.empty() && parsed.skippedForRank == 0) {
+    fmt::print(
+        stderr,
+        "ib_injection: {} is set but describes no rules, so nothing would be "
+        "injected\n  spec: {}\n",
+        kSpecEnv,
+        spec);
+    abort();
+  }
+
+  for (const IbInjectionRule& rule : parsed.rules) {
+    uint32_t ruleId = 0;
+    if (addRule(&rule, &ruleId) != IB_INJECTION_OK) {
+      fmt::print(
+          stderr,
+          "ib_injection: {} rule rejected: {}\n  spec: {}\n",
+          kSpecEnv,
+          lastError(),
+          spec);
+      abort();
+    }
+  }
+
+  // Always printed, because on the env-driven surfaces there is no assertion
+  // and this line plus the per-rule FIRED lines are the entire record of what
+  // was armed.
+  fmt::print(
+      stderr,
+      "ib_injection: rank {} armed {} rule(s) from {} ({} addressed to other ranks)\n",
+      rank.has_value() ? std::to_string(*rank)
+                       : fmt::format("<no {}>", kRankEnv),
+      parsed.rules.size(),
+      kSpecEnv,
+      parsed.skippedForRank);
+}
 
 Engine& Engine::get() {
   // Function-local static: the shim is dlopen(3)ed, so a namespace-scope object
@@ -239,6 +838,20 @@ bool Engine::shouldFire(
     return false;
   }
   rule.firings++;
+  // The whole record that a rule acted, on the surfaces with no assertion:
+  // their only signal is the job's own output. Once per rule, since this sits
+  // on the hot path; a C++ test wanting exact counts reads getState() instead.
+  if (rule.firings == 1) {
+    fmt::print(
+        stderr,
+        "ib_injection: rule {} FIRED (verb {} action {} dev {} qp {} opcode {})\n",
+        rule.id,
+        static_cast<int>(rule.verb),
+        static_cast<int>(rule.action),
+        deviceId,
+        qpNum,
+        opcode);
+  }
   return true;
 }
 

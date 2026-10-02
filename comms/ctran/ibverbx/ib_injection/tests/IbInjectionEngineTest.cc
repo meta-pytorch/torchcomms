@@ -10,8 +10,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <limits>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -926,6 +928,425 @@ TEST_F(InjectionEngineTest, ResetDoesNotReuseRuleIds) {
   // which is what a stale handle has to resolve to.
   EXPECT_EQ(ruleState(stale).ruleId, 0u);
   EXPECT_EQ(ruleState(fresh).ruleId, fresh);
+}
+
+// --- IB_INJECTION_SPEC parsing ---
+//
+// The env front end is the only way collperf and farm jobs can arm anything,
+// and they have no assertion to catch a spec that quietly did nothing. So these
+// tests carry more weight than their size suggests: every rejection below is a
+// case that would otherwise become a green, uninjected run.
+
+SpecParseResult parseOk(
+    const std::string& spec,
+    std::optional<int32_t> rank = 0) {
+  SpecParseResult r = parseInjectionSpec(spec, rank);
+  EXPECT_EQ(r.error, "") << "spec: " << spec;
+  return r;
+}
+
+// Returns the error so each test can assert it names the offending token --
+// "malformed" with no pointer at what is wrong is barely better than silence.
+std::string parseErr(const std::string& spec, std::optional<int32_t> rank = 0) {
+  SpecParseResult r = parseInjectionSpec(spec, rank);
+  EXPECT_TRUE(r.rules.empty()) << "spec: " << spec;
+  EXPECT_NE(r.error, "") << "spec should have been rejected: " << spec;
+  return r.error;
+}
+
+TEST(InjectionSpecTest, MinimalSetupRuleTakesTheDocumentedDefaults) {
+  const auto r = parseOk("fn=create_qp,action=api_error,errno=ENOMEM");
+  ASSERT_EQ(r.rules.size(), 1u);
+  const auto& rule = r.rules[0];
+  EXPECT_EQ(rule.verb, IB_INJECTION_VERB_CREATE_QP);
+  EXPECT_EQ(rule.action, IB_INJECTION_ACTION_API_ERROR);
+  EXPECT_EQ(rule.errnoValue, ENOMEM);
+  EXPECT_EQ(rule.selector.deviceId, IB_INJECTION_ANY_DEVICE);
+  EXPECT_EQ(rule.selector.hwQpNum, IB_INJECTION_ANY_QP);
+  EXPECT_EQ(rule.selector.opcode, IB_INJECTION_ANY_OPCODE);
+  // Fire once, on the first match: the least surprising default, and the one a
+  // spec author gets without knowing the repeat schedule exists.
+  EXPECT_EQ(rule.repeat.firstMatch, 1u);
+  EXPECT_EQ(rule.repeat.everyNth, 1u);
+  EXPECT_EQ(rule.repeat.count, 1u);
+  EXPECT_EQ(rule.repeat.unbounded, 0);
+}
+
+TEST(InjectionSpecTest, ErrnoAndStatusAcceptNamesOrIntegers) {
+  // Each result is bound and its size asserted before indexing: if a regression
+  // makes one of these specs fail to parse, the test must report that rather
+  // than read off the end of an empty vector.
+  const auto numeric = parseOk("fn=alloc_pd,action=api_error,errno=12");
+  ASSERT_EQ(numeric.rules.size(), 1u);
+  EXPECT_EQ(numeric.rules[0].errnoValue, 12);
+
+  const auto named = parseOk("fn=alloc_pd,action=api_error,errno=EINVAL");
+  ASSERT_EQ(named.rules.size(), 1u);
+  EXPECT_EQ(named.rules[0].errnoValue, EINVAL);
+
+  const auto status =
+      parseOk("fn=poll_cq,action=wc_status,status=IBV_WC_RETRY_EXC_ERR");
+  ASSERT_EQ(status.rules.size(), 1u);
+  EXPECT_EQ(status.rules[0].wcStatus, IBV_WC_RETRY_EXC_ERR);
+}
+
+TEST(InjectionSpecTest, RepeatAndUnboundedCount) {
+  const auto boundedSpec = parseOk(
+      "fn=create_qp,action=api_error,errno=EIO,first=3,every=2,count=5");
+  ASSERT_EQ(boundedSpec.rules.size(), 1u);
+  const auto& bounded = boundedSpec.rules[0];
+  EXPECT_EQ(bounded.repeat.firstMatch, 3u);
+  EXPECT_EQ(bounded.repeat.everyNth, 2u);
+  EXPECT_EQ(bounded.repeat.count, 5u);
+  EXPECT_EQ(bounded.repeat.unbounded, 0);
+
+  const auto infSpec =
+      parseOk("fn=create_qp,action=api_error,errno=EIO,count=inf");
+  ASSERT_EQ(infSpec.rules.size(), 1u);
+  EXPECT_EQ(infSpec.rules[0].repeat.unbounded, 1);
+}
+
+// The reason `opcode` takes a short name and the domain is derived: the same
+// spelling has to mean different numbers depending on the verb, and a spec
+// author naming the namespace by hand is the mistake that matches nothing and
+// says nothing.
+TEST(InjectionSpecTest, OpcodeResolvesInTheVerbsOwnNamespace) {
+  const auto wcSpec = parseOk(
+      "fn=poll_cq,action=wc_status,status=IBV_WC_FATAL_ERR,opcode=RDMA_READ");
+  const auto wrSpec =
+      parseOk("fn=post_send,action=api_error,errno=EIO,opcode=RDMA_READ");
+  ASSERT_EQ(wcSpec.rules.size(), 1u);
+  ASSERT_EQ(wrSpec.rules.size(), 1u);
+  const auto& wc = wcSpec.rules[0];
+  const auto& wr = wrSpec.rules[0];
+
+  EXPECT_EQ(wc.selector.opcode, IBV_WC_RDMA_READ);
+  EXPECT_EQ(wc.selector.opcodeDomain, IB_INJECTION_OPCODE_WC);
+  EXPECT_EQ(wr.selector.opcode, IBV_WR_RDMA_READ);
+  EXPECT_EQ(wr.selector.opcodeDomain, IB_INJECTION_OPCODE_WR);
+
+  // Same name, different numbers -- which is the entire hazard.
+  EXPECT_NE(wc.selector.opcode, wr.selector.opcode);
+}
+
+TEST(InjectionSpecTest, RankSelectsWhichRanksArm) {
+  const std::string spec = "rank=1,fn=create_qp,action=api_error,errno=EIO";
+  EXPECT_EQ(parseOk(spec, /*rank=*/1).rules.size(), 1u);
+
+  const auto other = parseInjectionSpec(spec, /*rank=*/0);
+  EXPECT_EQ(other.error, "");
+  EXPECT_TRUE(other.rules.empty());
+  // Reported rather than dropped, so a banner can say "not a target for this
+  // rank" instead of the ambiguous "armed nothing".
+  EXPECT_EQ(other.skippedForRank, 1u);
+
+  // No rank= and rank=* both arm everywhere.
+  EXPECT_EQ(
+      parseOk("fn=create_qp,action=api_error,errno=EIO", 7).rules.size(), 1u);
+  EXPECT_EQ(
+      parseOk("rank=*,fn=create_qp,action=api_error,errno=EIO", 7).rules.size(),
+      1u);
+}
+
+// Assuming a rank is the one thing this must not do. Rank 0 as a default would
+// make rank=1 arm nothing and rank=0 arm every process, both silently -- so a
+// spec that needs a rank the environment does not supply is an error.
+TEST(InjectionSpecTest, RefusesToGuessAnAbsentRank) {
+  const std::string err =
+      parseErr("rank=1,fn=create_qp,action=api_error,errno=EIO", std::nullopt);
+  EXPECT_NE(err.find("RANK"), std::string::npos);
+  EXPECT_NE(err.find("refusing"), std::string::npos);
+
+  // A spec that never mentions rank needs nothing from the environment.
+  EXPECT_EQ(
+      parseOk("fn=create_qp,action=api_error,errno=EIO", std::nullopt)
+          .rules.size(),
+      1u);
+  EXPECT_EQ(
+      parseOk("rank=*,fn=create_qp,action=api_error,errno=EIO", std::nullopt)
+          .rules.size(),
+      1u);
+}
+
+// A selector value equal to a wildcard sentinel would silently widen the rule
+// to everything, which is the opposite of what naming one device or QP asks
+// for.
+TEST(InjectionSpecTest, RejectsSelectorValuesThatAreTheWildcardSentinels) {
+  EXPECT_NE(
+      parseErr("fn=create_qp,action=api_error,errno=EIO,dev=-1")
+          .find("wildcard"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=post_send,action=api_error,errno=EIO,qp=0").find("wildcard"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=post_send,action=api_error,errno=EIO,opcode=-1")
+          .find("opcode"),
+      std::string::npos);
+
+  // Out-of-range numerics describe traffic that never appears, so they are
+  // rejected for the same reason: the rule could never fire.
+  EXPECT_NE(
+      parseErr("fn=post_send,action=api_error,errno=EIO,opcode=99")
+          .find("unknown opcode"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=create_qp,action=api_error,errno=EIO,dev=-2")
+          .find("negative"),
+      std::string::npos);
+
+  // The numeric form still works for an opcode the engine can actually see.
+  EXPECT_EQ(
+      parseOk("fn=post_send,action=api_error,errno=EIO,opcode=0").rules.size(),
+      1u);
+
+  // The explicit wildcard spellings stay accepted.
+  EXPECT_EQ(
+      parseOk("fn=post_send,action=api_error,errno=EIO,dev=*,qp=*")
+          .rules.size(),
+      1u);
+}
+
+// A spec that parses to nothing armed nothing. The parser reports it as an
+// empty success and applyEnvSpec is what refuses to continue, so assert the
+// shape the abort keys on: no rules AND nothing merely addressed elsewhere.
+TEST(InjectionSpecTest, ASpecWithNoRuleTokensYieldsNothingToArm) {
+  for (const char* spec : {";", ";;;", "   ", " ; ; "}) {
+    const auto r = parseInjectionSpec(spec, 0);
+    EXPECT_EQ(r.error, "") << spec;
+    EXPECT_TRUE(r.rules.empty()) << spec;
+    EXPECT_EQ(r.skippedForRank, 0u) << spec;
+  }
+
+  // Contrast: rules aimed at another rank arm nothing here but are counted, so
+  // that case must not be mistaken for "the spec described nothing".
+  const auto other =
+      parseInjectionSpec("rank=5,fn=create_qp,action=api_error,errno=EIO", 0);
+  EXPECT_TRUE(other.rules.empty());
+  EXPECT_EQ(other.skippedForRank, 1u);
+}
+
+// The spec front end inherits addRule's post_recv opcode rejection rather than
+// re-checking it, so one contract covers both ways in.
+TEST(InjectionSpecTest, SpecRejectsAnOpcodeOnPostRecv) {
+  Engine& engine = Engine::get();
+  std::lock_guard<std::mutex> lock(engine.mutex());
+  engine.reset();
+
+  const auto parsed = parseInjectionSpec(
+      "fn=post_recv,action=api_error,errno=EIO,opcode=SEND", 0);
+  ASSERT_EQ(parsed.error, "");
+  ASSERT_EQ(parsed.rules.size(), 1u);
+
+  uint32_t id = 0;
+  EXPECT_EQ(engine.addRule(&parsed.rules[0], &id), IB_INJECTION_ERR_ARG);
+  EXPECT_NE(
+      std::string(engine.lastError()).find("post_recv"), std::string::npos);
+}
+
+// Every rule is validated whatever rank it names, and only arming is filtered.
+// Validating just the local rank's rules would let a spec whose rules all
+// target ranks outside this job be checked by nobody: it would arm nothing,
+// anywhere, and report success on every rank -- a silent no-op, which is
+// precisely what aborting at load exists to prevent.
+TEST(InjectionSpecTest, ValidatesRulesAddressedToOtherRanks) {
+  EXPECT_NE(
+      parseErr("rank=5,fn=create_qp,action=api_error,errno=NOSUCHERR", 0)
+          .find("NOSUCHERR"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("rank=5,fn=not_a_verb,action=api_error,errno=EIO", 0)
+          .find("not_a_verb"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("rank=5,fn=post_send,action=api_error,errno=EIO,qp=data:3", 0)
+          .find("role form"),
+      std::string::npos);
+
+  // A well-formed rule for another rank is still counted, not armed -- that is
+  // the difference between "not my rank" and "armed nothing at all".
+  const auto r = parseOk("rank=5,fn=create_qp,action=api_error,errno=EIO", 0);
+  EXPECT_TRUE(r.rules.empty());
+  EXPECT_EQ(r.skippedForRank, 1u);
+}
+
+// A receive work request has no opcode field, so the recv shim always decides
+// with the wildcard and a rule naming one could never fire. Rejected in addRule
+// rather than the parser, so both front ends inherit it.
+TEST_F(InjectionEngineTest, PostRecvRejectsAnOpcodeSelector) {
+  auto r = baseRule(IB_INJECTION_VERB_POST_RECV, IB_INJECTION_ACTION_API_ERROR);
+  r.errnoValue = EIO;
+  r.selector.opcode = IBV_WR_SEND;
+  r.selector.opcodeDomain = IB_INJECTION_OPCODE_WR;
+
+  uint32_t id = 0;
+  EXPECT_EQ(engine_->addRule(&r, &id), IB_INJECTION_ERR_ARG);
+  EXPECT_NE(
+      std::string(engine_->lastError()).find("post_recv"), std::string::npos);
+
+  // The wildcard is what a recv rule is meant to use, and is accepted.
+  r.selector.opcode = IB_INJECTION_ANY_OPCODE;
+  EXPECT_EQ(engine_->addRule(&r, &id), IB_INJECTION_OK) << engine_->lastError();
+}
+
+TEST(InjectionSpecTest, SeveralRulesAndForgivingWhitespace) {
+  const auto r = parseOk(
+      " fn=create_qp, action=api_error, errno=ENOMEM ; "
+      "fn=poll_cq, action=wc_status, status=IBV_WC_RETRY_EXC_ERR ; ");
+  ASSERT_EQ(r.rules.size(), 2u);
+  EXPECT_EQ(r.rules[0].verb, IB_INJECTION_VERB_CREATE_QP);
+  EXPECT_EQ(r.rules[1].verb, IB_INJECTION_VERB_POLL_CQ);
+}
+
+TEST(InjectionSpecTest, RejectsMalformedFieldsAndNamesTheToken) {
+  EXPECT_NE(parseErr("fn=create_qp,oops").find("oops"), std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=create_qp,action=api_error,errno=EIO,nope=1").find("nope"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("action=api_error,errno=EIO").find("fn="), std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=create_qp,errno=EIO").find("action="), std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=not_a_verb,action=api_error,errno=EIO").find("not_a_verb"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=create_qp,action=api_error,errno=NOSUCHERR")
+          .find("NOSUCHERR"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr(
+          "fn=poll_cq,action=wc_status,status=IBV_WC_FATAL_ERR,opcode=NOPE")
+          .find("NOPE"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=create_qp,action=api_error,errno=").find("empty"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("rank=x,fn=create_qp,action=api_error,errno=EIO").find("rank"),
+      std::string::npos);
+  // A duplicated key is a silent override, so it is rejected rather than
+  // resolved by last-wins.
+  EXPECT_NE(
+      parseErr("fn=create_qp,fn=alloc_pd,action=api_error,errno=EIO")
+          .find("twice"),
+      std::string::npos);
+}
+
+// Each action needs exactly its own payload. Accepting the other one would
+// leave a rule that fires with a zeroed field -- and for API_ERROR a zero errno
+// reads as success at every call site.
+TEST(InjectionSpecTest, RejectsPayloadThatBelongsToTheOtherAction) {
+  EXPECT_NE(
+      parseErr("fn=create_qp,action=api_error").find("errno"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=poll_cq,action=wc_status").find("status"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr("fn=poll_cq,action=wc_status,status=IBV_WC_FATAL_ERR,errno=EIO")
+          .find("errno"),
+      std::string::npos);
+  EXPECT_NE(
+      parseErr(
+          "fn=create_qp,action=api_error,errno=EIO,status=IBV_WC_FATAL_ERR")
+          .find("status"),
+      std::string::npos);
+}
+
+// The README documents these as planned. An operator who read it will type
+// them, so they must be rejected by name -- "unknown key" would read as a typo
+// and send them looking for a misspelling that is not there.
+TEST(InjectionSpecTest, RejectsPlannedButUnimplementedSyntaxByName) {
+  const std::string gate =
+      parseErr("fn=poll_cq,action=cq_gate,after_dev=0,after_count=2");
+  EXPECT_NE(gate.find("cq_gate"), std::string::npos);
+  EXPECT_NE(gate.find("not implement"), std::string::npos);
+
+  const std::string role =
+      parseErr("fn=post_send,action=api_error,errno=EIO,qp=data:3");
+  EXPECT_NE(role.find("role form"), std::string::npos);
+
+  const std::string skewKey = parseErr(
+      "fn=poll_cq,action=wc_status,status=IBV_WC_FATAL_ERR,after_dev=0");
+  EXPECT_NE(skewKey.find("skew"), std::string::npos);
+}
+
+// The parser owns shape only. Every semantic constraint -- the sparse
+// verb/action matrix, a positive errno, wildcard-only selectors on setup verbs
+// -- stays in addRule so both front ends are held to one contract.
+TEST_F(InjectionEngineTest, SpecRulesGoThroughAddRuleValidation) {
+  const auto crossVerb =
+      parseOk("fn=post_send,action=wc_status,status=IBV_WC_FATAL_ERR");
+  ASSERT_EQ(crossVerb.rules.size(), 1u);
+  uint32_t ruleId = 0;
+  EXPECT_EQ(
+      engine_->addRule(&crossVerb.rules[0], &ruleId), IB_INJECTION_ERR_ARG);
+
+  // A setup verb cannot see a device, so a spec naming one is a rule that would
+  // never fire.
+  const auto setupWithDevice =
+      parseOk("fn=create_qp,action=api_error,errno=EIO,dev=1");
+  ASSERT_EQ(setupWithDevice.rules.size(), 1u);
+  EXPECT_EQ(
+      engine_->addRule(&setupWithDevice.rules[0], &ruleId),
+      IB_INJECTION_ERR_ARG);
+
+  const auto zeroErrno = parseOk("fn=create_qp,action=api_error,errno=0");
+  ASSERT_EQ(zeroErrno.rules.size(), 1u);
+  EXPECT_EQ(
+      engine_->addRule(&zeroErrno.rules[0], &ruleId), IB_INJECTION_ERR_ARG);
+
+  const auto zeroFirst =
+      parseOk("fn=create_qp,action=api_error,errno=EIO,first=0");
+  ASSERT_EQ(zeroFirst.rules.size(), 1u);
+  EXPECT_EQ(
+      engine_->addRule(&zeroFirst.rules[0], &ruleId), IB_INJECTION_ERR_ARG);
+}
+
+// The claim the whole design rests on: one engine, two front ends. A spec rule
+// and a hand-built one must be indistinguishable to the engine, or the C++
+// tests are validating something the MAST surfaces do not actually run.
+//
+// Bounded to count=1 so the two do not compete: pollCq stops at the first
+// matching WC_STATUS rule, so an unbounded first rule would starve the second
+// and prove nothing about it.
+TEST_F(InjectionEngineTest, SpecAndHandBuiltRuleFireIdentically) {
+  setupTwoDevices();
+  const auto parsed = parseOk(
+      "fn=poll_cq,action=wc_status,status=IBV_WC_RETRY_EXC_ERR,"
+      "opcode=RDMA_READ,dev=0,count=1");
+  ASSERT_EQ(parsed.rules.size(), 1u);
+  uint32_t specRuleId = 0;
+  ASSERT_EQ(engine_->addRule(&parsed.rules[0], &specRuleId), IB_INJECTION_OK)
+      << engine_->lastError();
+
+  auto hand =
+      baseRule(IB_INJECTION_VERB_POLL_CQ, IB_INJECTION_ACTION_WC_STATUS);
+  hand.wcStatus = IBV_WC_RETRY_EXC_ERR;
+  hand.selector.opcode = IBV_WC_RDMA_READ;
+  hand.selector.deviceId = 0;
+  hand.repeat.unbounded = 0;
+  hand.repeat.count = 1;
+  uint32_t handRuleId = 0;
+  ASSERT_EQ(engine_->addRule(&hand, &handRuleId), IB_INJECTION_OK)
+      << engine_->lastError();
+
+  ibv_wc wc{};
+  FakeProvider::push(cq0_, IBV_WC_RDMA_READ, 1);
+  ASSERT_EQ(pollInto(cq0_, &wc), 1);
+  EXPECT_EQ(wc.status, IBV_WC_RETRY_EXC_ERR);
+
+  // Second completion: the spec rule is spent, so the hand-built one takes it
+  // and produces the same observable outcome.
+  wc = {};
+  FakeProvider::push(cq0_, IBV_WC_RDMA_READ, 1);
+  ASSERT_EQ(pollInto(cq0_, &wc), 1);
+  EXPECT_EQ(wc.status, IBV_WC_RETRY_EXC_ERR);
+
+  EXPECT_EQ(ruleState(specRuleId).firings, 1u);
+  EXPECT_EQ(ruleState(handRuleId).firings, 1u);
+  EXPECT_EQ(deviceState(0).cqesStatusMutated, 2u);
 }
 
 } // namespace

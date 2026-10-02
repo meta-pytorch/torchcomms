@@ -161,6 +161,10 @@ void* realHandle() {
           dlErrorText());
       abort();
     }
+    // Says the shim is live and names what it delegates to. On collperf and
+    // farm jobs there is no assertion, so this line is how a reader knows the
+    // run went through the shim at all rather than the real provider directly.
+    fprintf(stderr, "ib_injection: loaded, delegating to '%s'\n", path);
     return h;
   }();
   return handle;

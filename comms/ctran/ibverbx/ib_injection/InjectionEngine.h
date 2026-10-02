@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -21,6 +22,64 @@
 #include "comms/ctran/ibverbx/ib_injection/IbInjectionApi.h"
 
 namespace ibverbx::injection {
+
+// --- IB_INJECTION_SPEC: the environment front end ---
+//
+// The surfaces that need injection most -- collperf, MAST and farm jobs -- have
+// no C++ hook point and cannot reach the control ABI at all. What they do have
+// is job-wide environment, so IB_INJECTION_SPEC carries a declarative rule
+// list, parsed at load into the very rules addRule() builds. One engine, two
+// front ends: nothing here re-implements matching or validation.
+//
+//   IB_INJECTION_SPEC = rule ( ';' rule )*
+//   rule              = field ( ',' field )*
+//   field             = key '=' value
+//
+// Keys are `fn action errno status rank dev qp opcode first every count`. The
+// per-key value grammar and defaults live in
+// comms/ctran/ibverbx/ib_injection/README.md, where the table renders as
+// markdown instead of being reflowed into nonsense by clang-format.
+//
+// `opcode` takes the SHORT name and the namespace is derived from `fn`. That is
+// deliberate: IBV_WR_RDMA_READ is 4 and IBV_WC_RDMA_READ is 2, so naming the
+// namespace is the one thing a hand-written spec must not be allowed to get
+// wrong -- it would match nothing, or the wrong traffic, and say so either way.
+//
+// `rank` is matched against $RANK, so one job-wide string arms selected ranks.
+// That exists because the surfaces this is for -- collperf, farm jobs -- have
+// no per-rank environment channel: their env is set once for the whole task
+// group.
+//
+// Everything the current engine cannot act on is REJECTED, not ignored: the
+// planned `qp=data:N` role form and the `cq_gate` / `call_delay` skew actions
+// name mechanisms that do not exist yet, and a spec that quietly did nothing is
+// the exact failure this whole mechanism exists to remove.
+struct SpecParseResult {
+  // Rules whose `rank` selector matched this rank, in spec order.
+  std::vector<IbInjectionRule> rules;
+  // Rules addressed to a different rank. Reported so a banner can distinguish
+  // "this rank was not a target" from "the spec armed nothing at all". These
+  // were fully validated -- only their arming was skipped.
+  uint32_t skippedForRank{0};
+  // Empty on success. Otherwise names the offending token.
+  std::string error;
+};
+
+// Pure: no env, no engine, no dlopen. The Engine constructor is the only
+// production caller; tests drive this directly.
+//
+// `rank` is this process's rank, or nullopt when the environment does not name
+// one. A spec that uses `rank=` with nullopt is an ERROR, not a guess: assuming
+// rank 0 would make `rank=1` arm nothing and `rank=0` arm every process, both
+// silently, which is the one outcome an injector must never produce.
+//
+// Every rule is validated whatever rank it names. Only arming is filtered, so a
+// typo in a rule addressed to another rank still fails here -- otherwise a spec
+// whose rules all target ranks outside this job would be validated by nobody
+// and arm nothing anywhere, reporting success.
+SpecParseResult parseInjectionSpec(
+    const std::string& spec,
+    std::optional<int32_t> rank);
 
 // The ops the shim intercepts. Everything else on ibv_context_ops keeps
 // pointing at the real provider's implementation -- including req_notify_cq,
@@ -156,7 +215,21 @@ class Engine {
   void forgetAllObjectsForTest();
 
  private:
-  Engine() = default;
+  Engine();
+
+  // Parse IB_INJECTION_SPEC (against $RANK) and install the rules it names.
+  // Aborts on a malformed spec or a rule addRule rejects, naming the offending
+  // token: a spec that failed to parse and ran anyway is indistinguishable from
+  // an unmounted fbpkg, and both look like a green uninjected pass.
+  //
+  // Called from the constructor, which every shim path reaches through
+  // Engine::get() before it delegates -- including decideSetupCall() for an
+  // open_device rule, so it is early enough for every verb.
+  //
+  // reset() drops these along with every other rule. That is right for a C++
+  // test, which resets after ctran init to measure only its own traffic, and
+  // irrelevant for the env-driven surfaces, which never call it.
+  void applyEnvSpec();
 
   // True when the rule's selector matches, AND its repeat schedule says this
   // match should act. Bumps matches/firings. Evaluated ONCE per event.
