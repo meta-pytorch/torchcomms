@@ -2,10 +2,12 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <variant>
 #include <vector>
 
 #include "comms/uniflow/Result.h"
@@ -26,28 +28,72 @@
 
 namespace uniflow {
 
+/// How a P2P segment is shared with peers. IPC payloads keep the legacy
+/// layout without a mode byte so older peers still import them; every other
+/// payload leads with its mode byte.
+enum class P2pSharingMode : uint8_t {
+  Ipc = 0, // HIP IPC handle (hipMalloc allocations)
+  PosixFd = 1, // one POSIX fd per chunk of a VMM (hipMemCreate) allocation
+};
+
+/// Upper bound on VMM chunks per segment. At 28 bytes per chunk the payload
+/// stays near 224 KiB, which covers 160 GiB of 20 MiB allocator chunks.
+inline constexpr uint32_t kP2pMaxVmmChunks = 8192;
+
+/// Where a pid is meaningful: the kernel boot and the PID namespace. A VMM
+/// importer resolves the exporter's pid only when both match its own, so a
+/// payload from another host or namespace never reaches pidfd_open.
+struct P2pProcessScope {
+  std::array<uint8_t, 16> bootId{}; // /proc/sys/kernel/random/boot_id
+  uint64_t pidNamespace{0}; // st_ino of /proc/self/ns/pid
+
+  bool operator==(const P2pProcessScope&) const = default;
+};
+
 /// Local registration handle for the AMD intra-node XGMI P2P transport.
 ///
-/// Wraps a HIP IPC handle (CudaApi::IpcMemHandle) plus the metadata a peer
-/// needs to map and address the exporter's device allocation. The exported
-/// handle is pure bytes and the backing allocation is owned by the Segment, so
-/// this handle holds no GPU resource and its destructor is trivial.
+/// Carries either a HIP IPC handle or, for VMM allocations, one exported POSIX
+/// fd per physical chunk. The handle owns those fds and closes them on
+/// destruction; importers duplicate them with pidfd_getfd while the segment is
+/// registered. The backing allocation is owned by the Segment.
 ///
 /// All vendor contact is confined to the CudaApi seam (neutral types only), so
 /// this lives in a plain, non-hipified library.
 class P2pRegistrationHandle : public RegistrationHandle {
  public:
-  /// Packed wire format (byte-copy serialized, like the NVLink handles).
-  struct __attribute__((packed)) Payload {
+  /// IPC wire format (byte-copy serialized, no mode byte).
+  struct __attribute__((packed)) IpcPayload {
     int32_t ownerPid{0};
     uint64_t base{0}; // exporter allocation base address (same-pid fast path)
     uint64_t offset{0}; // segment offset within the allocation
     uint64_t size{0}; // segment length in bytes
     CudaApi::IpcMemHandle ipcHandle{}; // 64-byte opaque HIP IPC handle
   };
-  static constexpr size_t kSerializedSize =
+  static constexpr size_t kIpcSerializedSize =
       sizeof(int32_t) + 3 * sizeof(uint64_t) + CudaApi::kIpcMemHandleSize;
-  static_assert(sizeof(Payload) == kSerializedSize);
+  static_assert(sizeof(IpcPayload) == kIpcSerializedSize);
+
+  /// One VMM chunk as it appears on the wire. st_dev and st_ino identify the
+  /// exported file host-wide, so an importer detects a reused fd number or pid.
+  struct __attribute__((packed)) VmmChunk {
+    int32_t fd{-1}; // exporter-side fd number, pulled with pidfd_getfd
+    uint64_t dev{0}; // st_dev of the exported fd
+    uint64_t inode{0}; // st_ino of the exported fd
+    uint64_t size{0}; // chunk length in bytes
+  };
+  static_assert(sizeof(VmmChunk) == 28);
+
+  /// VMM payload. The chunks are VA-contiguous in the exporter, in order.
+  struct VmmPayload {
+    P2pProcessScope scope; // where ownerPid is valid
+    int32_t ownerPid{0};
+    int32_t exporterDevice{-1};
+    uint64_t offset{0}; // segment offset from the first chunk's base
+    uint64_t size{0}; // segment length in bytes
+    std::vector<VmmChunk> chunks;
+  };
+
+  using Payload = std::variant<IpcPayload, VmmPayload>;
 
   P2pRegistrationHandle(
       const CudaApi::IpcMemHandle& ipcHandle,
@@ -56,59 +102,87 @@ class P2pRegistrationHandle : public RegistrationHandle {
       uint64_t offset,
       uint64_t size);
 
-  ~P2pRegistrationHandle() override = default;
+  /// Takes ownership of every chunk fd in @p payload.
+  explicit P2pRegistrationHandle(VmmPayload payload);
+
+  ~P2pRegistrationHandle() override;
+
+  // Owns exported fds; always held behind a unique_ptr.
+  P2pRegistrationHandle(const P2pRegistrationHandle&) = delete;
+  P2pRegistrationHandle& operator=(const P2pRegistrationHandle&) = delete;
+  P2pRegistrationHandle(P2pRegistrationHandle&&) = delete;
+  P2pRegistrationHandle& operator=(P2pRegistrationHandle&&) = delete;
 
   TransportType transportType() const noexcept override {
     // Shared intra-node GPU-interconnect tier (XGMI on AMD, NVLink on NVIDIA).
     return TransportType::NVLink;
   }
 
+  P2pSharingMode sharingMode() const noexcept;
+
   std::vector<uint8_t> serialize() const override;
 
-  /// Parse a serialized payload. Errors if @p bytes has the wrong length.
+  /// Parse a serialized payload: IPC by its exact length, anything else by its
+  /// mode byte, validating the length, the chunk count bounds, and that the
+  /// segment lies inside the chunks.
   static Result<Payload> deserialize(std::span<const uint8_t> bytes);
 
  private:
-  Payload payload_{};
+  Payload payload_;
+};
+
+/// Owner of a peer allocation mapped into this process; destruction tears the
+/// mapping down, logging rather than throwing on failure.
+class P2pMapping {
+ public:
+  virtual ~P2pMapping() = default;
+};
+
+/// Cross-process HIP IPC mapping, closed with ipcCloseMemHandle.
+class P2pIpcMapping final : public P2pMapping {
+ public:
+  P2pIpcMapping(void* base, std::shared_ptr<CudaApi> cudaApi);
+  ~P2pIpcMapping() override;
+
+  P2pIpcMapping(const P2pIpcMapping&) = delete;
+  P2pIpcMapping& operator=(const P2pIpcMapping&) = delete;
+  P2pIpcMapping(P2pIpcMapping&&) = delete;
+  P2pIpcMapping& operator=(P2pIpcMapping&&) = delete;
+
+ private:
+  void* base_{nullptr};
+  std::shared_ptr<CudaApi> cudaApi_;
 };
 
 /// Remote registration handle: a peer's allocation mapped into this process.
-///
-/// Cross-process imports come from hipIpcOpenMemHandle and are closed on
-/// destruction; same-process imports reuse the exporter's pointer directly (no
-/// IPC open, nothing to close).
 class P2pRemoteRegistrationHandle : public RemoteRegistrationHandle {
  public:
-  /// @param mappedBase device pointer to the allocation base in this process.
+  /// @param mappedBase device pointer to the mapping base in this process.
   /// @param offset     byte offset added to @p mappedBase for the segment ptr.
   /// @param size       segment length in bytes.
-  /// @param ownedByIpc true when @p mappedBase came from ipcOpenMemHandle and
-  ///                   must be closed via ipcCloseMemHandle on destruction.
+  /// @param mapping    owns the mapping behind @p mappedBase; nullptr when the
+  ///                   pointer is borrowed (same-process IPC import).
   P2pRemoteRegistrationHandle(
       void* mappedBase,
       uint64_t offset,
       size_t size,
-      bool ownedByIpc,
-      std::shared_ptr<CudaApi> cudaApi);
+      std::unique_ptr<P2pMapping> mapping);
 
-  ~P2pRemoteRegistrationHandle() override;
-
-  // Owns the IPC mapping when ownedByIpc_; non-copyable. Moves transfer the
-  // mapping and null out the source so only one instance ever closes it.
+  // Always held behind a unique_ptr.
   P2pRemoteRegistrationHandle(const P2pRemoteRegistrationHandle&) = delete;
   P2pRemoteRegistrationHandle& operator=(const P2pRemoteRegistrationHandle&) =
       delete;
-  P2pRemoteRegistrationHandle(P2pRemoteRegistrationHandle&& other) noexcept;
-  P2pRemoteRegistrationHandle& operator=(
-      P2pRemoteRegistrationHandle&& other) noexcept;
+  P2pRemoteRegistrationHandle(P2pRemoteRegistrationHandle&&) = delete;
+  P2pRemoteRegistrationHandle& operator=(P2pRemoteRegistrationHandle&&) =
+      delete;
 
   TransportType transportType() const noexcept override {
     return TransportType::NVLink;
   }
 
-  /// Usable device pointer for the segment (mappedBase + offset). Returns
-  /// nullptr for a moved-from / invalid handle, so callers must null-check
-  /// before doing pointer arithmetic on the result.
+  /// Usable device pointer for the segment (mappedBase + offset), or nullptr
+  /// for a null base, so callers must null-check before doing pointer
+  /// arithmetic on the result.
   void* UNIFLOW_NULLABLE mappedPtr() const noexcept;
 
   size_t mappedSize() const noexcept {
@@ -116,16 +190,10 @@ class P2pRemoteRegistrationHandle : public RemoteRegistrationHandle {
   }
 
  private:
-  // Closes the IPC mapping if this handle owns one, logging (not throwing) on
-  // failure, then nulls the owned state. Safe to call from the destructor and
-  // move-assignment (both noexcept).
-  void closeMapping() noexcept;
-
   void* mappedBase_{nullptr};
   uint64_t offset_{0};
   size_t size_{0};
-  bool ownedByIpc_{false};
-  std::shared_ptr<CudaApi> cudaApi_;
+  std::unique_ptr<P2pMapping> mapping_;
 };
 
 } // namespace uniflow

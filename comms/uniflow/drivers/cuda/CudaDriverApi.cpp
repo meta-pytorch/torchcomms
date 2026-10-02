@@ -15,10 +15,17 @@
 #include <cuda_runtime.h>
 
 #if defined(__HIP_PLATFORM_AMD__)
-// For the AMD GPUDirect-RDMA (ib_peer_mem / amdkfd) sysfs + kallsyms probe.
+// For the AMD GPUDirect-RDMA (ib_peer_mem / amdkfd) sysfs + kallsyms probe and
+// the POSIX-fd import convention probe.
+#include <dlfcn.h>
+#include <link.h>
+#include <sys/mman.h>
 #include <unistd.h>
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #endif
 
 #include <mutex>
@@ -431,11 +438,160 @@ bool amdGpuDirectRdmaSupported() {
   return found;
 }
 
+// A failed HIP driver call is also recorded as the thread's last runtime
+// error, which a later cudaGetLastError-based launch check (e.g. PyTorch's)
+// would report as its own. Clear the last error on exit only if it was clean
+// on entry; a pending error may still be replaced by this scope's own error.
+class LastErrorScrub {
+ public:
+  LastErrorScrub() : wasClean_{cudaPeekAtLastError() == cudaSuccess} {}
+
+  ~LastErrorScrub() {
+    if (wasClean_) {
+      (void)cudaGetLastError();
+    }
+  }
+
+  LastErrorScrub(const LastErrorScrub&) = delete;
+  LastErrorScrub& operator=(const LastErrorScrub&) = delete;
+
+ private:
+  const bool wasClean_;
+};
+
+// How the runtime reads the osHandle argument of a POSIX-fd import. ROCm up to
+// 7.0.2.1 dereferences it as an int*; later runtimes take the fd by value.
+// Passing the fd by value to a pointer runtime crashes inside the runtime.
+enum class FdConvention { Unknown, Pointer, Value };
+
+// HIP_VERSION encodes major * 10^7 + minor * 10^5 + patch.
+constexpr int kFirstValueConventionVersion = 70100000;
+constexpr uintptr_t kNegativeLow32 = 0x80000000u;
+
+int collectHipLibraries(dl_phdr_info* info, size_t /*size*/, void* data) {
+  const char* name = info->dlpi_name;
+  if (name != nullptr && std::strstr(name, "libamdhip64") != nullptr) {
+    static_cast<std::vector<std::string>*>(data)->emplace_back(name);
+  }
+  return 0;
+}
+
+bool exportsHip71Node(const std::string& path) {
+  void* library = dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD);
+  if (library == nullptr) {
+    return false;
+  }
+  const bool found =
+      dlvsym(library, "hipMemcpyBatchAsync", "hip_7.1") != nullptr;
+  dlclose(library);
+  return found;
+}
+
+// 7.0.2.2 reports the same version as 7.0.2.1 but already takes the fd by
+// value; it is the first build to export the hip_7.1 symbol version node.
+// Every loaded copy must export it: the copy serving the import cannot be
+// identified here (fbcode binds HIP through lazy stubs), and a by-value call
+// into a pointer runtime crashes.
+bool runtimeTakesFdByValue() {
+  int version = 0;
+  if (cudaRuntimeGetVersion(&version) == cudaSuccess &&
+      version >= kFirstValueConventionVersion) {
+    return true;
+  }
+  std::vector<std::string> libraries;
+  dl_iterate_phdr(collectHipLibraries, &libraries);
+  return !libraries.empty() &&
+      std::all_of(libraries.begin(), libraries.end(), exportsHip71Node);
+}
+
+// Returns a process-lifetime int whose address has bit 31 set in its low 32
+// bits. A by-value runtime truncates that address to a negative fd and fails
+// cleanly, which makes the pointer form safe to try on every runtime.
+int* negativeFdSlot() {
+  static int* const slot = []() -> int* {
+    const auto page = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
+    const uintptr_t span = (uintptr_t{1} << 31) + 2 * page;
+    void* reserved = mmap(
+        nullptr,
+        span,
+        PROT_NONE,
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+        -1,
+        0);
+    if (reserved == MAP_FAILED) {
+      return nullptr;
+    }
+    const auto base = reinterpret_cast<uintptr_t>(reserved);
+    const uintptr_t end = base + span;
+    const uintptr_t chosen = (base & kNegativeLow32) != 0
+        ? base
+        : ((base & ~uintptr_t{0xffffffff}) | kNegativeLow32);
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    void* slotPage = reinterpret_cast<void*>(chosen);
+    if (mprotect(slotPage, page, PROT_READ | PROT_WRITE) != 0) {
+      munmap(reserved, span);
+      return nullptr;
+    }
+    if (chosen > base) {
+      munmap(reserved, chosen - base);
+    }
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    munmap(reinterpret_cast<void*>(chosen + page), end - chosen - page);
+    return static_cast<int*>(slotPage);
+  }();
+  return slot;
+}
+
+// A by-value runtime reads the fd as the value of the void* osHandle argument.
+void* fdAsOsHandle(int fd) {
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  return reinterpret_cast<void*>(static_cast<intptr_t>(fd));
+}
+
+CUresult importFd(CUmemGenericAllocationHandle* handle, void* osHandle) {
+  return cuMemImportFromShareableHandle(
+      handle, osHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+}
+
+// Resolves the convention on the first successful import and caches it. The
+// pointer form goes first because it fails harmlessly on a by-value runtime;
+// the by-value form is only tried when the runtime generation says by-value.
+Status importPosixFdAmd(CUmemGenericAllocationHandle* handle, int fd) {
+  static std::mutex mutex;
+  static FdConvention convention{FdConvention::Unknown};
+  const std::lock_guard<std::mutex> lock(mutex);
+  const LastErrorScrub scrub;
+  if (convention == FdConvention::Value) {
+    return cuRetToStatus(
+        importFd(handle, fdAsOsHandle(fd)), "importPosixFd(value)");
+  }
+  Status viaPointer =
+      Err(ErrCode::ResourceExhausted, "importPosixFd: cannot map the fd slot");
+  if (int* slot = negativeFdSlot(); slot != nullptr) {
+    *slot = fd;
+    const CUresult ret = importFd(handle, slot);
+    if (ret == CUDA_SUCCESS) {
+      convention = FdConvention::Pointer;
+      return Ok();
+    }
+    viaPointer = cuRetToStatus(ret, "importPosixFd(pointer)");
+  }
+  if (convention == FdConvention::Pointer || !runtimeTakesFdByValue()) {
+    return viaPointer;
+  }
+  const CUresult viaValue = importFd(handle, fdAsOsHandle(fd));
+  if (viaValue == CUDA_SUCCESS) {
+    convention = FdConvention::Value;
+  }
+  return cuRetToStatus(viaValue, "importPosixFd(value)");
+}
+
 // AMD driver entry points (hip*) are linked directly, so there is no PFN
 // loading. Init initializes the driver, probes cuMem (VMM) support, and detects
 // GPUDirect-RDMA via the peer-mem probe above. The NVIDIA-only fabric handle
 // path does not apply — AMD uses POSIX-FD / dma-buf sharing.
 void doInit() {
+  const LastErrorScrub scrub;
   int cudaDev;
   auto ret = cudaGetDevice(&cudaDev); // Initialize the driver
   if (ret != cudaSuccess) {
@@ -470,9 +626,12 @@ void doInit() {
   } while (0)
 
 #if defined(__HIP_PLATFORM_AMD__)
+// The Status carries the failure, so it must not also linger as the thread's
+// last runtime error (see LastErrorScrub).
 #define CU_CALL(name, ...)                            \
   do {                                                \
     CU_ENSURE_INIT();                                 \
+    const LastErrorScrub scrub;                       \
     return cuRetToStatus(::name(__VA_ARGS__), #name); \
   } while (0)
 #else
@@ -597,6 +756,22 @@ Status CudaDriverApi::cuMemImportFromShareableHandle(
     CUmemAllocationHandleType shHandleType) {
   CU_CALL(cuMemImportFromShareableHandle, handle, osHandle, shHandleType);
 }
+#if defined(__HIP_PLATFORM_AMD__)
+
+Status CudaDriverApi::cuMemGetAccess(
+    unsigned long long* flags,
+    const CUmemLocation* location,
+    CUdeviceptr ptr) {
+  CU_CALL(cuMemGetAccess, flags, location, ptr);
+}
+
+Status CudaDriverApi::importPosixFd(
+    CUmemGenericAllocationHandle* handle,
+    int fd) {
+  CU_ENSURE_INIT();
+  return importPosixFdAmd(handle, fd);
+}
+#endif
 
 Status CudaDriverApi::memGetHandleForAddressRange(
     void* handle,
@@ -607,8 +782,9 @@ Status CudaDriverApi::memGetHandleForAddressRange(
 #if defined(__HIP_PLATFORM_AMD__)
   // Not every hipify-perl release maps cuMemGetHandleForAddressRange (ROCm 7.0
   // gates it behind -experimental), so call the HIP dma-buf fd export directly
-  // (GPUDirect RDMA path). CU_ENSURE_INIT() mirrors the CU_CALL path.
+  // (GPUDirect RDMA path). The prologue mirrors CU_CALL.
   CU_ENSURE_INIT();
+  const LastErrorScrub scrub;
   return cuRetToStatus(
       ::hipMemGetHandleForAddressRange(handle, dptr, size, handleType, flags),
       "hipMemGetHandleForAddressRange");
