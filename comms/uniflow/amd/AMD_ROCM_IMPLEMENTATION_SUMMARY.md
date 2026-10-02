@@ -101,8 +101,11 @@ Each tier falls through to the next when unavailable for a given request, so
 
 `transport/p2p` serves the on-host GPU tier on AMD, in place of NVLink.
 `MultiTransport.cpp` registers `P2pTransportFactory` under
-`__HIP_PLATFORM_AMD__`; cross-process imports use `hipIpcOpenMemHandle`
-(`P2pRegistrationHandle`). Notably it does **not** use the cuMem VMM allocator.
+`__HIP_PLATFORM_AMD__`. VMM (`hipMemCreate`) segments are exported as one
+POSIX fd per chunk, which the importer pulls with `pidfd_getfd` and maps with
+the hipMem calls (`P2pVmm`); other memory is imported with
+`hipIpcOpenMemHandle` (`P2pRegistrationHandle`). It never allocates VMM memory
+itself.
 
 `P2pTransportFactory::supported()` gates on an all-to-all-XGMI architecture
 allowlist — `gfx942` (MI300), `gfx950` (MI350), `gfx1250` (MI450) — matching an
@@ -142,7 +145,8 @@ with its BUCK deps `select()`'d out on AMD; `P2pTransportFactory` takes its plac
 when its capability checks pass. `NVLinkTransport` and the NVLink bandwidth benchmark are also the
 **only** consumers of the cuMem VMM allocator (`cuMemCreate`, `AddressReserve`,
 `Map`, `SetAccess`, `ExportToShareableHandle`, `ImportFromShareableHandle`), so
-that allocator never executes on AMD. The NVIDIA-only fabric-handle / IMEX path
+that allocator never executes on AMD; the P2P tier only shares VMM memory the
+caller allocated. The NVIDIA-only fabric-handle / IMEX path
 likewise does not apply — AMD uses POSIX-FD / dma-buf sharing.
 
 ## Build
