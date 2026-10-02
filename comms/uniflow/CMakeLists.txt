@@ -1,14 +1,18 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+cmake_minimum_required(VERSION 3.20)
+
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" UNIFLOW_PACKAGE_VERSION)
+string(STRIP "${UNIFLOW_PACKAGE_VERSION}" UNIFLOW_PACKAGE_VERSION)
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" UNIFLOW_VERSION
+  "${UNIFLOW_PACKAGE_VERSION}")
+if(NOT UNIFLOW_VERSION)
+  message(FATAL_ERROR "Invalid UniFlow version: ${UNIFLOW_PACKAGE_VERSION}")
+endif()
+
 # Standalone project support (for OSS builds)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  cmake_minimum_required(VERSION 3.20)
-  project(uniflow LANGUAGES CXX)
-  if(DEFINED ENV{ROOT})
-    get_filename_component(ROOT $ENV{ROOT} ABSOLUTE)
-  else()
-    get_filename_component(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../.. ABSOLUTE)
-  endif()
+  project(uniflow VERSION "${UNIFLOW_VERSION}" LANGUAGES CXX)
   if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'RelWithDebInfo' as none was specified.")
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Choose the type of build." FORCE)
@@ -19,6 +23,9 @@ else()
 endif()
 
 find_package(Threads REQUIRED)
+include(GNUInstallDirs)
+
+set(UNIFLOW_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Where translated AMD sources land; consumed by uniflow_hipify below. Set before
 # including the module so nested directories all agree on one location.
@@ -26,8 +33,60 @@ set(UNIFLOW_HIPIFY_DIR ${CMAKE_CURRENT_BINARY_DIR}/hipified)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-# spdlog: use system install if available, otherwise fetch from GitHub.
-option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog instead of fetching" ON)
+option(UNIFLOW_BUILD_PYTHON "Build the UniFlow Python extension" OFF)
+option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
+option(UNIFLOW_BUILD_BENCHMARKS "Build UniFlow benchmarks" OFF)
+option(UNIFLOW_ENABLE_CUDA "Build the CUDA backend" ON)
+
+set(UNIFLOW_MINIMUM_CUDA_VERSION 12.8)
+if(UNIFLOW_ENABLE_CUDA)
+  include(UniflowGpuPlatform)
+endif()
+
+option(UNIFLOW_ENABLE_RDMA "Build the RDMA transport" ON)
+option(UNIFLOW_ENABLE_NVLINK "Build the NVLink transport" ON)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+  set(_UNIFLOW_ENABLE_TCP_DEFAULT ON)
+else()
+  set(_UNIFLOW_ENABLE_TCP_DEFAULT OFF)
+endif()
+option(UNIFLOW_ENABLE_TCP
+  "Build the TCP transport" ${_UNIFLOW_ENABLE_TCP_DEFAULT})
+unset(_UNIFLOW_ENABLE_TCP_DEFAULT)
+option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
+option(UNIFLOW_INSTALL_CPP "Install the UniFlow C++ SDK" ON)
+option(UNIFLOW_BUILD_SHARED_LIBS
+  "Build UniFlow shared libraries" ${UNIFLOW_STANDALONE})
+
+if(NOT UNIFLOW_ENABLE_CUDA)
+  foreach(_UNIFLOW_CUDA_FEATURE IN ITEMS RDMA NVLINK TCP)
+    if(UNIFLOW_ENABLE_${_UNIFLOW_CUDA_FEATURE})
+      message(STATUS
+        "Disabling UniFlow ${_UNIFLOW_CUDA_FEATURE}: CUDA is disabled")
+      set(UNIFLOW_ENABLE_${_UNIFLOW_CUDA_FEATURE} OFF CACHE BOOL "" FORCE)
+    endif()
+  endforeach()
+  unset(_UNIFLOW_CUDA_FEATURE)
+endif()
+
+set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
+file(
+  CREATE_LINK
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${UNIFLOW_BUILD_INCLUDE_DIR}/comms/uniflow"
+  SYMBOLIC
+  RESULT _UNIFLOW_INCLUDE_LINK_RESULT
+)
+if(NOT _UNIFLOW_INCLUDE_LINK_RESULT STREQUAL "0")
+  message(FATAL_ERROR
+    "Failed to create the UniFlow build include symlink: "
+    "${_UNIFLOW_INCLUDE_LINK_RESULT}")
+endif()
+unset(_UNIFLOW_INCLUDE_LINK_RESULT)
+
+set(UNIFLOW_MINIMUM_SPDLOG_VERSION 1.15.2)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Header-only escape hatch. Building the Python extension for an interpreter
 # that ships its own C++ runtime -- a relocatable toolchain rather than the
@@ -61,74 +120,70 @@ if(UNIFLOW_SPDLOG_INCLUDE_DIR)
 
   set(UNIFLOW_SPDLOG_TARGET uniflow_spdlog_headers)
   set(UNIFLOW_FMT_TARGET uniflow_fmt_headers)
-
-  # Also at directory scope, not only on the interface targets above: the OBJECT
-  # libraries include Logger.h without linking spdlog, so they see its headers
-  # through the include path alone. Without the macro spdlog falls back to its
-  # vendored fmt, which then collides with the one selected here.
-  add_compile_definitions(SPDLOG_FMT_EXTERNAL FMT_HEADER_ONLY)
-  link_libraries(uniflow_fmt_headers)
 elseif(UNIFLOW_USE_SYSTEM_SPDLOG)
-  find_package(spdlog QUIET)
+  find_package(spdlog ${UNIFLOW_MINIMUM_SPDLOG_VERSION} QUIET)
 endif()
 
 if(UNIFLOW_SPDLOG_INCLUDE_DIR)
   message(STATUS "spdlog and fmt taken from header trees")
-elseif(NOT spdlog_FOUND)
+elseif(NOT UNIFLOW_USE_SYSTEM_SPDLOG OR NOT spdlog_FOUND)
   message(STATUS "spdlog not found on system, fetching from GitHub...")
   include(FetchContent)
+  set(FMT_DOC OFF CACHE BOOL "" FORCE)
+  set(FMT_INSTALL ${UNIFLOW_INSTALL_CPP} CACHE BOOL "" FORCE)
+  set(FMT_TEST OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+      fmt
+      GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+      GIT_TAG 11.1.4
+  )
+  FetchContent_MakeAvailable(fmt)
+
+  set(SPDLOG_BUILD_PIC ON CACHE BOOL "" FORCE)
+  set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+  set(SPDLOG_INSTALL ${UNIFLOW_INSTALL_CPP} CACHE BOOL "" FORCE)
   FetchContent_Declare(
       spdlog
       GIT_REPOSITORY https://github.com/gabime/spdlog.git
-      GIT_TAG v1.15.2
+      GIT_TAG "v${UNIFLOW_MINIMUM_SPDLOG_VERSION}"
   )
   FetchContent_MakeAvailable(spdlog)
   set(UNIFLOW_SPDLOG_TARGET spdlog::spdlog)
+  set(UNIFLOW_FMT_TARGET fmt::fmt)
+  if(UNIFLOW_INSTALL_CPP)
+    install(FILES "${fmt_SOURCE_DIR}/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/fmt"
+      COMPONENT Development)
+    install(FILES "${spdlog_SOURCE_DIR}/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/spdlog"
+      COMPONENT Development)
+  endif()
 else()
   # TcpController.cpp includes <fmt/core.h> directly, which spdlog's vendored
   # copy cannot satisfy because it lives under spdlog/fmt/bundled. A system
-  # spdlog is built against the system fmt anyway, so take both from there and
-  # tell spdlog to use it; the link is the symmetric half of the definition.
+  # spdlog is built against the system fmt anyway, so take both from there.
   find_package(fmt REQUIRED)
   set(UNIFLOW_SPDLOG_TARGET spdlog::spdlog)
   set(UNIFLOW_FMT_TARGET fmt::fmt)
-  add_compile_definitions(SPDLOG_FMT_EXTERNAL)
-  link_libraries(fmt::fmt)
 endif()
 
-# Make ROOT available as a global include path so all targets
-# can resolve #include "comms/uniflow/..." paths.
-message(STATUS "ROOT = ${ROOT}")
-message(STATUS "CMAKE_CURRENT_SOURCE_DIR = ${CMAKE_CURRENT_SOURCE_DIR}")
-include_directories(${ROOT})
-
-# Enable position-independent code for all targets so uniflow can be
-# linked into shared libraries (e.g., torchcomms _transport.so).
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# Add CUDA include path globally so all sub-targets can find cuda.h
-# and cuda_runtime_api.h, even when compiled via distcc.
-include(UniflowGpuPlatform)
-
-if(CUDAToolkit_FOUND)
-  include_directories(${CUDAToolkit_INCLUDE_DIRS})
-endif()
-
-# Add spdlog include path globally for distcc compatibility, and so the OBJECT
-# libraries that include Logger.h without linking spdlog themselves can resolve
-# it whether spdlog was found on the system or fetched.
-get_target_property(_spdlog_inc ${UNIFLOW_SPDLOG_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
-if(_spdlog_inc)
-  include_directories(${_spdlog_inc})
-endif()
-
-# TCP is integrated into MultiTransport on AMD only; on NVIDIA the intra-node
-# tier is NVLink and TCP is not part of the selection.
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  set(UNIFLOW_ENABLE_TCP_TRANSPORT ON)
-else()
-  set(UNIFLOW_ENABLE_TCP_TRANSPORT OFF)
-endif()
+add_library(uniflow_build_config INTERFACE)
+target_compile_features(uniflow_build_config INTERFACE cxx_std_20)
+target_include_directories(uniflow_build_config INTERFACE
+  $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_compile_definitions(uniflow_build_config INTERFACE
+  UNIFLOW_CMAKE_BUILD=1
+  $<$<BOOL:${UNIFLOW_ENABLE_RDMA}>:UNIFLOW_ENABLE_RDMA_TRANSPORT=1>
+  $<$<AND:$<STREQUAL:${UNIFLOW_GPU_PLATFORM},CUDA>,$<BOOL:${UNIFLOW_ENABLE_NVLINK}>>:UNIFLOW_ENABLE_NVLINK_TRANSPORT=1>
+  $<$<BOOL:${UNIFLOW_ENABLE_TCP}>:UNIFLOW_ENABLE_TCP_TRANSPORT=1>
+)
+target_link_libraries(uniflow_build_config INTERFACE
+  Threads::Threads
+  ${UNIFLOW_FMT_TARGET}
+  ${UNIFLOW_SPDLOG_TARGET}
+)
 
 # Sub-components
 add_subdirectory(executor)
@@ -138,8 +193,6 @@ add_subdirectory(core)
 add_subdirectory(drivers)
 add_subdirectory(logging)
 
-uniflow_finalize_hipify()
-
 # Sources
 set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Segment.cpp
@@ -148,75 +201,99 @@ set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.cpp
 )
 
-set(UNIFLOW_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/Result.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Segment.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Connection.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/MultiTransport.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.h
-)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
-# Included via add_subdirectory: build STATIC library for parent to consume
-if(UNIFLOW_STANDALONE)
+# Select the concrete library type without changing the caller's global
+# BUILD_SHARED_LIBS setting.
+if(UNIFLOW_BUILD_SHARED_LIBS)
   set(UNIFLOW_LIB_TYPE SHARED)
 else()
   set(UNIFLOW_LIB_TYPE STATIC)
 endif()
 
-if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  set(UNIFLOW_INTRA_NODE_TRANSPORT_OBJECTS $<TARGET_OBJECTS:uniflow_nvlink_transport>)
-else()
-  set(UNIFLOW_INTRA_NODE_TRANSPORT_OBJECTS $<TARGET_OBJECTS:uniflow_p2p_transport>)
-endif()
-
-add_library(uniflow ${UNIFLOW_LIB_TYPE}
+add_library(uniflow_objects OBJECT
     ${UNIFLOW_SOURCES}
-    ${UNIFLOW_HEADERS}
+    ${UNIFLOW_PUBLIC_HEADERS}
     ${UNIFLOW_CORE_HEADERS}
     ${UNIFLOW_CORE_SOURCES}
-    $<TARGET_OBJECTS:uniflow_controller>
-    $<TARGET_OBJECTS:uniflow_transport>
-    ${UNIFLOW_INTRA_NODE_TRANSPORT_OBJECTS}
-    $<TARGET_OBJECTS:uniflow_rdma_transport>
-    $<TARGET_OBJECTS:uniflow_cuda>
-    $<TARGET_OBJECTS:uniflow_drivers>
-    $<TARGET_OBJECTS:uniflow_nvml>
-    $<TARGET_OBJECTS:uniflow_ibv>
-    $<TARGET_OBJECTS:uniflow_sysfs>
-    $<TARGET_OBJECTS:uniflow_logging>
 )
+target_link_libraries(uniflow_objects PRIVATE uniflow_build_config)
+if(UNIFLOW_ENABLE_CUDA)
+  target_link_libraries(uniflow_objects PRIVATE ${UNIFLOW_GPU_LIBRARIES})
+  uniflow_target_hipified(uniflow_objects)
+endif()
+
+add_library(uniflow_implementation INTERFACE)
+target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_objects>
+    $<TARGET_OBJECTS:uniflow_controller>
+    $<TARGET_OBJECTS:uniflow_logging>
+    $<TARGET_OBJECTS:uniflow_transport>
+)
+target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_build_config
+    uniflow_controller
+    uniflow_drivers
+    uniflow_executor
+    uniflow_logging
+    uniflow_transport
+)
+
+if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_nvlink_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_nvlink_transport)
+elseif(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_p2p_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_p2p_transport)
+endif()
+if(UNIFLOW_ENABLE_RDMA)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_rdma_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_rdma_transport)
+endif()
+if(UNIFLOW_ENABLE_TCP)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_tcp_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_tcp_transport)
+endif()
+
+add_library(uniflow ${UNIFLOW_LIB_TYPE})
+add_library(uniflow::uniflow ALIAS uniflow)
 
 target_compile_features(uniflow PUBLIC cxx_std_20)
 
-if(UNIFLOW_ENABLE_TCP_TRANSPORT)
-  target_sources(uniflow PRIVATE $<TARGET_OBJECTS:uniflow_tcp_transport>)
-  target_compile_definitions(
-      uniflow PUBLIC UNIFLOW_ENABLE_TCP_TRANSPORT=1)
-endif()
-
 target_include_directories(uniflow PUBLIC
-    ${ROOT}
+    $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(uniflow PUBLIC
     Threads::Threads
-    ${UNIFLOW_SPDLOG_TARGET}
-    uniflow_executor
-    ${UNIFLOW_GPU_LIBRARIES}
+    $<BUILD_INTERFACE:${UNIFLOW_FMT_TARGET}>
+    $<BUILD_INTERFACE:${UNIFLOW_SPDLOG_TARGET}>
+    $<INSTALL_INTERFACE:fmt::fmt>
+    $<INSTALL_INTERFACE:spdlog::spdlog>
 )
+target_link_libraries(uniflow PRIVATE
+    $<BUILD_INTERFACE:uniflow_implementation>)
 
-uniflow_target_hipified(uniflow)
+if(UNIFLOW_ENABLE_CUDA)
+  target_link_libraries(uniflow PUBLIC ${UNIFLOW_GPU_LIBRARIES})
+  uniflow_target_hipified(uniflow)
+  uniflow_finalize_hipify()
+endif()
 
 target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
 
 if(UNIFLOW_LIB_TYPE STREQUAL SHARED)
   target_link_options(uniflow PRIVATE "LINKER:--no-undefined")
 endif()
-
-# Python binding: the uniflow._core extension that the Python package imports.
-# Off by default so builds that only embed the C++ library need neither Python
-# nor pybind11.
-option(UNIFLOW_BUILD_PYTHON "Build the uniflow._core Python extension" OFF)
 
 if(UNIFLOW_BUILD_PYTHON)
   if(NOT UNIFLOW_LIB_TYPE STREQUAL SHARED)
@@ -226,12 +303,65 @@ if(UNIFLOW_BUILD_PYTHON)
   add_subdirectory(python)
 endif()
 
-# Tests (standalone builds or when BUILD_TESTING is ON)
-if(UNIFLOW_STANDALONE OR BUILD_TESTING)
-  enable_testing()
+if(UNIFLOW_BUILD_TESTS)
+  include(CTest)
   add_subdirectory(tests)
-  add_subdirectory(executor/tests)
-  add_subdirectory(controller/tests)
-  add_subdirectory(core/tests)
-  add_subdirectory(logging/tests)
+endif()
+
+if(UNIFLOW_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
+endif()
+
+if(UNIFLOW_INSTALL_CPP)
+  include(CMakePackageConfigHelpers)
+
+  install(TARGETS uniflow
+    EXPORT uniflowTargets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT Runtime
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Runtime
+      NAMELINK_COMPONENT Development
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  )
+
+  foreach(_UNIFLOW_PUBLIC_HEADER IN LISTS UNIFLOW_PUBLIC_HEADERS)
+    file(RELATIVE_PATH _UNIFLOW_HEADER_PATH
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${_UNIFLOW_PUBLIC_HEADER}")
+    get_filename_component(_UNIFLOW_HEADER_DIRECTORY
+      "${_UNIFLOW_HEADER_PATH}" DIRECTORY)
+    install(FILES "${_UNIFLOW_PUBLIC_HEADER}"
+      DESTINATION
+        "${CMAKE_INSTALL_INCLUDEDIR}/comms/uniflow/${_UNIFLOW_HEADER_DIRECTORY}"
+      COMPONENT Development
+    )
+  endforeach()
+  unset(_UNIFLOW_HEADER_DIRECTORY)
+  unset(_UNIFLOW_HEADER_PATH)
+  unset(_UNIFLOW_PUBLIC_HEADER)
+
+  set(_UNIFLOW_CMAKE_INSTALL_DIR
+    "${CMAKE_INSTALL_LIBDIR}/cmake/uniflow")
+  configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/uniflowConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfig.cmake"
+    INSTALL_DESTINATION "${_UNIFLOW_CMAKE_INSTALL_DIR}"
+  )
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfigVersion.cmake"
+    VERSION "${UNIFLOW_VERSION}"
+    COMPATIBILITY SameMajorVersion
+  )
+  install(EXPORT uniflowTargets
+    FILE uniflowTargets.cmake
+    NAMESPACE uniflow::
+    DESTINATION "${_UNIFLOW_CMAKE_INSTALL_DIR}"
+    COMPONENT Development
+  )
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfigVersion.cmake"
+    DESTINATION "${_UNIFLOW_CMAKE_INSTALL_DIR}"
+    COMPONENT Development
+  )
+  unset(_UNIFLOW_CMAKE_INSTALL_DIR)
 endif()
