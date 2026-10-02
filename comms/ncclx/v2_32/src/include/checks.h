@@ -32,6 +32,51 @@
     } \
   } while (false)
 
+// [META] Used by shared NCCLX meta code.
+constexpr const char* ncclCodeToString(ncclResult_t code) {
+  switch (code) {
+  case ncclSuccess:
+    return "no error";
+  case ncclUnhandledCudaError:
+    return "unhandled cuda error (run with NCCL_DEBUG=INFO for details)";
+  case ncclSystemError:
+    return "unhandled system error (run with NCCL_DEBUG=INFO for details)";
+  case ncclInternalError:
+    return "internal error - please report this issue to the NCCL developers";
+  case ncclInvalidArgument:
+    return "invalid argument (run with NCCL_DEBUG=WARN for details)";
+  case ncclInvalidUsage:
+    return "invalid usage (run with NCCL_DEBUG=WARN for details)";
+  case ncclRemoteError:
+    return "remote process exited or there was a network error";
+  case ncclInProgress:
+    return "NCCL operation in progress";
+  case ncclTimeout:
+    return "NCCL operation timed out";
+  case ncclNumResults:
+  default:
+    return "unknown result code";
+  }
+}
+
+#define CUDACHECKABORT(cmd) \
+  do { \
+    cudaError_t err = cmd; \
+    if (err != cudaSuccess) { \
+      WARN("Cuda failure '%s'", cudaGetErrorString(err)); \
+      abort(); \
+    } \
+  } while (false)
+
+#define CHECKABORT(statement, fmt, ...) \
+  do { \
+    if (!(statement)) { \
+      WARN("Check failed: %s", #statement); \
+      WARN(fmt, ##__VA_ARGS__); \
+      abort(); \
+    } \
+  } while (0)
+
 // Report failure but clear error and continue
 #define CUDACHECKIGNORE(cmd) \
   do { \

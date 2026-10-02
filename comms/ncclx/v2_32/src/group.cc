@@ -23,6 +23,10 @@
 #include <thread>
 #include "os.h"
 
+#include "comms/ctran/Ctran.h"
+#include "meta/transport/transportConnect.h"
+#include "meta/wrapper/MetaFactory.h"
+
 #define GROUP_MAX_RECLAIM_STEPS 10
 
 thread_local int ncclGroupDepth = 0; // depth of ncclGroupStart nesting
@@ -219,6 +223,10 @@ ncclResult_t ncclP2PPreconnectFunc(struct ncclAsyncJob* job_) {
   struct ncclComm* comm = job->comm;
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (!job_->isThreadMain && ncclOsCpuCount(comm->cpuAffinity)) ncclOsSetAffinity(comm->cpuAffinity);
+  // [META] setup channels if needed before setup transport
+  if (comm->lazySetupChannels && comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
+    NCCLCHECK(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit));
+  }
   NCCLCHECK(ncclTransportP2pSetup(comm, NULL, 1));
   return ncclSuccess;
 }
@@ -239,6 +247,11 @@ ncclResult_t ncclCollPreconnect(struct ncclComm* comm, bool* algoNeedConnect) {
         }
       case NCCL_ALGO_NVLS:
         {
+          // [META] lazy setup also tracks the connected NVLS channels
+          if (comm->lazySetupChannels) {
+            NCCLCHECK(ncclx::transportNvlsConnect(comm));
+            break;
+          }
           /* If we are using NVLS_TREE algo, we must mark NVLS algo to set up
            * NVLS intra-node buffer */
           NCCLCHECK(ncclNvlsBufferSetup(comm));
@@ -246,6 +259,11 @@ ncclResult_t ncclCollPreconnect(struct ncclComm* comm, bool* algoNeedConnect) {
         }
       case NCCL_ALGO_NVLS_TREE:
         {
+          // [META] lazy setup does not mark NVLS for NVLS_TREE, so this also sets up the NVLS buffer
+          if (comm->lazySetupChannels) {
+            NCCLCHECK(ncclx::transportNvlsTreeConnect(comm));
+            break;
+          }
           NCCLCHECK(ncclNvlsTreeConnect(comm));
           break;
         }
@@ -334,6 +352,10 @@ ncclResult_t ncclCollPreconnectFunc(struct ncclAsyncJob* job_) {
 
   if (!job_->isThreadMain) CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (!job_->isThreadMain && ncclOsCpuCount(comm->cpuAffinity)) ncclOsSetAffinity(comm->cpuAffinity);
+  // [META] setup channels if needed before setup transport
+  if (comm->lazySetupChannels && comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
+    NCCLCHECKGOTO(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit), ret, fail);
+  }
   NCCLCHECKGOTO(ncclCollPreconnect(comm, job->algoNeedConnect), ret, fail);
 
 exit:
@@ -1059,6 +1081,8 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
   }
 
   if ((--ncclGroupDepth) > 0) goto exit;
+
+  NCCLCHECKGOTO(metaCommToNccl(ctranGroupEndHook()), ret, fail);
 
   if ((ret = ncclGroupError) != ncclSuccess) goto fail;
 

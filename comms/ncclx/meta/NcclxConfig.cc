@@ -11,6 +11,8 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/AlgoStrConv.h"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <sstream>
 #include <stdexcept>
