@@ -14,17 +14,34 @@ This directory builds that extension. It is off by default; pass
 ## Requirements
 
 - CMake 3.20 or newer, and a C++20 compiler.
-- A GPU toolkit: either the CUDA toolkit, or ROCm. The build detects which is
-  present and reports it as `UNIFLOW_GPU_PLATFORM`; override with
-  `-DUNIFLOW_GPU_PLATFORM=CUDA|HIP`. On ROCm the CUDA-API sources are translated
-  with `hipify-perl`, which ships with ROCm, and the compiler must be
-  `amdclang++`.
+- A GPU toolkit unless `UNIFLOW_GPU_PLATFORM=NONE`: either the CUDA toolkit, or
+  ROCm. The default `AUTO` value detects which is present; override with
+  `-DUNIFLOW_GPU_PLATFORM=CUDA|HIP`. On ROCm the CUDA-API sources
+  are translated with `hipify-perl`, which ships with ROCm, and the compiler
+  must be `amdclang++`.
 - Python development headers for the interpreter that will import the
   extension, and pybind11. pybind11 is taken from the environment when present
   and fetched otherwise.
 - spdlog and fmt, supplied one of the two ways below. Supply them: with
   neither, the build falls back to fetching spdlog, and that fallback does not
   produce a working build.
+
+## Choosing GPU support
+
+`UNIFLOW_GPU_PLATFORM` controls whether UniFlow builds a GPU backend and which
+backend it uses. It accepts `AUTO`, `NONE`, `CUDA`, or `HIP` and defaults to
+`AUTO`, which selects the only supported toolkit present on the system.
+
+CUDA and HIP builds expose the same package names, public headers, and
+`uniflow::uniflow` CMake target. Their binaries and runtime dependencies are
+platform-specific, however, so build and distribute them separately. A CUDA
+installation records a CUDAToolkit dependency, while a HIP installation records
+a HIP dependency. Platform-specific transports may also differ.
+
+Set `-DUNIFLOW_GPU_PLATFORM=NONE` for a hardware-free configuration. In the
+current milestone RDMA, NVLink, and TCP must also remain disabled, so the
+resulting package is useful for build and packaging validation but has no
+functional data transport.
 
 ## Choosing where spdlog, fmt and pybind11 come from
 

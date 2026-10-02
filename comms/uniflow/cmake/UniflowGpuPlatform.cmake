@@ -3,8 +3,9 @@
 # GPU platform detection and the AMD source translation step.
 #
 # uniflow's GPU layer is written once against the CUDA API and translated to HIP
-# for AMD. The platform is resolved once into UNIFLOW_GPU_PLATFORM (CUDA or HIP)
-# and everything branches on that, so the seam sits in one place.
+# for AMD. UNIFLOW_GPU_PLATFORM accepts AUTO, NONE, CUDA, or HIP. AUTO is
+# resolved once during configuration, and everything else branches on the
+# resolved value, so the seam sits in one place.
 #
 # This translates with hipify-perl. It is not the only way the sources can reach
 # a HIP compiler, and a build that translates them differently will not produce
@@ -15,41 +16,46 @@
 # stay in neutral types are shared verbatim, so their includers need no
 # translation of their own.
 
-set(UNIFLOW_GPU_PLATFORM "" CACHE STRING "GPU platform: CUDA, HIP, or empty to auto-detect")
-set_property(CACHE UNIFLOW_GPU_PLATFORM PROPERTY STRINGS "" CUDA HIP)
+set(UNIFLOW_GPU_PLATFORM "AUTO" CACHE STRING
+    "GPU platform: AUTO, NONE, CUDA, or HIP")
+set_property(CACHE UNIFLOW_GPU_PLATFORM PROPERTY STRINGS AUTO NONE CUDA HIP)
+string(TOUPPER "${UNIFLOW_GPU_PLATFORM}" _UNIFLOW_GPU_PLATFORM_REQUESTED)
+set(UNIFLOW_GPU_PLATFORM "${_UNIFLOW_GPU_PLATFORM_REQUESTED}" CACHE STRING
+    "GPU platform: AUTO, NONE, CUDA, or HIP" FORCE)
 
-if(NOT UNIFLOW_GPU_PLATFORM)
-  find_package(CUDAToolkit QUIET)
+if(NOT UNIFLOW_GPU_PLATFORM MATCHES "^(AUTO|NONE|CUDA|HIP)$")
+  message(FATAL_ERROR
+      "Invalid UNIFLOW_GPU_PLATFORM=${UNIFLOW_GPU_PLATFORM}; expected "
+      "AUTO, NONE, CUDA, or HIP.")
+endif()
+
+if(UNIFLOW_GPU_PLATFORM STREQUAL AUTO)
+  find_package(CUDAToolkit ${UNIFLOW_MINIMUM_CUDA_VERSION} QUIET)
   find_package(hip QUIET)
   if(CUDAToolkit_FOUND AND hip_FOUND)
     # Guessing here is worse than stopping: the wrong guess produces a library
     # that cannot run on the machine that built it, and says so only in a
     # status line.
     message(FATAL_ERROR
-        "Both a CUDA toolkit and ROCm were found; set -DUNIFLOW_GPU_PLATFORM=CUDA or HIP.")
+        "Both a CUDA toolkit and ROCm were found; set "
+        "-DUNIFLOW_GPU_PLATFORM=CUDA or HIP.")
   elseif(CUDAToolkit_FOUND)
     set(UNIFLOW_GPU_PLATFORM CUDA)
   elseif(hip_FOUND)
     set(UNIFLOW_GPU_PLATFORM HIP)
+  else()
+    message(FATAL_ERROR
+        "No GPU platform found. Install the CUDA toolkit or ROCm, or set "
+        "-DUNIFLOW_GPU_PLATFORM=NONE for a hardware-free build.")
   endif()
-endif()
-
-# Write the resolved value back so it is visible and stays put across reconfigures.
-set(UNIFLOW_GPU_PLATFORM "${UNIFLOW_GPU_PLATFORM}" CACHE STRING "GPU platform" FORCE)
-
-if(NOT UNIFLOW_GPU_PLATFORM)
-  message(FATAL_ERROR
-      "No GPU platform found. Install the CUDA toolkit or ROCm, or set "
-      "-DUNIFLOW_GPU_PLATFORM=CUDA|HIP with the matching toolkit on "
-      "CMAKE_PREFIX_PATH.")
 endif()
 
 message(STATUS "UNIFLOW_GPU_PLATFORM = ${UNIFLOW_GPU_PLATFORM}")
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  find_package(CUDAToolkit REQUIRED)
+  find_package(CUDAToolkit ${UNIFLOW_MINIMUM_CUDA_VERSION} REQUIRED)
   set(UNIFLOW_GPU_LIBRARIES CUDA::cudart CUDA::cuda_driver)
-else()
+elseif(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   find_package(hip REQUIRED)
   set(UNIFLOW_GPU_LIBRARIES hip::host)
 
@@ -64,6 +70,7 @@ else()
   endif()
   message(STATUS "hipify-perl = ${UNIFLOW_HIPIFY_PERL}")
 endif()
+unset(_UNIFLOW_GPU_PLATFORM_REQUESTED)
 
 # uniflow_hipify(<out_var> <source>...)
 #
@@ -71,13 +78,11 @@ endif()
 # <out_var>. On CUDA the inputs are returned unchanged, so callers list their
 # sources once and stay platform-neutral.
 #
-# Outputs keep their path relative to the repository root under
-# ${CMAKE_BINARY_DIR}/hipified, so a translated header is reachable at the same
-# "comms/uniflow/..." include path as its original. That directory precedes
-# ${ROOT} on the include path of translated targets, which is what makes a
-# translated .cpp pick up the translated header instead of the CUDA one.
+# Outputs keep their path relative to the UniFlow source root under the build
+# include tree, so a translated header is reachable through the same
+# "comms/uniflow/..." include path as its original.
 function(uniflow_hipify out_var)
-  if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  if(NOT UNIFLOW_GPU_PLATFORM STREQUAL HIP)
     set(${out_var} ${ARGN} PARENT_SCOPE)
     return()
   endif()
@@ -85,11 +90,12 @@ function(uniflow_hipify out_var)
   set(generated "")
   foreach(source IN LISTS ARGN)
     get_filename_component(absolute "${source}" ABSOLUTE)
-    file(RELATIVE_PATH relative "${ROOT}" "${absolute}")
+    file(RELATIVE_PATH relative "${UNIFLOW_SOURCE_DIR}" "${absolute}")
     if(relative MATCHES "^\\.\\.")
-      message(FATAL_ERROR "uniflow_hipify: ${source} is outside ROOT (${ROOT})")
+      message(FATAL_ERROR
+          "uniflow_hipify: ${source} is outside UniFlow (${UNIFLOW_SOURCE_DIR})")
     endif()
-    set(output "${UNIFLOW_HIPIFY_DIR}/${relative}")
+    set(output "${UNIFLOW_HIPIFY_DIR}/comms/uniflow/${relative}")
     get_filename_component(output_dir "${output}" DIRECTORY)
     file(MAKE_DIRECTORY "${output_dir}")
     add_custom_command(
@@ -137,7 +143,7 @@ endif()
 # Links the HIP runtime into a target whose sources were translated. Kept
 # PRIVATE so consumers of this project do not inherit a HIP dependency.
 function(uniflow_target_hipified target)
-  if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  if(NOT UNIFLOW_GPU_PLATFORM STREQUAL HIP)
     return()
   endif()
   target_link_libraries(${target} PRIVATE hip::host)
@@ -156,7 +162,7 @@ endfunction()
 # failure is a confusing compile error or a silently wrong object rather than a
 # missing file.
 function(uniflow_finalize_hipify)
-  if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  if(NOT UNIFLOW_GPU_PLATFORM STREQUAL HIP)
     return()
   endif()
   get_property(producers GLOBAL PROPERTY UNIFLOW_HIPIFY_PRODUCERS)

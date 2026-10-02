@@ -1,0 +1,25 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+get_filename_component(_UNIFLOW_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.."
+  ABSOLUTE)
+
+foreach(_UNIFLOW_PUBLIC_HEADER IN LISTS UNIFLOW_PUBLIC_HEADERS)
+  file(RELATIVE_PATH _UNIFLOW_HEADER "${_UNIFLOW_SOURCE_DIR}"
+    "${_UNIFLOW_PUBLIC_HEADER}")
+  string(MAKE_C_IDENTIFIER "${_UNIFLOW_HEADER}" _UNIFLOW_HEADER_TARGET)
+  string(TOLOWER "${_UNIFLOW_HEADER_TARGET}" _UNIFLOW_HEADER_TARGET)
+  set(_UNIFLOW_HEADER_SOURCE
+    "${CMAKE_CURRENT_BINARY_DIR}/${_UNIFLOW_HEADER_TARGET}.cpp")
+  file(GENERATE OUTPUT "${_UNIFLOW_HEADER_SOURCE}"
+    CONTENT "#include \"comms/uniflow/${_UNIFLOW_HEADER}\"\n")
+  add_library(uniflow_header_${_UNIFLOW_HEADER_TARGET} OBJECT
+    "${_UNIFLOW_HEADER_SOURCE}")
+  target_link_libraries(uniflow_header_${_UNIFLOW_HEADER_TARGET} PRIVATE
+    uniflow::uniflow)
+endforeach()
+
+unset(_UNIFLOW_SOURCE_DIR)
+unset(_UNIFLOW_PUBLIC_HEADER)
+unset(_UNIFLOW_HEADER)
+unset(_UNIFLOW_HEADER_TARGET)
+unset(_UNIFLOW_HEADER_SOURCE)
