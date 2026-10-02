@@ -389,6 +389,7 @@ TEST_F(MultiTransportFactoryTest, DefaultOptionsUseBoundedNumaLocalCpuNics) {
       options.cpuNicSelectionPolicy, CpuNicSelectionPolicy::kNumaLocalBounded);
   EXPECT_EQ(options.maxCpuNics, 2u);
   EXPECT_FALSE(options.preferredTransport.has_value());
+  EXPECT_TRUE(options.p2pEnableVmm);
 }
 
 TEST_F(MultiTransportFactoryTest, RegisterSegmentSingleFactory) {

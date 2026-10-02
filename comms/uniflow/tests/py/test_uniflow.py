@@ -145,6 +145,10 @@ class TestTypesAndSegment(unittest.TestCase):
         self.assertEqual(config.name, "test_agent")
         self.assertEqual(config.connect_retries, 5)
         self.assertEqual(config.connect_timeout_ms, 2000)
+        self.assertTrue(config.p2p_enable_vmm)
+        config.p2p_enable_vmm = False
+        self.assertFalse(config.p2p_enable_vmm)
+        self.assertFalse(UniflowAgentConfig(p2p_enable_vmm=False).p2p_enable_vmm)
 
     @unittest.skipUnless(_HAS_GPU, "Requires GPU")
     def test_get_unique_id_with_server(self) -> None:
