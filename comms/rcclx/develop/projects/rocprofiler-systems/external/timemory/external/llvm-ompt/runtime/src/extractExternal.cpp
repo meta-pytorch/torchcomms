@@ -327,7 +327,7 @@ void hideSymbols(char *fileName, const set<string> &hide) {
     // if symbol is extern and found in <hide>, prefix and insert into strings,
     // otherwise, just insert into strings without prefix
     strings.insert(
-        (e.storageClass == 2 && hide.find(s) != hide.end()) ? prefix + s : s);
+        (e.storageClass == 2 && hide.contains(s)) ? prefix + s : s);
   }
 
   ofstream out(fileName, ios::trunc | ios::out | ios::binary);
@@ -357,7 +357,7 @@ void hideSymbols(char *fileName, const set<string> &hide) {
     const string &s = stringTableOld.decode(e.name);
     out.seekp(symTabStart + i * 18);
     e.name = stringTableNew.encode(
-        (e.storageClass == 2 && hide.find(s) != hide.end()) ? prefix + s : s);
+        (e.storageClass == 2 && hide.contains(s)) ? prefix + s : s);
     out.write((char *)&e, 18);
     if (out.fail())
       stop("hideSymbols: File write error");
@@ -415,7 +415,7 @@ set<int> *findRequiredExternal(int nExternal, int nTotal, set<string> *defined,
       set<string> &s = undefined[*it];
 
       for (i = 0; i < nExternal; ++i) {
-        if (required->find(i) == required->end()) {
+        if (!required->contains(i)) {
           if (!isDisjoint(defined[i], s)) {
             // found a new qualifying element
             required->insert(i);
@@ -473,7 +473,7 @@ int main(int argc, char **argv) {
   // process the external files--removing those that are not required and hiding
   //   the appropriate symbols in the others
   for (i = 0; i < nExternal; ++i)
-    if (requiredExternal->find(i) != requiredExternal->end())
+    if (requiredExternal->contains(i))
       hideSymbols(argv[2 + i], hide);
     else
       remove(argv[2 + i]);
