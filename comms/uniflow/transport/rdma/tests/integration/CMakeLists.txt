@@ -1,8 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-add_executable(SingleHostTest SingleHostTest.cpp)
-target_link_libraries(SingleHostTest
-    uniflow_rdma_transport GTest::gtest_main)
-target_compile_features(SingleHostTest PUBLIC cxx_std_20)
-target_include_directories(SingleHostTest PUBLIC ${ROOT})
-add_test(NAME SingleHostTest COMMAND SingleHostTest)
+uniflow_add_test(
+  uniflow_rdma_single_host_test SingleHostTest.cpp
+  "rdma;cuda;multi_gpu")
+set_tests_properties(uniflow_rdma_single_host_test PROPERTIES
+  ENVIRONMENT "UNIFLOW_RDMA_TEST_NICS=${UNIFLOW_RDMA_TEST_NICS}")

@@ -1,19 +1,39 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-add_subdirectory(cuda)
-add_subdirectory(ibverbs)
-add_subdirectory(nvml)
-add_subdirectory(sysfs)
-
-# The platform-neutral half of topology discovery; the vendor half lives with
-# the GPU driver sources.
-add_library(uniflow_drivers OBJECT
-    ${CMAKE_CURRENT_SOURCE_DIR}/TopologyDiscovery.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/TopologyDiscovery.h
+add_library(uniflow_topology_discovery OBJECT TopologyDiscovery.cpp)
+target_link_libraries(uniflow_topology_discovery PRIVATE
+  uniflow_build_config
+  uniflow_logging
+  uniflow_transport
 )
 
-target_compile_features(uniflow_drivers PUBLIC cxx_std_20)
+add_library(uniflow_drivers INTERFACE)
+target_link_libraries(uniflow_drivers INTERFACE uniflow_topology_discovery)
+target_sources(uniflow_drivers INTERFACE
+  $<TARGET_OBJECTS:uniflow_topology_discovery>)
 
-target_compile_options(uniflow_drivers PRIVATE -fPIC)
-
-target_include_directories(uniflow_drivers PUBLIC ${ROOT})
+if(NOT UNIFLOW_GPU_PLATFORM STREQUAL NONE)
+  add_subdirectory(nvml)
+  add_subdirectory(sysfs)
+  if(UNIFLOW_ENABLE_RDMA)
+    add_subdirectory(ibverbs)
+  endif()
+  add_subdirectory(cuda)
+  target_link_libraries(uniflow_drivers INTERFACE
+    uniflow_cuda
+    uniflow_nvml
+    uniflow_sysfs
+  )
+  target_sources(uniflow_drivers INTERFACE
+    $<TARGET_OBJECTS:uniflow_cuda>
+    $<TARGET_OBJECTS:uniflow_nvml>
+    $<TARGET_OBJECTS:uniflow_sysfs>
+  )
+  if(UNIFLOW_ENABLE_RDMA)
+    target_link_libraries(uniflow_drivers INTERFACE uniflow_ibv)
+    target_sources(uniflow_drivers INTERFACE
+      $<TARGET_OBJECTS:uniflow_ibv>)
+  endif()
+else()
+  target_sources(uniflow_topology_discovery PRIVATE EmptyTopologyDiscovery.cpp)
+endif()
