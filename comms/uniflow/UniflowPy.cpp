@@ -434,7 +434,8 @@ PYBIND11_MODULE(_core, m) {
                       const std::string& tcpBindHost,
                       std::optional<TransportType> preferredTransport,
                       std::optional<TransportType> intraNodeTransport,
-                      std::optional<TransportType> interNodeTransport) {
+                      std::optional<TransportType> interNodeTransport,
+                      bool p2pEnableVmm) {
             return UniflowAgentConfig{
                 .deviceId = deviceId,
                 .name = name,
@@ -446,6 +447,7 @@ PYBIND11_MODULE(_core, m) {
                 .preferredTransport = preferredTransport,
                 .intraNodeTransport = intraNodeTransport,
                 .interNodeTransport = interNodeTransport,
+                .p2pEnableVmm = p2pEnableVmm,
             };
           }),
           py::arg("device_id") = -1,
@@ -457,7 +459,8 @@ PYBIND11_MODULE(_core, m) {
           py::arg("tcp_bind_host") = "",
           py::arg("preferred_transport") = std::nullopt,
           py::arg("intra_node_transport") = std::nullopt,
-          py::arg("inter_node_transport") = std::nullopt)
+          py::arg("inter_node_transport") = std::nullopt,
+          py::arg("p2p_enable_vmm") = true)
       .def_readwrite("device_id", &UniflowAgentConfig::deviceId)
       .def_readwrite("name", &UniflowAgentConfig::name)
       .def_readwrite("listen_address", &UniflowAgentConfig::listenAddress)
@@ -471,7 +474,8 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite(
           "intra_node_transport", &UniflowAgentConfig::intraNodeTransport)
       .def_readwrite(
-          "inter_node_transport", &UniflowAgentConfig::interNodeTransport);
+          "inter_node_transport", &UniflowAgentConfig::interNodeTransport)
+      .def_readwrite("p2p_enable_vmm", &UniflowAgentConfig::p2pEnableVmm);
 
   // ---------------------------------------------------------------------------
   // MultiTransport
@@ -563,7 +567,8 @@ PYBIND11_MODULE(_core, m) {
                       CpuNicSelectionPolicy cpuNicSelectionPolicy,
                       size_t maxCpuNics,
                       bool enableTcp,
-                      const std::string& tcpBindHost) {
+                      const std::string& tcpBindHost,
+                      bool p2pEnableVmm) {
             MultiTransportFactoryOptions options{
                 .nicFilter =
                     nicFilter.empty() ? NicFilter() : NicFilter(nicFilter),
@@ -571,6 +576,7 @@ PYBIND11_MODULE(_core, m) {
                 .maxCpuNics = maxCpuNics,
                 .enableTcp = enableTcp,
                 .tcpBindHost = tcpBindHost,
+                .p2pEnableVmm = p2pEnableVmm,
             };
             return std::make_shared<MultiTransportFactory>(
                 deviceId, std::move(options));
@@ -582,7 +588,8 @@ PYBIND11_MODULE(_core, m) {
               CpuNicSelectionPolicy::kNumaLocalBounded,
           py::arg("max_cpu_nics") = 2,
           py::arg("enable_tcp") = false,
-          py::arg("tcp_bind_host") = "")
+          py::arg("tcp_bind_host") = "",
+          py::arg("p2p_enable_vmm") = true)
       .def(
           "register_segment",
           [](MultiTransportFactory& f, Segment& seg) {
