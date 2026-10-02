@@ -205,7 +205,7 @@ def instantiate(k):
     inst = form.format(cname=cname, id=id, cudart_cond=cudart_cond, arch_cond=arch_cond)
   return inst
 
-def prototype(k):
+def prototype(k: Rec) -> str:
   cudart_cond, arch_cond = kernel_conds(k)
   if cudart_cond is None:
     form = "__global__ void {cname}(ncclSymkDevWorkArgs4K const);"

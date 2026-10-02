@@ -8,6 +8,7 @@ import os
 import pathlib
 import subprocess
 from io import StringIO
+from typing import IO
 
 import yaml
 
@@ -127,7 +128,7 @@ class basetype:
         return self.name < other.name
 
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -157,7 +158,7 @@ class basetype:
 
 class bool(basetype):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -194,7 +195,7 @@ class numeric(basetype):
         super().__init__(cvar)
 
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def readenv(self, file):
@@ -221,7 +222,7 @@ class double(numeric):
 
 class string(basetype):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -247,7 +248,7 @@ class string(basetype):
 
 class stringlist(basetype):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -276,7 +277,7 @@ class stringlist(basetype):
 
 class dictlist(basetype):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -320,7 +321,7 @@ class dictlist(basetype):
 
 class prefixedStringlist(stringlist):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -367,7 +368,7 @@ class prefixedStringlist(stringlist):
 
 class enum(basetype):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
@@ -416,7 +417,7 @@ class enum(basetype):
 
 class enumlist(basetype):
     @staticmethod
-    def utilfns(file):
+    def utilfns(file: IO[str]) -> None:
         pass
 
     def externDecl(self, file):
