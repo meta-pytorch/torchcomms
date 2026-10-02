@@ -3378,7 +3378,8 @@ cvars:
      are AllReduce aliases. The protocol token (simple, ll) is AllReduce-only
      and defaults to simple. Pinning :ll bypasses the LL size threshold but
      still requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0, which arms the LL path.
-     Prefer qualified selectors such as allreduce:ring or alltoall:direct.
+     Prefer qualified selectors such as allreduce:ring, alltoall:direct, or
+     alltoallv:direct.
 
  - name        : MCCL_TUNER_ALLREDUCE_ENABLE
    type        : bool
