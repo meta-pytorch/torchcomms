@@ -19,10 +19,7 @@ target_compile_features(uniflow_ibv PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_ibv PRIVATE -fPIC)
 
-target_include_directories(uniflow_ibv PUBLIC
-    ${ROOT}
-)
-
 target_link_libraries(uniflow_ibv PRIVATE
+    uniflow_build_config
     ${CMAKE_DL_LIBS}
 )
