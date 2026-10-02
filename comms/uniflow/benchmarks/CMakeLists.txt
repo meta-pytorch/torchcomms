@@ -1,98 +1,82 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-set(UNIFLOW_BENCH_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/BenchmarkRunner.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Bootstrap.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Rendezvous.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Reporter.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Stats.cpp
-)
-
-set(UNIFLOW_BENCH_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/BenchmarkResult.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/BenchmarkRunner.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Bootstrap.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Rendezvous.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Reporter.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Stats.h
-)
-
 add_library(uniflow_bench_lib OBJECT
-    ${UNIFLOW_BENCH_SOURCES}
-    ${UNIFLOW_BENCH_HEADERS}
+  BenchmarkRunner.cpp
+  Bootstrap.cpp
+  Rendezvous.cpp
+  Reporter.cpp
+  Stats.cpp
 )
-
-target_compile_features(uniflow_bench_lib PUBLIC cxx_std_20)
-
-target_compile_options(uniflow_bench_lib PRIVATE -fPIC)
-
-target_include_directories(uniflow_bench_lib PUBLIC
-    ${ROOT}
-)
-
 target_link_libraries(uniflow_bench_lib PRIVATE
-    uniflow_controller
-    uniflow_logging
+  uniflow_build_config
+  uniflow::uniflow
 )
 
-add_library(uniflow_connection_setup_bench OBJECT
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/ConnectionSetupBenchmark.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/ConnectionSetupBenchmark.h
-)
+set(_UNIFLOW_BENCH_OBJECTS $<TARGET_OBJECTS:uniflow_bench_lib>)
 
-target_compile_features(uniflow_connection_setup_bench PUBLIC cxx_std_20)
+if(UNIFLOW_ENABLE_RDMA)
+  add_library(uniflow_rdma_bandwidth_bench OBJECT
+    bench/RdmaBandwidthBenchmark.cpp
+    bench/SendRecvBandwidthBenchmark.cpp
+  )
+  target_link_libraries(uniflow_rdma_bandwidth_bench PRIVATE
+    uniflow_build_config
+    uniflow::uniflow
+  )
+  list(APPEND _UNIFLOW_BENCH_OBJECTS
+    $<TARGET_OBJECTS:uniflow_rdma_bandwidth_bench>)
+endif()
 
-target_compile_options(uniflow_connection_setup_bench PRIVATE -fPIC)
+if(UNIFLOW_ENABLE_TCP)
+  add_library(uniflow_tcp_bandwidth_bench OBJECT
+    bench/TcpBandwidthBenchmark.cpp)
+  target_link_libraries(uniflow_tcp_bandwidth_bench PRIVATE
+    uniflow_build_config
+    uniflow::uniflow
+  )
+  list(APPEND _UNIFLOW_BENCH_OBJECTS
+    $<TARGET_OBJECTS:uniflow_tcp_bandwidth_bench>)
+endif()
 
-target_include_directories(uniflow_connection_setup_bench PUBLIC
-    ${ROOT}
-)
+if(UNIFLOW_ENABLE_NVLINK)
+  add_library(uniflow_connection_setup_bench OBJECT
+    bench/ConnectionSetupBenchmark.cpp)
+  add_library(uniflow_nvlink_bandwidth_bench OBJECT
+    bench/NVLinkBandwidthBenchmark.cpp)
+  foreach(_UNIFLOW_NVLINK_BENCH_TARGET IN ITEMS
+      uniflow_connection_setup_bench
+      uniflow_nvlink_bandwidth_bench)
+    target_link_libraries(${_UNIFLOW_NVLINK_BENCH_TARGET} PRIVATE
+      uniflow_build_config
+      uniflow::uniflow
+    )
+    list(APPEND _UNIFLOW_BENCH_OBJECTS
+      $<TARGET_OBJECTS:${_UNIFLOW_NVLINK_BENCH_TARGET}>)
+  endforeach()
+  unset(_UNIFLOW_NVLINK_BENCH_TARGET)
 
-target_link_libraries(uniflow_connection_setup_bench PRIVATE
-    uniflow_bench_lib
-    uniflow_executor
-    uniflow_nvlink_transport
-    uniflow_logging
-)
+  find_package(NCCL QUIET)
+  if(NCCL_FOUND)
+    add_library(uniflow_nccl_send_recv_bench OBJECT
+      bench/NcclSendRecvBenchmark.cpp)
+    target_link_libraries(uniflow_nccl_send_recv_bench PRIVATE
+      uniflow_build_config
+      uniflow::uniflow
+      NCCL::NCCL
+    )
+    list(APPEND _UNIFLOW_BENCH_OBJECTS
+      $<TARGET_OBJECTS:uniflow_nccl_send_recv_bench>)
+  endif()
+endif()
 
-add_library(uniflow_rdma_bandwidth_bench OBJECT
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/RdmaBandwidthBenchmark.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/RdmaBandwidthBenchmark.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/SegmentHelper.h
-)
-
-target_compile_features(uniflow_rdma_bandwidth_bench PUBLIC cxx_std_20)
-
-target_compile_options(uniflow_rdma_bandwidth_bench PRIVATE -fPIC)
-
-target_include_directories(uniflow_rdma_bandwidth_bench PUBLIC
-    ${ROOT}
-)
-
-target_link_libraries(uniflow_rdma_bandwidth_bench PRIVATE
-    uniflow_bench_lib
-    uniflow_executor
-    uniflow_rdma_transport
-    uniflow_logging
-)
-
-add_executable(uniflow_bench
-    ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-    $<TARGET_OBJECTS:uniflow_bench_lib>
-    $<TARGET_OBJECTS:uniflow_connection_setup_bench>
-    $<TARGET_OBJECTS:uniflow_rdma_bandwidth_bench>
-)
-
-target_compile_features(uniflow_bench PUBLIC cxx_std_20)
-
-target_include_directories(uniflow_bench PUBLIC
-    ${ROOT}
-)
-
+add_executable(uniflow_bench main.cpp ${_UNIFLOW_BENCH_OBJECTS})
+if(TARGET uniflow_nccl_send_recv_bench)
+  target_compile_definitions(uniflow_bench PRIVATE
+    UNIFLOW_ENABLE_NCCL_BENCHMARK=1)
+endif()
 target_link_libraries(uniflow_bench PRIVATE
-    uniflow_bench_lib
-    uniflow_connection_setup_bench
-    uniflow_rdma_bandwidth_bench
-    uniflow_controller
-    uniflow_logging
+  uniflow_build_config
+  uniflow::uniflow
 )
+
+unset(_UNIFLOW_BENCH_OBJECTS)
