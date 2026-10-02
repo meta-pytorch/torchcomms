@@ -45,18 +45,19 @@ TcpRemoteRegistrationHandle::deserialize(
 
   TcpRegistrationHandle::Header header;
   std::memcpy(&header, payload.data(), sizeof(header));
+  const uint64_t segId = header.segId;
+  const uint64_t len = header.len;
 
   if (payload.size() != sizeof(header)) {
     return Err(
         ErrCode::InvalidArgument, "tcp registration payload size mismatch");
   }
-  if (header.len != segmentLength) {
+  if (len != segmentLength) {
     return Err(
         ErrCode::InvalidArgument,
         "tcp registration length does not match segment length");
   }
-  return std::make_unique<TcpRemoteRegistrationHandle>(
-      header.segId, header.len);
+  return std::make_unique<TcpRemoteRegistrationHandle>(segId, len);
 }
 
 } // namespace uniflow
