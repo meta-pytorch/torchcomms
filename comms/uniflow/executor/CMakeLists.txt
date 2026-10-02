@@ -18,11 +18,8 @@ target_sources(uniflow_executor INTERFACE
 
 target_compile_features(uniflow_executor INTERFACE cxx_std_20)
 
-target_include_directories(uniflow_executor INTERFACE
-    ${ROOT}
-)
-
 target_link_libraries(uniflow_executor INTERFACE
     Threads::Threads
+    uniflow_build_config
     uniflow_logging
 )

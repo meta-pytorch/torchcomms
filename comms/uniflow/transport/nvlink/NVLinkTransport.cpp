@@ -94,7 +94,7 @@ std::future<Status> NVLinkTransport::transfer(
     CudaDeviceGuard deviceGuard(*cudaApi, deviceId);
 
 #if UNIFLOW_NVLINK_MEMCPY_BATCH
-    if (ops.size() > 1) {
+    if (ops.size() > 1 && cudaStream != nullptr) {
       // Small inline buffer avoids heap allocation for typical batch sizes.
       // Falls back to vector for larger batches.
       constexpr size_t kInlineCap = 16;

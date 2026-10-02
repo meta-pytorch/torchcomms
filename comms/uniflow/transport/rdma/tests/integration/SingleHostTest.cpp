@@ -13,6 +13,8 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 
@@ -49,20 +51,59 @@ class SingleHostTest : public ::testing::Test {
     ibvApi_ = std::make_shared<IbvApi>();
     cudaDriverApi_ = std::make_shared<CudaDriverApi>();
     auto initStatus = ibvApi_->init();
-    ASSERT_FALSE(initStatus.hasError())
-        << "Failed to init IbvApi: " << initStatus.error().message();
+    if (initStatus.hasError()) {
+      GTEST_SKIP() << "RDMA is unavailable: " << initStatus.error().message();
+    }
 
     auto devResult = ibvApi_->getDeviceList(&numDevices_);
-    ASSERT_TRUE(devResult.hasValue())
-        << "Failed to get device list: " << devResult.error().message();
+    if (devResult.hasError()) {
+      GTEST_SKIP() << "RDMA device discovery failed: "
+                   << devResult.error().message();
+    }
     deviceList_ = devResult.value();
-    ASSERT_GE(numDevices_, 2)
-        << "Need at least 2 RDMA devices, found " << numDevices_;
+    if (numDevices_ < 2) {
+      GTEST_SKIP() << "Need at least 2 RDMA devices, found " << numDevices_;
+    }
 
+    std::vector<std::string> availableDeviceNames;
     for (int i = 0; i < numDevices_; ++i) {
       auto nameResult = ibvApi_->getDeviceName(deviceList_[i]);
       ASSERT_TRUE(nameResult.hasValue());
-      deviceNames_.emplace_back(nameResult.value());
+      availableDeviceNames.emplace_back(nameResult.value());
+    }
+
+    const char* configuredNics = std::getenv("UNIFLOW_RDMA_TEST_NICS");
+    if (configuredNics == nullptr) {
+      deviceNames_ = {availableDeviceNames[0], availableDeviceNames[1]};
+    } else if (*configuredNics == '\0') {
+      GTEST_SKIP()
+          << "Cross-NIC RDMA tests require a compatible device pair. "
+             "Configure with -DUNIFLOW_RDMA_TEST_NICS=<device0>,<device1>. "
+             "Detected devices: "
+          << ::testing::PrintToString(availableDeviceNames);
+    } else {
+      const std::string nicPair{configuredNics};
+      const auto separator = nicPair.find(',');
+      ASSERT_TRUE(
+          separator != std::string::npos && separator > 0 &&
+          separator + 1 < nicPair.size() &&
+          nicPair.find(',', separator + 1) == std::string::npos)
+          << "UNIFLOW_RDMA_TEST_NICS must contain exactly two comma-separated "
+             "device names";
+
+      deviceNames_ = {
+          nicPair.substr(0, separator), nicPair.substr(separator + 1)};
+      ASSERT_NE(deviceNames_[0], deviceNames_[1])
+          << "UNIFLOW_RDMA_TEST_NICS must name two distinct devices";
+      for (const auto& deviceName : deviceNames_) {
+        ASSERT_NE(
+            std::find(
+                availableDeviceNames.begin(),
+                availableDeviceNames.end(),
+                deviceName),
+            availableDeviceNames.end())
+            << "Configured RDMA device not found: " << deviceName;
+      }
     }
 
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
@@ -75,12 +116,16 @@ class SingleHostTest : public ::testing::Test {
     }
   }
 
+  static bool hasCudaDevice() {
+    int deviceCount = 0;
+    return cudaGetDeviceCount(&deviceCount) == cudaSuccess && deviceCount > 0;
+  }
+
   /// Create two factories on different NICs, create transports, connect them.
   /// Returns the two connected transports and their factories.
   ///
-  /// When a NIC list is empty (the default), the first two enumerated devices
-  /// are used. This keeps the data-path tests vendor-agnostic so they run on
-  /// any RDMA host (mlx5, bnxt_re/Thor2, etc.) without hardcoded device names.
+  /// When a NIC list is empty (the default), the configured compatible device
+  /// pair is used. Non-CMake builds retain the first-two-device fallback.
   struct ConnectedPair {
     std::unique_ptr<RdmaTransportFactory> factory0;
     std::unique_ptr<RdmaTransportFactory> factory1;
@@ -197,6 +242,10 @@ TEST_F(SingleHostTest, RepeatedRegisterDeregister) {
 // --- VRAM registration integration tests ---
 
 TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   RdmaTransportFactory factory(
       {deviceNames_[0]},
       evbThread_->getEventBase(),
@@ -235,6 +284,10 @@ TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
 }
 
 TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   RdmaTransportFactory factory(
       {deviceNames_[0], deviceNames_[1]},
       evbThread_->getEventBase(),
@@ -274,6 +327,10 @@ TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
 }
 
 TEST_F(SingleHostTest, VramRegistrationWithUnalignedAddress) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   RdmaTransportFactory factory(
       {deviceNames_[0]},
       evbThread_->getEventBase(),
@@ -309,6 +366,10 @@ TEST_F(SingleHostTest, VramRegistrationWithUnalignedAddress) {
 // --- Connection tests ---
 
 TEST_F(SingleHostTest, TwoTransportsConnectOnDifferentNICs) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   auto pair = connectPair({deviceNames_[0]}, {deviceNames_[1]});
   EXPECT_EQ(pair.transport0->state(), TransportState::Connected);
   EXPECT_EQ(pair.transport1->state(), TransportState::Connected);
@@ -320,6 +381,10 @@ TEST_F(SingleHostTest, TwoTransportsConnectOnDifferentNICs) {
 }
 
 TEST_F(SingleHostTest, MultiNicTransportConnects) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   auto pair = connectPair(
       {deviceNames_[0], deviceNames_[1]}, {deviceNames_[0], deviceNames_[1]});
   EXPECT_EQ(pair.transport0->state(), TransportState::Connected);
@@ -348,6 +413,10 @@ class DramTransferTest : public SingleHostTest,
                          public ::testing::WithParamInterface<TransferParam> {};
 
 TEST_P(DramTransferTest, Put) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   const auto& param = GetParam();
   const size_t bufSize = param.bufSize;
   const size_t numRequests = param.numRequests;
@@ -406,6 +475,10 @@ TEST_P(DramTransferTest, Put) {
 }
 
 TEST_P(DramTransferTest, Get) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   const auto& param = GetParam();
   const size_t bufSize = param.bufSize;
   const size_t numRequests = param.numRequests;
@@ -760,6 +833,10 @@ class DramSendRecvTest : public SingleHostTest,
 };
 
 TEST_P(DramSendRecvTest, SendRecv) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   const auto& param = GetParam();
   const size_t bufSize = param.bufSize;
 
