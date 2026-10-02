@@ -1,14 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+cmake_minimum_required(VERSION 3.20)
+
 # Standalone project support (for OSS builds)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  cmake_minimum_required(VERSION 3.20)
   project(uniflow LANGUAGES CXX)
-  if(DEFINED ENV{ROOT})
-    get_filename_component(ROOT $ENV{ROOT} ABSOLUTE)
-  else()
-    get_filename_component(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../.. ABSOLUTE)
-  endif()
   if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'RelWithDebInfo' as none was specified.")
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Choose the type of build." FORCE)
@@ -20,14 +16,32 @@ endif()
 
 find_package(Threads REQUIRED)
 
+set(UNIFLOW_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # Where translated AMD sources land; consumed by uniflow_hipify below. Set before
 # including the module so nested directories all agree on one location.
 set(UNIFLOW_HIPIFY_DIR ${CMAKE_CURRENT_BINARY_DIR}/hipified)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-# spdlog: use system install if available, otherwise fetch from GitHub.
-option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog instead of fetching" ON)
+set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
+file(
+  CREATE_LINK
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${UNIFLOW_BUILD_INCLUDE_DIR}/comms/uniflow"
+  SYMBOLIC
+  RESULT _UNIFLOW_INCLUDE_LINK_RESULT
+)
+if(NOT _UNIFLOW_INCLUDE_LINK_RESULT STREQUAL "0")
+  message(FATAL_ERROR
+    "Failed to create the UniFlow build include symlink: "
+    "${_UNIFLOW_INCLUDE_LINK_RESULT}")
+endif()
+unset(_UNIFLOW_INCLUDE_LINK_RESULT)
+
+option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
+set(UNIFLOW_MINIMUM_SPDLOG_VERSION 1.15.2)
 
 # Header-only escape hatch. Building the Python extension for an interpreter
 # that ships its own C++ runtime -- a relocatable toolchain rather than the
@@ -61,29 +75,31 @@ if(UNIFLOW_SPDLOG_INCLUDE_DIR)
 
   set(UNIFLOW_SPDLOG_TARGET uniflow_spdlog_headers)
   set(UNIFLOW_FMT_TARGET uniflow_fmt_headers)
-
-  # Also at directory scope, not only on the interface targets above: the OBJECT
-  # libraries include Logger.h without linking spdlog, so they see its headers
-  # through the include path alone. Without the macro spdlog falls back to its
-  # vendored fmt, which then collides with the one selected here.
-  add_compile_definitions(SPDLOG_FMT_EXTERNAL FMT_HEADER_ONLY)
-  link_libraries(uniflow_fmt_headers)
 elseif(UNIFLOW_USE_SYSTEM_SPDLOG)
-  find_package(spdlog QUIET)
+  find_package(spdlog ${UNIFLOW_MINIMUM_SPDLOG_VERSION} QUIET)
 endif()
 
 if(UNIFLOW_SPDLOG_INCLUDE_DIR)
   message(STATUS "spdlog and fmt taken from header trees")
-elseif(NOT spdlog_FOUND)
+elseif(NOT UNIFLOW_USE_SYSTEM_SPDLOG OR NOT spdlog_FOUND)
   message(STATUS "spdlog not found on system, fetching from GitHub...")
   include(FetchContent)
   FetchContent_Declare(
+      fmt
+      GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+      GIT_TAG 11.1.4
+  )
+  FetchContent_MakeAvailable(fmt)
+
+  set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
       spdlog
       GIT_REPOSITORY https://github.com/gabime/spdlog.git
-      GIT_TAG v1.15.2
+      GIT_TAG "v${UNIFLOW_MINIMUM_SPDLOG_VERSION}"
   )
   FetchContent_MakeAvailable(spdlog)
   set(UNIFLOW_SPDLOG_TARGET spdlog::spdlog)
+  set(UNIFLOW_FMT_TARGET fmt::fmt)
 else()
   # TcpController.cpp includes <fmt/core.h> directly, which spdlog's vendored
   # copy cannot satisfy because it lives under spdlog/fmt/bundled. A system
@@ -92,35 +108,25 @@ else()
   find_package(fmt REQUIRED)
   set(UNIFLOW_SPDLOG_TARGET spdlog::spdlog)
   set(UNIFLOW_FMT_TARGET fmt::fmt)
-  add_compile_definitions(SPDLOG_FMT_EXTERNAL)
-  link_libraries(fmt::fmt)
 endif()
 
-# Make ROOT available as a global include path so all targets
-# can resolve #include "comms/uniflow/..." paths.
-message(STATUS "ROOT = ${ROOT}")
-message(STATUS "CMAKE_CURRENT_SOURCE_DIR = ${CMAKE_CURRENT_SOURCE_DIR}")
-include_directories(${ROOT})
+add_library(uniflow_build_config INTERFACE)
+target_compile_features(uniflow_build_config INTERFACE cxx_std_20)
+target_include_directories(uniflow_build_config INTERFACE
+  $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(uniflow_build_config INTERFACE
+  Threads::Threads
+  ${UNIFLOW_FMT_TARGET}
+  ${UNIFLOW_SPDLOG_TARGET}
+)
 
 # Enable position-independent code for all targets so uniflow can be
 # linked into shared libraries (e.g., torchcomms _transport.so).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Add CUDA include path globally so all sub-targets can find cuda.h
-# and cuda_runtime_api.h, even when compiled via distcc.
 include(UniflowGpuPlatform)
-
-if(CUDAToolkit_FOUND)
-  include_directories(${CUDAToolkit_INCLUDE_DIRS})
-endif()
-
-# Add spdlog include path globally for distcc compatibility, and so the OBJECT
-# libraries that include Logger.h without linking spdlog themselves can resolve
-# it whether spdlog was found on the system or fetched.
-get_target_property(_spdlog_inc ${UNIFLOW_SPDLOG_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
-if(_spdlog_inc)
-  include_directories(${_spdlog_inc})
-endif()
 
 # TCP is integrated into MultiTransport on AMD only; on NVIDIA the intra-node
 # tier is NVLink and TCP is not part of the selection.
@@ -148,13 +154,7 @@ set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.cpp
 )
 
-set(UNIFLOW_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/Result.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Segment.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Connection.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/MultiTransport.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.h
-)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
 # Included via add_subdirectory: build STATIC library for parent to consume
 if(UNIFLOW_STANDALONE)
@@ -171,7 +171,7 @@ endif()
 
 add_library(uniflow ${UNIFLOW_LIB_TYPE}
     ${UNIFLOW_SOURCES}
-    ${UNIFLOW_HEADERS}
+    ${UNIFLOW_PUBLIC_HEADERS}
     ${UNIFLOW_CORE_HEADERS}
     ${UNIFLOW_CORE_SOURCES}
     $<TARGET_OBJECTS:uniflow_controller>
@@ -195,12 +195,14 @@ if(UNIFLOW_ENABLE_TCP_TRANSPORT)
 endif()
 
 target_include_directories(uniflow PUBLIC
-    ${ROOT}
+    $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
+    $<INSTALL_INTERFACE:include>
 )
 
 target_link_libraries(uniflow PUBLIC
     Threads::Threads
     ${UNIFLOW_SPDLOG_TARGET}
+    uniflow_build_config
     uniflow_executor
     ${UNIFLOW_GPU_LIBRARIES}
 )
@@ -226,8 +228,8 @@ if(UNIFLOW_BUILD_PYTHON)
   add_subdirectory(python)
 endif()
 
-# Tests (standalone builds or when BUILD_TESTING is ON)
-if(UNIFLOW_STANDALONE OR BUILD_TESTING)
+option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
+if(UNIFLOW_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
   add_subdirectory(executor/tests)
