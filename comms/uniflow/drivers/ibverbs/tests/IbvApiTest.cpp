@@ -10,11 +10,18 @@ class IbvApiTest : public ::testing::Test {
  protected:
   void SetUp() override {
     auto status = api_.init();
-    ASSERT_FALSE(status.hasError()) << status.error().message();
+    if (status.hasError()) {
+      GTEST_SKIP() << "RDMA is unavailable: " << status.error().message();
+    }
 
     auto result = api_.getDeviceList(&numDevices_);
-    ASSERT_TRUE(result.hasValue()) << result.error().message();
-    ASSERT_GT(numDevices_, 0);
+    if (result.hasError()) {
+      GTEST_SKIP() << "RDMA device discovery failed: "
+                   << result.error().message();
+    }
+    if (numDevices_ == 0) {
+      GTEST_SKIP() << "No RDMA device is available";
+    }
     deviceList_ = result.value();
   }
 

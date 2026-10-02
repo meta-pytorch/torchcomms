@@ -14,7 +14,9 @@ class TopologyIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
     topo_ = &sharedTopology();
-    ASSERT_TRUE(topo_->available());
+    if (!topo_->available()) {
+      GTEST_SKIP() << "Hardware topology is unavailable";
+    }
   }
 
   Topology& topo() {

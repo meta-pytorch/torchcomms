@@ -49,15 +49,19 @@ class SingleHostTest : public ::testing::Test {
     ibvApi_ = std::make_shared<IbvApi>();
     cudaDriverApi_ = std::make_shared<CudaDriverApi>();
     auto initStatus = ibvApi_->init();
-    ASSERT_FALSE(initStatus.hasError())
-        << "Failed to init IbvApi: " << initStatus.error().message();
+    if (initStatus.hasError()) {
+      GTEST_SKIP() << "RDMA is unavailable: " << initStatus.error().message();
+    }
 
     auto devResult = ibvApi_->getDeviceList(&numDevices_);
-    ASSERT_TRUE(devResult.hasValue())
-        << "Failed to get device list: " << devResult.error().message();
+    if (devResult.hasError()) {
+      GTEST_SKIP() << "RDMA device discovery failed: "
+                   << devResult.error().message();
+    }
     deviceList_ = devResult.value();
-    ASSERT_GE(numDevices_, 2)
-        << "Need at least 2 RDMA devices, found " << numDevices_;
+    if (numDevices_ < 2) {
+      GTEST_SKIP() << "Need at least 2 RDMA devices, found " << numDevices_;
+    }
 
     for (int i = 0; i < numDevices_; ++i) {
       auto nameResult = ibvApi_->getDeviceName(deviceList_[i]);
@@ -73,6 +77,11 @@ class SingleHostTest : public ::testing::Test {
     if (deviceList_) {
       ibvApi_->freeDeviceList(deviceList_);
     }
+  }
+
+  static bool hasCudaDevice() {
+    int deviceCount = 0;
+    return cudaGetDeviceCount(&deviceCount) == cudaSuccess && deviceCount > 0;
   }
 
   /// Create two factories on different NICs, create transports, connect them.
@@ -197,6 +206,10 @@ TEST_F(SingleHostTest, RepeatedRegisterDeregister) {
 // --- VRAM registration integration tests ---
 
 TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   RdmaTransportFactory factory(
       {deviceNames_[0]},
       evbThread_->getEventBase(),
@@ -235,6 +248,10 @@ TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
 }
 
 TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   RdmaTransportFactory factory(
       {deviceNames_[0], deviceNames_[1]},
       evbThread_->getEventBase(),
@@ -274,6 +291,10 @@ TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
 }
 
 TEST_F(SingleHostTest, VramRegistrationWithUnalignedAddress) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   RdmaTransportFactory factory(
       {deviceNames_[0]},
       evbThread_->getEventBase(),
@@ -309,6 +330,10 @@ TEST_F(SingleHostTest, VramRegistrationWithUnalignedAddress) {
 // --- Connection tests ---
 
 TEST_F(SingleHostTest, TwoTransportsConnectOnDifferentNICs) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   auto pair = connectPair({deviceNames_[0]}, {deviceNames_[1]});
   EXPECT_EQ(pair.transport0->state(), TransportState::Connected);
   EXPECT_EQ(pair.transport1->state(), TransportState::Connected);
@@ -320,6 +345,10 @@ TEST_F(SingleHostTest, TwoTransportsConnectOnDifferentNICs) {
 }
 
 TEST_F(SingleHostTest, MultiNicTransportConnects) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   auto pair = connectPair(
       {deviceNames_[0], deviceNames_[1]}, {deviceNames_[0], deviceNames_[1]});
   EXPECT_EQ(pair.transport0->state(), TransportState::Connected);
@@ -348,6 +377,10 @@ class DramTransferTest : public SingleHostTest,
                          public ::testing::WithParamInterface<TransferParam> {};
 
 TEST_P(DramTransferTest, Put) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   const auto& param = GetParam();
   const size_t bufSize = param.bufSize;
   const size_t numRequests = param.numRequests;
@@ -406,6 +439,10 @@ TEST_P(DramTransferTest, Put) {
 }
 
 TEST_P(DramTransferTest, Get) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   const auto& param = GetParam();
   const size_t bufSize = param.bufSize;
   const size_t numRequests = param.numRequests;
@@ -760,6 +797,10 @@ class DramSendRecvTest : public SingleHostTest,
 };
 
 TEST_P(DramSendRecvTest, SendRecv) {
+  if (!hasCudaDevice()) {
+    GTEST_SKIP() << "Requires a GPU device";
+  }
+
   const auto& param = GetParam();
   const size_t bufSize = param.bufSize;
 
