@@ -25,33 +25,40 @@ extern "C" {
  */
 
 struct ncclIbCastSchedState {
-  int      nqps;
-  int      qpIndex;          /* current WRR cursor */
-  int      initTotTokens;
-  int      initQpTokens[NCCL_IB_MAX_QPS];
-  int      activeTotTokens;
-  int      activeQpTokens[NCCL_IB_MAX_QPS];
+  int nqps;
+  int qpIndex;          /* current WRR cursor */
+  int initTotTokens;
+  int initQpTokens[NCCL_IB_MAX_QPS];
+  int activeTotTokens;
+  int activeQpTokens[NCCL_IB_MAX_QPS];
   uint32_t splitDataMin;
-  bool     schedInit;        /* true once IbCastQpSchedUpdateTx has fired */
-  bool     schedEnable;
-  bool     doWrr;
-  bool     splitData;
+  bool schedInit;        /* true once IbCastQpSchedUpdateTx has fired */
+  bool schedEnable;
+  bool doWrr;
+  bool splitData;
 };
 
 /* Copy scheduler state out of a connected sendComm.
  * Returns ncclInvalidArgument on null pointers. */
 ncclResult_t ncclIbCastGetSchedState(void* sendComm, struct ncclIbCastSchedState* out);
 
+/* Read commBase.optRecvCompletion from a connected send or recv comm.
+ * *out is 1 if optional recv completion is enabled, 0 otherwise.
+ * Returns ncclInvalidArgument on null pointers. */
+ncclResult_t ncclIbCastGetOptRecvCompletion(void* comm, int* out);
+
 /* Force-initialize the WRR token table, bypassing RTT-driven scheduling.
  * nqps must match the connection's nqps. */
 ncclResult_t ncclIbCastSetTokens(void* sendComm, const int* qpTokens, int nqps);
 
 /* Override schedParms; takes effect on the next isend, no reconnect needed. */
-ncclResult_t ncclIbCastSetSchedParms(void* sendComm,
-                                      bool schedEnable,
-                                      bool doWrr,
-                                      bool splitData,
-                                      uint32_t splitDataMin);
+ncclResult_t ncclIbCastSetSchedParms(void* sendComm, bool schedEnable, bool doWrr, bool splitData,
+                                     uint32_t splitDataMin);
+
+/* ── Test-only wrappers over internal static helpers (host-only, no HW). ── */
+ncclResult_t ncclIbCastTestGetPlaneIndex(int devPlane, int16_t* count, int16_t* planes, int16_t* idx);
+int ncclIbCastTestGidSameSubnet(const uint8_t localGid[16], const uint8_t remoteGid[16], int prefixLen);
+int ncclIbCastTestSubnetMatchesAny(const uint8_t localGid[16], const uint8_t* remoteGids, int nRemote, int prefixLen);
 
 /* ── Resiliency state introspection (requires ENABLE_FAULT_INJECTION) ── */
 #ifdef ENABLE_FAULT_INJECTION
@@ -59,11 +66,11 @@ ncclResult_t ncclIbCastSetSchedParms(void* sendComm,
 struct ncclIbCastResiliencyState {
   bool recoveryEnabled;
   bool inProgress;
-  int  outstandingRequests;
-  int  outstandingRecovery;
-  int  ndevs;
-  int  devState[NCCL_NET_MAX_DEVS_PER_NIC];
-  int  recoveryCount[NCCL_NET_MAX_DEVS_PER_NIC];
+  int outstandingRequests;
+  int outstandingRecovery;
+  int ndevs;
+  int devState[NCCL_NET_MAX_DEVS_PER_NIC];
+  int recoveryCount[NCCL_NET_MAX_DEVS_PER_NIC];
 };
 
 /* Fills out with the current resiliency state of the communicator.

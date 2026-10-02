@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -33,7 +33,7 @@
 #include <rocprofiler-sdk/cxx/operators.hpp>
 #include <rocprofiler-sdk/cxx/perfetto.hpp>
 
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include <atomic>
 #include <future>
@@ -102,7 +102,7 @@ write_perfetto(
     auto buffer_size_kb  = ocfg.perfetto_buffer_size;
 
     auto* buffer_config = cfg.add_buffers();
-    buffer_config->set_size_kb(buffer_size_kb);
+    buffer_config->set_size_kb(static_cast<uint32_t>(buffer_size_kb));
 
     if(ocfg.perfetto_buffer_fill_policy == "discard" || ocfg.perfetto_buffer_fill_policy.empty())
         buffer_config->set_fill_policy(
@@ -676,6 +676,19 @@ write_perfetto(
                                 mid);
                             (*it)->end_timestamp     = mid;
                             (*next)->start_timestamp = mid;
+
+                            // The modified start may have pushed *next behind multiple later
+                            // records. Find the correct insertion point and rotate in one
+                            // shot so subsequent iterations see correct neighbors.
+                            auto insert_it =
+                                std::upper_bound(std::next(next),
+                                                 qitr.second.end(),
+                                                 (*next)->start_timestamp,
+                                                 [](rocprofiler_timestamp_t lhs, const auto* rhs) {
+                                                     return lhs < rhs->start_timestamp;
+                                                 });
+                            if(insert_it != std::next(next))
+                                std::rotate(next, std::next(next), insert_it);
                         }
 
                         if(demangled.find(name) == demangled.end())
