@@ -34,12 +34,31 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
 
 namespace {
 
+CtranIbConfig makeCtranIbConfigFrom(const ncclComm* comm) {
+  if (comm->config.ncclxConfig == nullptr ||
+      comm->config.ncclxConfig == NCCL_CONFIG_UNDEF_PTR) {
+    return {};
+  }
+  const auto* x = static_cast<const ncclx::Config*>(comm->config.ncclxConfig);
+  return CtranIbConfig{
+      .numQps = x->ctranIbNumQps,
+      .qpScalingTh = x->ctranIbQpScalingTh,
+      .vcMode = x->ctranIbVcMode,
+      .qpMsgs = x->ctranIbQpMsgs,
+      .enableLocalFlush = x->ctranIbEnableLocalFlush,
+      .maxNumCqe = x->ctranIbMaxNumCqe,
+      .maxNumNic = x->ctranIbMaxNumNic,
+      .trafficClass = x->ctranIbTrafficClass,
+  };
+}
+
 ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
       .commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc),
       .trafficClass = comm->config.trafficClass,
       .enableProfiler = NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0,
+      .ibConfig = makeCtranIbConfigFrom(comm),
   };
   return tconfig;
 }

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -66,6 +68,18 @@ class Config {
   std::optional<int> ibSplitDataOnQps;
   std::optional<int> ibQpsPerConnection;
 
+  // Per-communicator CTran IB transport overrides. Assembled into a
+  // CtranIbConfig in MetaFactory; unset fields fall back to cvars/topology.
+  // Stored as loose optionals so the core ncclx library needs no ctran dep.
+  std::optional<int> ctranIbNumQps;
+  std::optional<size_t> ctranIbQpScalingTh;
+  std::optional<int> ctranIbQpMsgs;
+  std::optional<enum NCCL_CTRAN_IB_VC_MODE> ctranIbVcMode;
+  std::optional<int> ctranIbMaxNumCqe;
+  std::optional<int> ctranIbMaxNumNic;
+  std::optional<bool> ctranIbEnableLocalFlush;
+  std::optional<int64_t> ctranIbTrafficClass;
+
   // Eagerly allocate ctran tmpbuf/NVL staging/bcast buffers at init.
   // When false, ctran skips those allocations to save memory (per-comm only).
   bool tmpbufEagerAlloc = true;
@@ -93,6 +107,14 @@ inline const std::vector<std::string>& knownHintKeys() {
       "ncclBuffSize",
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
+      "ctranIbNumQps",
+      "ctranIbQpScalingTh",
+      "ctranIbQpMsgs",
+      "ctranIbVcMode",
+      "ctranIbMaxNumCqe",
+      "ctranIbMaxNumNic",
+      "ctranIbEnableLocalFlush",
+      "ctranIbTrafficClass",
       "ctranTmpbufEagerAlloc",
       "win_register_ipc_only",
       "win_register_enable_signal",

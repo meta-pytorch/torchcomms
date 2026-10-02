@@ -3,7 +3,13 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "comm.h"
+#include "comms/ctran/CtranComm.h"
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "meta/NcclxConfig.h" // @manual
@@ -165,6 +171,60 @@ TEST_F(CommSplitPerCommConfigTest, SplitShareRejectsIbQpsPerConnection) {
   ncclComm_t child = nullptr;
   ncclResult_t res = ncclCommSplit(comm, 0, globalRank, &child, &splitConfig);
   EXPECT_EQ(res, ncclInvalidArgument);
+}
+
+// A split-share child shares the parent's CTran IB resources, so a divergent
+// per-comm override there is meaningless and must be rejected, per field.
+TEST_F(CommSplitPerCommConfigTest, SplitShareRejectsEveryCtranIbOverride) {
+  const std::vector<std::pair<std::string, std::string>> ctranIbHints = {
+      {"ctranIbNumQps", "8"},
+      {"ctranIbQpScalingTh", "262144"},
+      {"ctranIbQpMsgs", "64"},
+      {"ctranIbVcMode", "dqplb"},
+      {"ctranIbMaxNumCqe", "4096"},
+      {"ctranIbMaxNumNic", "1"},
+      {"ctranIbEnableLocalFlush", "1"},
+      {"ctranIbTrafficClass", "200"},
+  };
+
+  for (const auto& [key, value] : ctranIbHints) {
+    ncclConfig_t splitConfig = NCCL_CONFIG_INITIALIZER;
+    splitConfig.splitShare = 1;
+    ncclx::Hints hints({{key, value}});
+    splitConfig.hints = &hints;
+
+    ncclComm_t child = nullptr;
+    EXPECT_EQ(
+        ncclCommSplit(comm, 0, globalRank, &child, &splitConfig),
+        ncclInvalidArgument)
+        << "hint: " << key;
+  }
+}
+
+// Without splitShare the child gets its own CTran IB config, and the parent's
+// stays untouched.
+TEST_F(CommSplitPerCommConfigTest, CtranIbConfigOverrideIsChildOnly) {
+  ncclConfig_t splitConfig = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({
+      {"useCtran", "1"},
+      {"ctranIbNumQps", "8"},
+      {"ctranIbVcMode", "dqplb"},
+  });
+  splitConfig.hints = &hints;
+
+  ncclx::test::NcclCommSplitRAII child(comm, 0, globalRank, &splitConfig);
+
+  ASSERT_NE(child->ctranComm_, nullptr);
+  const auto& childIbConfig = child->ctranComm_->config_.ibConfig;
+  EXPECT_EQ(childIbConfig.numQps, 8);
+  EXPECT_EQ(childIbConfig.vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
+
+  // The parent's own config is untouched by the child's hints.
+  EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, ctranIbNumQps).has_value());
+  EXPECT_FALSE(NCCLX_CONFIG_FIELD(comm->config, ctranIbVcMode).has_value());
+
+  runAllReduce(comm);
+  runAllReduce(child.get());
 }
 
 int main(int argc, char* argv[]) {
