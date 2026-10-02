@@ -105,6 +105,20 @@ class MockCudaDriverApi : public CudaDriverApi {
        void* osHandle,
        CUmemAllocationHandleType shHandleType),
       (override));
+#if defined(__HIP_PLATFORM_AMD__)
+  MOCK_METHOD(
+      Status,
+      cuMemGetAccess,
+      (unsigned long long* flags,
+       const CUmemLocation* location,
+       CUdeviceptr ptr),
+      (override));
+  MOCK_METHOD(
+      Status,
+      importPosixFd,
+      (CUmemGenericAllocationHandle * handle, int fd),
+      (override));
+#endif
   MOCK_METHOD(
       Status,
       memGetHandleForAddressRange,
