@@ -27,7 +27,9 @@ ROCm/HIP — there is no separate AMD library target.
 > **P2P (XGMI)** — `transport/p2p`, takes the NVLink tier's place on AMD when its
 > capability checks pass
 > (`MultiTransport.cpp` registers `P2pTransportFactory` under
-> `__HIP_PLATFORM_AMD__`). Uses `hipIpc` memory handles.
+> `__HIP_PLATFORM_AMD__`). Shares VMM (`hipMemCreate`) segments as POSIX fds
+> pulled with `pidfd_getfd` (`P2pVmm`), and other memory through `hipIpc`
+> memory handles.
 > `P2pTransportFactory::supported()` gates on an all-to-all-XGMI arch allowlist
 > (`gfx942` MI300, `gfx950` MI350, `gfx1250` MI450) so a non-XGMI part cannot let
 > presence-driven selection prefer a slow PCIe-P2P link over RDMA
@@ -48,8 +50,9 @@ ROCm/HIP — there is no separate AMD library target.
 > `__HIP_PLATFORM_AMD__` in `MultiTransport.cpp`, BUCK deps select'd out). Note
 > that the **cuMem VMM allocator** (`cuMemCreate`/`AddressReserve`/`Map`/
 > `SetAccess`/`Export`/`Import`) is reached only by `NVLinkTransport` and the
-> NVLink benchmark, so it never executes on AMD; the AMD P2P tier uses `hipIpc`
-> handles instead.
+> NVLink benchmark, so it never executes on AMD. The AMD P2P tier never
+> allocates VMM memory, but it does export and map caller-allocated VMM
+> segments through the hipMem calls.
 
 ## Prerequisites
 
