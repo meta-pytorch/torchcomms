@@ -21,7 +21,7 @@ target_compile_options(uniflow_transport PRIVATE -fPIC)
 
 target_link_libraries(uniflow_transport PRIVATE uniflow_build_config)
 
-if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   add_subdirectory(p2p)
 elseif(UNIFLOW_ENABLE_NVLINK)
   add_subdirectory(nvlink)

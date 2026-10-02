@@ -6,11 +6,9 @@ include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 find_dependency(fmt)
 find_dependency(spdlog @UNIFLOW_MINIMUM_SPDLOG_VERSION@)
-if("@UNIFLOW_ENABLE_CUDA@" AND
-   "@UNIFLOW_GPU_PLATFORM@" STREQUAL "CUDA")
+if("@UNIFLOW_GPU_PLATFORM@" STREQUAL "CUDA")
   find_dependency(CUDAToolkit @UNIFLOW_MINIMUM_CUDA_VERSION@)
-elseif("@UNIFLOW_ENABLE_CUDA@" AND
-       "@UNIFLOW_GPU_PLATFORM@" STREQUAL "HIP")
+elseif("@UNIFLOW_GPU_PLATFORM@" STREQUAL "HIP")
   find_dependency(hip)
 endif()
 
