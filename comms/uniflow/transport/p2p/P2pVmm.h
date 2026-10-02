@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <span>
 
 #include "comms/uniflow/Result.h"
 #include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
@@ -32,6 +33,17 @@ class P2pVmm {
   /// True when @p ptr is VMM-mapped memory. Safe for any pointer: it never
   /// retains the allocation, which crashes for hipMalloc memory.
   bool isVmm(const void* ptr) const;
+
+  /// Add read-write access for @p peerDevices to the chunks covering
+  /// [ptr, ptr + len), keeping the access the owner set. A peer device writes
+  /// this memory when it runs a copy into it: ROCm runs a get() from an
+  /// IPC-imported peer buffer on the peer's device. Returns false, granting
+  /// nothing, when the range is not a well-formed VMM range (exportSegment
+  /// rejects it too). The access stays after deregistration.
+  Result<bool> grantPeerAccess(
+      void* ptr,
+      size_t len,
+      std::span<const int> peerDevices) const;
 
   /// Export the chunks covering [ptr, ptr + len). Fails before retaining any
   /// chunk when a chunk is not VMM, the chunks are not VA-contiguous, there
