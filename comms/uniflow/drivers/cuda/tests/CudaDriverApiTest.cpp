@@ -8,6 +8,21 @@ namespace uniflow {
 
 class CudaDriverApiTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    auto status = api.init();
+    if (status.hasError()) {
+      GTEST_SKIP() << "CUDA driver is unavailable: "
+                   << status.error().message();
+    }
+
+    CUdevice device{};
+    status = api.cuDeviceGet(&device, 0);
+    if (status.hasError()) {
+      GTEST_SKIP() << "No CUDA device is available: "
+                   << status.error().message();
+    }
+  }
+
   CudaDriverApi api;
 };
 
