@@ -21,10 +21,7 @@ target_compile_features(uniflow_nvml PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_nvml PRIVATE -fPIC)
 
-target_include_directories(uniflow_nvml PUBLIC
-    ${ROOT}
-)
-
 target_link_libraries(uniflow_nvml PRIVATE
+    uniflow_build_config
     ${CMAKE_DL_LIBS}
 )
