@@ -40,6 +40,7 @@
 #include <memory>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms::colltrace {
@@ -630,6 +631,12 @@ struct ncclComm {
   bool runtimeConn; // if dynamic connection is supported
   bool directMode; // if any process manages more than one local rank
   int cuMemSupport;
+
+  // [META] NCCLX supports storing channel metadata on the pinned host memory.
+  // See the description of NCCL_CHANNEL_METADATA_LOCATION for details
+  bool channelMetadataOnHost{false};
+  // Slab Allocator for baseline initChannel metadata allocation
+  std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator{nullptr};
 
   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect
                   // mismatches.

@@ -10,6 +10,25 @@
 #include "gdrwrap.h"
 #include "transport.h"
 
+#include "comms/ctran/memory/SlabAllocator.h"
+#include "meta/wrapper/MetaFactory.h"
+
+template <typename T>
+static ncclResult_t ncclxChannelCallocAsync(
+    T** ptr,
+    size_t nelem,
+    cudaStream_t stream,
+    struct ncclComm* comm,
+    const char* callsite) {
+  if (comm->slabAllocator) {
+    return metaCommToNccl(comm->slabAllocator->cuCallocAsync(
+        reinterpret_cast<void**>(ptr), nelem * sizeof(T), stream, callsite, &comm->logMetaData));
+  }
+
+  // [META:MEMCACHE_SLAB] Retain NCCL's suspend/resume tracking when slab allocation is disabled.
+  return ncclCudaCallocAsync(ptr, nelem, stream, comm->memManager, ncclMemOffload);
+}
+
 ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
   struct ncclChannel* channel = &comm->channels[channelId];
   if (channel->id != -1) return ncclSuccess;
@@ -41,12 +60,22 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
 
   if (channel->devPeers == NULL) {
     if (sharedRes->devPeers[channelId] == NULL) {
-      NCCLCHECK(ncclCudaCallocAsync(sharedRes->devPeers + channelId, sharedRes->tpNRanks, deviceStream,
-                                    comm->memManager, ncclMemOffload));
+      if (comm->channelMetadataOnHost) {
+        NCCLCHECK(ncclCudaHostCalloc(sharedRes->devPeers + channelId, sharedRes->tpNRanks));
+      } else {
+        NCCLCHECK(ncclxChannelCallocAsync(sharedRes->devPeers + channelId, sharedRes->tpNRanks, deviceStream, comm,
+                                          "initChannnelSharedResDevPeers"));
+      }
     }
     /* channel->devPeers is not shared, so just free it when calling commFree() */
-    NCCLCHECK(ncclCudaCallocAsync(&channel->devPeers, nPeers, deviceStream, comm->memManager, ncclMemOffload));
-    ncclCommPushCudaFree(comm, channel->devPeers);
+    if (comm->channelMetadataOnHost) {
+      NCCLCHECK(ncclCudaHostCalloc(&channel->devPeers, nPeers));
+      ncclCommPushCudaHostFree(comm, channel->devPeers);
+    } else {
+      NCCLCHECK(ncclxChannelCallocAsync(&channel->devPeers, nPeers, deviceStream, comm,
+                                        "initChannnelDevPeers"));
+      if (!comm->slabAllocator) ncclCommPushCudaFree(comm, channel->devPeers);
+    }
     NCCLCHECK(ncclCalloc(&channel->devPeersHostPtr, nPeers));
     for (int r = 0; r < nRanks; r++) {
       uintptr_t addr = (uintptr_t)(comm->sharedRes->devPeers[channelId] + comm->topParentRanks[r]);
@@ -57,8 +86,14 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
 
   channel->ring.userRanks = ncclMemoryStackAlloc<int>(&comm->memPermanent, nRanks);
   channel->ring.rankToIndex = ncclMemoryStackAlloc<int>(&comm->memPermanent, nRanks);
-  NCCLCHECK(ncclCudaCallocAsync(&channel->devRingUserRanks, nRanks, deviceStream, comm->memManager, ncclMemOffload));
-  ncclCommPushCudaFree(comm, channel->devRingUserRanks);
+  if (comm->channelMetadataOnHost) {
+    NCCLCHECK(ncclCudaHostCalloc(&channel->devRingUserRanks, nRanks));
+    ncclCommPushCudaHostFree(comm, channel->devRingUserRanks);
+  } else {
+    NCCLCHECK(ncclxChannelCallocAsync(&channel->devRingUserRanks, nRanks, deviceStream, comm,
+                                      "initChannneldevRingUserRanks"));
+    if (!comm->slabAllocator) ncclCommPushCudaFree(comm, channel->devRingUserRanks);
+  }
 
   /* guarantee addr has been copied into channel->devPeers */
   NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(comm->config.graphUsageMode), &sharedRes->deviceStream,
