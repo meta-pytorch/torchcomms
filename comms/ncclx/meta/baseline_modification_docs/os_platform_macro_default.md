@@ -9,8 +9,15 @@ Several NCCL headers branch on `NCCL_OS_LINUX` / `NCCL_OS_WINDOWS`:
   declared.
 - `src/nccl.h.in` gates the `ncclResetDebugInit` / `pncclResetDebugInit`
   declarations behind `#ifdef NCCL_OS_LINUX`.
-- `src/include/socket.h` and `os.h` itself contain bare `#if NCCL_OS_LINUX` /
-  `#if NCCL_OS_WINDOWS` tests.
+- `src/include/socket.h` contains bare `#if NCCL_OS_LINUX` /
+  `#elif NCCL_OS_WINDOWS` tests, and `os.h` a bare `#if NCCL_OS_WINDOWS`.
+- `src/include/nccl_common.h` includes libstdc++'s `<bits/c++config.h>` and
+  redefines `_GLIBCXX_VISIBILITY` to empty under `#ifdef NCCL_OS_LINUX`. It is
+  reached through `debug.h` (and so `core.h` and the `TestUtils.h` chain),
+  `plugin/nccl_net.h` and `plugin/nccl_tuner.h`. With the default below in
+  place, header-set consumers take this branch too: every std header they
+  include afterwards is parsed with empty `_GLIBCXX_VISIBILITY`, and they
+  require libstdc++.
 
 If neither macro is defined, none of those resolve the way the code expects.
 `os.h` includes neither platform header, so every declaration naming
@@ -37,16 +44,16 @@ headers and not the define:
   pulls in `bootstrap.h` -> `comm.h` -> `p2p.h` -> `core.h` -> `alloc.h` -> `os.h`
 - any out-of-tree consumer of the installed/exported headers
 
-The result is that the library itself builds while every generated `*_v2_31` meta
+The result is that the library itself builds while every generated `*_v2_<ver>` meta
 test that includes `TestUtils.h` fails to compile, on types that look unrelated
 to anything the test does.
 
 ## Versions Affected
 
-Applied to v2_31, which has since been removed. `v2_32` still needs it: its
-import has the same bare `#if NCCL_OS_LINUX` / `#if NCCL_OS_WINDOWS` tests in
-`src/include/socket.h` and `src/include/os.h`, and no defaulting block. `v2_30`
-carries an equivalent (valueless) block in `src/include/os.h`.
+Applied to `v2_32` (and previously to `v2_31`, since removed). Its import has
+the bare tests in `src/include/socket.h` and `src/include/os.h` listed above,
+and no defaulting block of its own. `v2_30` carries an equivalent (valueless)
+block in `src/include/os.h`.
 
 ## Baseline Files Modified
 
@@ -81,7 +88,7 @@ leave every out-of-tree consumer of the exported headers with the same latent
 break.
 
 **Difference from v2_29 / v2_30**: those versions `#define NCCL_OS_LINUX` with no
-value. 2.31 introduced two bare `#if NCCL_OS_LINUX` / `#if NCCL_OS_WINDOWS` tests
+value. 2.31 introduced (and 2.32 keeps) bare `#if NCCL_OS_LINUX` / `#if NCCL_OS_WINDOWS` tests
 (`src/include/socket.h`, and `os.h` itself) which require the macro to expand to
 something. The valueless spelling produces `error: expected value in expression`
 there, so this version defines it to `1`. `1` is also what `-D<name>` yields, so a

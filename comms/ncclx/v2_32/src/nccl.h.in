@@ -25,6 +25,23 @@
 #define NCCL_VERSION_CODE ${nccl:Version}
 #define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
 
+/* [META] Default the platform macro when the build has not supplied one.
+ * Targets that consume only the header set (nccl<ver>-internal, the meta tests
+ * via comms/testinfra/TestUtils.h, out-of-tree users) do not inherit the
+ * library's -DNCCL_OS_LINUX. It must live here rather than in os.h: os.h
+ * includes nccl.h first, so nccl.h's own NCCL_OS_LINUX gates would already have
+ * been evaluated. Defined to 1 because socket.h and os.h use bare
+ * `#if NCCL_OS_LINUX` / `#if NCCL_OS_WINDOWS`.
+ * See meta/baseline_modification_docs/os_platform_macro_default.md.
+ */
+#if !defined(NCCL_OS_LINUX) && !defined(NCCL_OS_WINDOWS)
+#if defined(_WIN32) || defined(_WIN64)
+#define NCCL_OS_WINDOWS 1
+#else
+#define NCCL_OS_LINUX 1
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
