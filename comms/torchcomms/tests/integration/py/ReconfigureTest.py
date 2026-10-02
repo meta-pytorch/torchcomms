@@ -24,6 +24,8 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     TorchCommTestWrapper,
 )
 
+MCCL_RECONFIGURE_QUORUM_ID_HINT = "reconfigureQuorumId"
+
 
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
@@ -93,6 +95,11 @@ class ReconfigureTest(unittest.TestCase):
     def _get_store_for_comm(self):
         """Get the store to pass to new_comm for NCCL/NCCLx bootstrap."""
         return getattr(self, "store", None)
+
+    def _reconfigure_hints(self, uuid: int) -> dict[str, str]:
+        if self.backend == "mccl":
+            return {MCCL_RECONFIGURE_QUORUM_ID_HINT: str(uuid)}
+        return {}
 
     def _skip_if_grow_not_supported(self):
         """Skip test if commGrow is not available.
@@ -202,6 +209,7 @@ class ReconfigureTest(unittest.TestCase):
                 opts.uuid = uuid
                 opts.handles = handles
                 opts.timeout = timedelta(seconds=30)
+                opts.hints = self._reconfigure_hints(uuid)
                 work = backend.reconfigure(opts)
                 self.assertTrue(work.wait())
                 initialized = True
@@ -258,6 +266,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=uuid,
             init_handles=init_handles,
             timeout=timedelta(seconds=30),
+            hints=self._reconfigure_hints(uuid),
         )
         work.wait()
 
@@ -283,6 +292,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=101,
             init_handles=surviving_handles,
             timeout=timedelta(seconds=30),
+            hints=self._reconfigure_hints(101),
         )
         work.wait()
 
@@ -345,6 +355,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=301,
             init_handles=surviving_handles,
             timeout=timedelta(seconds=30),
+            hints=self._reconfigure_hints(301),
         )
         work.wait()
 
@@ -387,6 +398,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=3,
             init_handles=[comm.get_init_handle()],
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(3),
         ).wait()
 
         all_handles = self._collect_handles(comm, "test_reconfigure_scale_down_up")
@@ -394,12 +406,14 @@ class ReconfigureTest(unittest.TestCase):
             uuid=4,
             init_handles=all_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(4),
         ).wait()
 
         comm.reconfigure(
             uuid=5,
             init_handles=[comm.get_init_handle()],
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(5),
         ).wait()
 
         comm.finalize()
@@ -422,6 +436,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=3,
             init_handles=[comm.get_init_handle()],
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(3),
         ).wait()
 
         all_handles = self._collect_handles(comm, "test_reconfigure_single_to_all")
@@ -429,6 +444,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=4,
             init_handles=all_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(4),
         ).wait()
 
         my_rank = comm.get_rank()
@@ -460,6 +476,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=5,
             init_handles=all_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(5),
         ).wait()
 
         comm.finalize()
@@ -486,6 +503,7 @@ class ReconfigureTest(unittest.TestCase):
                 uuid=4,
                 init_handles=all_handles[:initial_world_size],
                 timeout=timedelta(milliseconds=30000),
+                hints=self._reconfigure_hints(4),
             ).wait()
 
         all_handles = self._collect_handles(comm, "test_reconfigure_late2")
@@ -493,6 +511,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=5,
             init_handles=all_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(5),
         ).wait()
 
         comm.finalize()
@@ -524,6 +543,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=initial_uuid,
             init_handles=initial_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(initial_uuid),
         ).wait()
 
         all_handles = self._collect_handles(comm, "test_reconfigure_merge_split2")
@@ -531,6 +551,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=6,
             init_handles=all_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(6),
         ).wait()
 
         comm.finalize()
@@ -550,6 +571,7 @@ class ReconfigureTest(unittest.TestCase):
             uuid=11,
             init_handles=all_handles,
             timeout=timedelta(milliseconds=30000),
+            hints=self._reconfigure_hints(11),
         ).wait()
 
         tensor = torch.ones(4, dtype=torch.float, device=self.device) * (
