@@ -8,6 +8,13 @@ namespace uniflow {
 
 class NvmlApiTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    auto count = api.deviceCount();
+    if (count.hasError() || count.value() == 0) {
+      GTEST_SKIP() << "NVML device discovery is unavailable";
+    }
+  }
+
   NvmlApi api;
 };
 
