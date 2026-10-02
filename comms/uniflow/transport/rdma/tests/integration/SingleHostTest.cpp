@@ -13,6 +13,8 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 
@@ -63,10 +65,45 @@ class SingleHostTest : public ::testing::Test {
       GTEST_SKIP() << "Need at least 2 RDMA devices, found " << numDevices_;
     }
 
+    std::vector<std::string> availableDeviceNames;
     for (int i = 0; i < numDevices_; ++i) {
       auto nameResult = ibvApi_->getDeviceName(deviceList_[i]);
       ASSERT_TRUE(nameResult.hasValue());
-      deviceNames_.emplace_back(nameResult.value());
+      availableDeviceNames.emplace_back(nameResult.value());
+    }
+
+    const char* configuredNics = std::getenv("UNIFLOW_RDMA_TEST_NICS");
+    if (configuredNics == nullptr) {
+      deviceNames_ = {availableDeviceNames[0], availableDeviceNames[1]};
+    } else if (*configuredNics == '\0') {
+      GTEST_SKIP()
+          << "Cross-NIC RDMA tests require a compatible device pair. "
+             "Configure with -DUNIFLOW_RDMA_TEST_NICS=<device0>,<device1>. "
+             "Detected devices: "
+          << ::testing::PrintToString(availableDeviceNames);
+    } else {
+      const std::string nicPair{configuredNics};
+      const auto separator = nicPair.find(',');
+      ASSERT_TRUE(
+          separator != std::string::npos && separator > 0 &&
+          separator + 1 < nicPair.size() &&
+          nicPair.find(',', separator + 1) == std::string::npos)
+          << "UNIFLOW_RDMA_TEST_NICS must contain exactly two comma-separated "
+             "device names";
+
+      deviceNames_ = {
+          nicPair.substr(0, separator), nicPair.substr(separator + 1)};
+      ASSERT_NE(deviceNames_[0], deviceNames_[1])
+          << "UNIFLOW_RDMA_TEST_NICS must name two distinct devices";
+      for (const auto& deviceName : deviceNames_) {
+        ASSERT_NE(
+            std::find(
+                availableDeviceNames.begin(),
+                availableDeviceNames.end(),
+                deviceName),
+            availableDeviceNames.end())
+            << "Configured RDMA device not found: " << deviceName;
+      }
     }
 
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
@@ -87,9 +124,8 @@ class SingleHostTest : public ::testing::Test {
   /// Create two factories on different NICs, create transports, connect them.
   /// Returns the two connected transports and their factories.
   ///
-  /// When a NIC list is empty (the default), the first two enumerated devices
-  /// are used. This keeps the data-path tests vendor-agnostic so they run on
-  /// any RDMA host (mlx5, bnxt_re/Thor2, etc.) without hardcoded device names.
+  /// When a NIC list is empty (the default), the configured compatible device
+  /// pair is used. Non-CMake builds retain the first-two-device fallback.
   struct ConnectedPair {
     std::unique_ptr<RdmaTransportFactory> factory0;
     std::unique_ptr<RdmaTransportFactory> factory1;
