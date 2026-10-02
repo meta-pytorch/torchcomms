@@ -118,4 +118,6 @@ cdef extern from "nccl.h" namespace "ncclx::colltrace" nogil:
     ncclResult_t getCollTraceCommId(ncclComm_t comm, uint64_t& comm_id)
     ncclResult_t getLatestCollTraceCollectiveId(
         ncclComm_t comm, uint64_t& coll_id)
+    ncclResult_t latestCollTraceCollectiveIdForCommId(
+        uint64_t comm_id, uint64_t& coll_id)
     ncclResult_t drainUnreadLifecycleEvents(vector[LifecycleEvent]& events)

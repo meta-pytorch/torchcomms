@@ -350,6 +350,13 @@ TEST_F(LifecycleFeedRegistryTest, DescribeSkipsAFeedThatCannotAnswer) {
   EXPECT_TRUE(describeCapturedCollective(5, 11).has_value());
 }
 
+TEST_F(LifecycleFeedRegistryTest, CommIdsAreUnique) {
+  const auto first = getNextLifecycleFeedCommId();
+  const auto second = getNextLifecycleFeedCommId();
+
+  EXPECT_EQ(second, first + 1);
+}
+
 TEST_F(LifecycleFeedRegistryTest, DescribeSurvivesAFeedThatThrows) {
   // describeCaptured is registrant code and this loop walks every backend in
   // the process. A throw that escaped would skip the feeds behind it, so one
