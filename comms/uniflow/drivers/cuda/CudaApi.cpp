@@ -23,6 +23,27 @@
 #define CUDA_CHECK(call, code) CUDA_RETURN_ERR(call, #call, code)
 
 namespace uniflow {
+#if defined(__HIP_PLATFORM_AMD__)
+
+namespace {
+
+// Keeps a failed call out of the thread's last runtime error unless one was
+// already pending: the caller reports the failure itself, and a stale last
+// error would fail the next unrelated kernel launch check on this thread. The
+// P2P transport relies on this when a VMM segment falls back to IPC.
+template <typename Call>
+cudaError_t callWithoutLastError(Call&& call) {
+  const bool wasClean = cudaPeekAtLastError() == cudaSuccess;
+  const cudaError_t err = call();
+  if (err != cudaSuccess && wasClean) {
+    // Cast to void: hipGetLastError() is nodiscard on AMD (see below).
+    (void)cudaGetLastError();
+  }
+  return err;
+}
+
+} // namespace
+#endif
 
 // --- Device management ---
 
@@ -235,7 +256,15 @@ static_assert(
 
 Result<CudaApi::IpcMemHandle> CudaApi::ipcGetMemHandle(void* devPtr) {
   cudaIpcMemHandle_t handle{};
+#if defined(__HIP_PLATFORM_AMD__)
+  CUDA_RETURN_ERR(
+      callWithoutLastError(
+          [&] { return cudaIpcGetMemHandle(&handle, devPtr); }),
+      "cudaIpcGetMemHandle",
+      ErrCode::DriverError);
+#else
   CUDA_CHECK(cudaIpcGetMemHandle(&handle, devPtr), ErrCode::DriverError);
+#endif
   IpcMemHandle out{};
   const auto* bytes = reinterpret_cast<const uint8_t*>(&handle);
   std::copy_n(bytes, kIpcMemHandleSize, out.begin());
@@ -247,14 +276,30 @@ Result<void*> CudaApi::ipcOpenMemHandle(const IpcMemHandle& handle) {
   std::copy_n(
       handle.begin(), kIpcMemHandleSize, reinterpret_cast<uint8_t*>(&raw));
   void* ptr = nullptr;
+#if defined(__HIP_PLATFORM_AMD__)
+  CUDA_RETURN_ERR(
+      callWithoutLastError([&] {
+        return cudaIpcOpenMemHandle(&ptr, raw, cudaIpcMemLazyEnablePeerAccess);
+      }),
+      "cudaIpcOpenMemHandle",
+      ErrCode::DriverError);
+#else
   CUDA_CHECK(
       cudaIpcOpenMemHandle(&ptr, raw, cudaIpcMemLazyEnablePeerAccess),
       ErrCode::DriverError);
+#endif
   return ptr;
 }
 
 Status CudaApi::ipcCloseMemHandle(void* devPtr) {
+#if defined(__HIP_PLATFORM_AMD__)
+  CUDA_RETURN_ERR(
+      callWithoutLastError([&] { return cudaIpcCloseMemHandle(devPtr); }),
+      "cudaIpcCloseMemHandle",
+      ErrCode::DriverError);
+#else
   CUDA_CHECK(cudaIpcCloseMemHandle(devPtr), ErrCode::DriverError);
+#endif
   return Ok();
 }
 
@@ -266,8 +311,10 @@ Result<CudaApi::MemRange> CudaApi::getMemAddressRange(void* devPtr) {
   // branch compiles only on AMD.
   CUdeviceptr base = 0;
   size_t size = 0;
-  auto err =
-      cuMemGetAddressRange(&base, &size, reinterpret_cast<CUdeviceptr>(devPtr));
+  auto err = callWithoutLastError([&] {
+    return cuMemGetAddressRange(
+        &base, &size, reinterpret_cast<CUdeviceptr>(devPtr));
+  });
   // Driver-API success sentinel (CUDA_SUCCESS, not the runtime cudaSuccess) to
   // match cuMemGetAddressRange; both hipify to hipSuccess on AMD. The manual
   // check is intentional: on failure we gracefully fall back to

@@ -50,6 +50,15 @@ struct MultiTransportFactoryOptions {
   // loopback (e.g. same-host testing).
   bool enableTcp{false};
   std::string tcpBindHost{};
+  // AMD P2P (XGMI) transport: share cuMem/hipMem VMM segments through POSIX
+  // fds. HIP is loaded at run time, so this switch is the way to stop VMM
+  // sharing on a runtime that mishandles it, or to avoid the fd and retained
+  // allocation handle each exported chunk holds until deregistration. False
+  // restores the previous behavior of sending every segment through HIP IPC,
+  // which cannot share VMM memory: depending on the runtime, the IPC export
+  // fails and the segment uses the next tier, or it yields an unusable handle.
+  // Unused on NVIDIA, whose NVLink tier has its own sharing modes.
+  bool p2pEnableVmm{true};
   // Overrides for the TCP data transport: socket options, lane count
   // (numSocketsPerDevice, applied per device), and the devices lanes bind to.
   // Null keeps the

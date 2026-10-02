@@ -288,7 +288,11 @@ MultiTransportFactory::MultiTransportFactory(
     auto p2pSupported = P2pTransportFactory::supported();
     if (!p2pSupported.hasError()) {
       auto p2p = std::make_shared<P2pTransportFactory>(
-          deviceId, eventBaseThread_->getEventBase());
+          deviceId,
+          eventBaseThread_->getEventBase(),
+          /*cudaApi=*/nullptr,
+          /*cudaDriverApi=*/nullptr,
+          options_.p2pEnableVmm);
       factories_.emplace_back(std::move(p2p));
     } else {
       UNIFLOW_LOG_INFO(

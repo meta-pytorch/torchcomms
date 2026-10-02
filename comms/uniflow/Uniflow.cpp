@@ -18,6 +18,7 @@ MultiTransportFactoryOptions makeFactoryOptions(
   options.intraNodeTransport = config.intraNodeTransport;
   options.interNodeTransport = config.interNodeTransport;
   options.tcpTransportConfig = config.tcpTransportConfig;
+  options.p2pEnableVmm = config.p2pEnableVmm;
   return options;
 }
 
