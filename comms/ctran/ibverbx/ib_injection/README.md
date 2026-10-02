@@ -216,44 +216,101 @@ public accessors (`getDataQpNums()`) and pass it to `addPostError`.
 entry points (`ibInjectionAddRule`, `ibInjectionGetState`, …), which is what
 crosses the `dlopen` boundary.
 
-### collperf and e2e farm jobs
+### collperf, ctranx MAST runs and e2e farm jobs
 
-No C++ hook point — collperf is a Python harness, and a farm job is a training
-run. Both pass job-wide env, which is enough to select the shim:
-
-```bash
-# collperf (genai/msl/comms/benchmarks/collperf/launcher.py)
---mast_envs IBVERBX_IBVERBS_SO=/packages/<pkg>/lib/libibverbs.so
-
-# farm: same variable through the launcher's mast_env list
-```
-
-Selecting the shim is not the same as arming a rule, and these two surfaces
-cannot call the control API at all. The planned mechanism is `IB_INJECTION_SPEC`,
-carrying a **declarative spec** parsed at load into the same rule list
-`addRule()` builds — one engine, two front ends:
+No C++ hook point — collperf is a Python harness, a farm job is a training run.
+All they pass is job-wide env, so both halves travel that way: one variable
+selects the shim, another arms the rules.
 
 ```bash
-# not implemented yet -- planned shape
-IB_INJECTION_SPEC="rank=1,dev=1,fn=poll_cq,opcode=RDMA_READ,\
-                   action=cq_gate,after_dev=0,after_count=2,manual"
+IBVERBX_IBVERBS_SO=/packages/ib_injection/lib/libibverbs.so
+IB_INJECTION_SPEC="rank=1,fn=create_qp,action=api_error,errno=ENOMEM,first=3"
 ```
 
-`rank` is matched against `$RANK` inside the shim, so one job-wide string arms
-selected ranks. A spec that fails to parse must abort at load rather than run
-un-injected. Rules needing a runtime `qp_num` cannot be expressed this way (no QP
-exists at load); a role form such as `qp=data:3` is planned for that.
+`IB_INJECTION_SPEC` is parsed at load into the very rules `addRule()` builds, so
+nothing about matching or validation is duplicated — one engine, two front ends.
 
-The spec exists **for these surfaces only** — a C++ test needs nothing from it,
-including for setup verbs. It matters most where there is **no assertion**: the
-signal is the job's own output, a busBw delta against an uninjected baseline or
-whether the rank survived, so check the per-device counters and treat a rule that
-never fired as a **failed** run rather than a pass.
+```
+IB_INJECTION_SPEC = rule ( ';' rule )*
+rule              = field ( ',' field )*
+```
 
-Shipping the `.so` is the other remaining gap. The path must be a plain runtime
-string resolvable on the worker (`/packages/<pkg>/...`), not a Buck
-`$(location ...)` macro, so the shim needs to ride in an fbpkg — collperf and
-farm both mount them under `/packages/<name>`.
+| key | values | default |
+|---|---|---|
+| `fn` | `poll_cq` `post_send` `post_recv` `open_device` `alloc_pd` `reg_mr` `create_cq` `create_qp` `modify_qp` | **required** |
+| `action` | `api_error` `wc_status` | **required** |
+| `errno` | positive int, or a name (`ENOMEM`, `EINVAL`, …) | required for `api_error` |
+| `status` | an `IBV_WC_*` name, or an int | required for `wc_status` |
+| `rank` | int, or `*` | `*` |
+| `dev` | int, or `*` | `*` |
+| `qp` | hardware `qp_num`, or `*` | `*` |
+| `opcode` | `SEND` `RDMA_WRITE` `RDMA_READ` `RECV` …, or `*` | `*` |
+| `first` `every` `count` | the repeat triple; `count=inf` is unbounded | `1` `1` `1` |
+
+`opcode` takes the **short** name and the namespace is derived from `fn`. That is
+the one thing a hand-written spec must not be allowed to get wrong: `RDMA_READ` is
+4 in the WR namespace and 2 in the WC namespace, so naming the namespace by hand
+buys nothing and silently matches the wrong traffic when it is wrong.
+
+`rank` is matched against `$RANK`, so one job-wide string arms selected ranks. It
+exists because these surfaces have **no per-rank environment channel** — collperf
+and farm jobs set env once for the whole task group, and torchrun then hands every
+process the same value plus its own `RANK`. A launcher that *can* vary env per
+rank (`ctranx_dist_launcher` builds it per worker) does not need `rank=` at all.
+
+Two things follow from a job-wide string reaching processes that will never act on
+it, and both are deliberate:
+
+- **A missing `$RANK` is an error, not rank 0.** Defaulting would make `rank=1`
+  arm nothing and `rank=0` arm every process, with nothing to distinguish either
+  from a working run. A spec that never mentions `rank` needs no `$RANK` and works
+  anywhere.
+- **Every rule is validated whatever rank it names**; only *arming* is filtered.
+  Validating just the local rank's rules would let a spec whose rules all target
+  ranks outside the job be checked by nobody — it would arm nothing, anywhere, and
+  report success everywhere.
+
+**Everything the engine cannot act on is rejected, not ignored.** A malformed
+spec, an unknown key, an `action=cq_gate` or a `qp=data:3` role form aborts at
+load, naming the offending token — the two skew actions and the role form are
+still unimplemented, and a spec that quietly did nothing is the exact outcome this
+mechanism exists to prevent. Rules that need a runtime `qp_num` remain a poor fit
+here in any case: no QP exists at load, so prefer a C++ test for those.
+
+The spec exists **for these surfaces only** — a C++ test has the control API and
+needs nothing from it. It matters most where there is **no assertion**: the signal
+is the job's own output, a busBw delta against an uninjected baseline or whether
+the rank survived. So the shim reports itself:
+
+```
+ib_injection: loaded, delegating to 'libibverbs.so.1'
+ib_injection: rank 1 armed 1 rule(s) from IB_INJECTION_SPEC (0 addressed to other ranks)
+ib_injection: rule 1 FIRED (verb 0 action 1 dev 0 qp 114173 opcode 0)
+```
+
+**No `FIRED` line means no injection happened, and that is a failed run rather
+than a pass.** It is printed once per rule, since it sits on the hot path; a C++
+test wanting exact counts, `matches`, or the per-device counters reads them from
+`getState()`, which is assertable and therefore strictly better than any log line.
+
+What this deliberately does not tell you is whether traffic reached ctran-IB at
+all, so a rule that never fired is ambiguous between "the selector is wrong" and
+"nothing ever went over IB". Check the job's own transport logs for that — on
+ctranx, `CTRANX IB: connected peer=...` and the CQ/QP setup lines.
+
+The `.so` ships in its own fbpkg, `//comms/ctran/ibverbx/ib_injection:ib_injection`,
+built for x86_64 and aarch64 because H100 is x86 and GB200/GB300 are Grace. MAST
+mounts it at `/packages/ib_injection`, so the path above is a plain runtime string
+— a Buck `$(location ...)` macro does not survive to a worker.
+
+```bash
+fbpkg build //comms/ctran/ibverbx/ib_injection:ib_injection --build-remote
+```
+
+Build it from a revision compatible with whatever carries ibverbx on the target
+(the conda `libnccl.so` for collperf, the launcher PAR for ctranx). The boundary is
+the libibverbs C ABI — `Ibvcore.h` struct layouts and the `version.script` nodes —
+so a large skew can break the `ops` patch or fail a `dlvsym` lookup.
 
 ## Scope and limits
 
@@ -273,15 +330,17 @@ For a path handed straight to `dlopen` a cvar adds nothing anyway — there is
 nothing to type-check or range-check, and `/etc/nccl.conf` layering is actively
 unwanted for an injection shim.
 
-A C++ test needs no environment at all: `ibvInit(path)` takes the library
-explicitly, and the env var is only how the surfaces with no C++ hook point
-(collperf, farm jobs) can select anything. Note that `ibvInit()` is
-`folly::call_once`, so the first caller in a process latches the path for every
-later one.
+Every surface selects the shim the same way, through this variable — a C++ test
+sets it per target (`env = {...}` in BUCK), collperf and farm jobs set it job-wide.
+`ibvInit()` takes no argument, so there is no in-process way to name a provider.
+And it is `folly::call_once`, so the first caller in a process latches the path
+for every later one: the variable must be set before the process starts, and two
+different shims cannot be selected within one run.
 
-**An injection is inert unless traffic reaches ctran-IB.** Check
-`patchedContexts` and the per-device counters — a run that was supposed to inject
-and shows zero is a failed run, not a passing one.
+**An injection is inert unless traffic reaches ctran-IB.** A C++ test should assert
+`patchedContexts` and the per-device counters from `getState()`; on the env-driven
+surfaces the equivalent check is that a `rule N FIRED` line appeared at all. A run
+that was supposed to inject and shows neither is a failed run, not a passing one.
 
 **A bad path fails loud.** If `dlopen` of the requested library fails,
 `buildIbvSymbols` returns an error and `ibvInit()` fails, naming the path and the
@@ -290,6 +349,9 @@ different provider than the caller named and still report success, so a typo'd
 path or an unmounted fbpkg would yield a green, completely uninjected run — the
 same signature as "IB was never on the path". Strictness applies only when the
 variable is set; unset still means `libibverbs.so.1`.
+
+That closes the *load* half. It cannot tell you a rule never matched, so the
+counter check above is still not optional.
 
 **Requires the default dlopen build.** `ibverbx-rdma-core` statically links
 rdma-core and never `dlopen`s, so there is nothing to intercept there.
@@ -309,11 +371,17 @@ software event the shim can move?
 | File | Role |
 |---|---|
 | `IbInjectionApi.h` | control ABI; the only declaration shared across the dlopen boundary |
-| `IbInjectionDso.cc` | exported verbs, the 3 hot-path shims, real-provider delegation |
+| `IbInjectionDso.cc` | exported verbs, the 3 hot-path shims, real-provider delegation, load banner |
 | `IbverbxSymbols.def` | table of verbs to forward, and how each is resolved |
-| `InjectionEngine.{h,cc}` | rule matching, repeat scheduling, held-CQE queues, counters |
+| `InjectionEngine.{h,cc}` | rule matching, repeat scheduling, counters, and the `IB_INJECTION_SPEC` parser |
 | `version.script` | export list; a missing entry aborts `ibvInit()` |
 | `IbInjectionControl.{h,cc}` | C++ bridge: dlsym the control surface, named rule helpers |
+| `BUCK` `:ib_injection` | the fbpkg, x86_64 + aarch64, mounted at `/packages/ib_injection` |
+
+The spec parser lives with the engine rather than in the DSO so
+`ib_injection_engine_test` covers it with no `dlopen` and no NIC, and so both front
+ends provably build the same rules — one test asserts a spec rule and a hand-built
+rule are indistinguishable to the engine.
 
 `IbverbxSymbols.def` and `version.script` must stay a superset of what
 `buildIbvSymbols` resolves: it uses `dlvsym` (or plain `dlsym` for two mlx5
