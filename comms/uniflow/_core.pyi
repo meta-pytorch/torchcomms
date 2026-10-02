@@ -141,6 +141,7 @@ class UniflowAgentConfig:
     listen_address: str
     connect_retries: int
     connect_timeout_ms: int
+    p2p_enable_vmm: bool
     def __init__(
         self,
         device_id: int = -1,
@@ -148,6 +149,8 @@ class UniflowAgentConfig:
         listen_address: str = "",
         connect_retries: int = 10,
         connect_timeout_ms: int = 1000,
+        *,
+        p2p_enable_vmm: bool = True,
     ) -> None: ...
 
 class MultiTransport:
@@ -185,6 +188,8 @@ class MultiTransportFactory:
         max_cpu_nics: int = ...,
         enable_tcp: bool = False,
         tcp_bind_host: str = "",
+        *,
+        p2p_enable_vmm: bool = True,
     ) -> None: ...
     def register_segment(self, segment: Segment) -> Result: ...
     def import_segment(self, export_id: bytes) -> Result: ...
