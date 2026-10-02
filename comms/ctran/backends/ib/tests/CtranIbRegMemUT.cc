@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <utility>
+
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/LogInit.h"
@@ -17,7 +20,117 @@ class CtranIbRegMemTest : public ::testing::Test {
     ncclCvarInit();
     ctran::logging::initCtranLogging(true /*alwaysInit*/);
   }
+
+  void expectImportMemFailureDoesNotModifyOutputs(
+      const int configuredDeviceCount,
+      const int receivedKeyCount) {
+    EnvRAII devicesPerRank(
+        NCCL_CTRAN_IB_DEVICES_PER_RANK, configuredDeviceCount);
+    ControlMsg msg(ControlMsgType::IB_EXPORT_MEM);
+    msg.ibDesc.nKeys = receivedKeyCount;
+
+    int originalBuf{};
+    void* buf = &originalBuf;
+    CtranIbRemoteAccessKey key{};
+    key.nKeys = 7;
+    key.rkeys.fill(11);
+    const auto originalKey = key;
+
+    EXPECT_EQ(CtranIb::importMem(&buf, &key, msg), commInvalidArgument);
+    EXPECT_EQ(buf, &originalBuf);
+    EXPECT_EQ(key.nKeys, originalKey.nKeys);
+    EXPECT_EQ(key.rkeys, originalKey.rkeys);
+  }
 };
+
+TEST_F(CtranIbRegMemTest, ExportMemRejectsNullRegistrationHandle) {
+  EnvRAII devicesPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  ControlMsg msg;
+  EXPECT_EQ(CtranIb::exportMem(nullptr, nullptr, msg), commInvalidArgument);
+  EXPECT_EQ(msg.type, ControlMsgType::UNSPECIFIED);
+}
+
+TEST_F(CtranIbRegMemTest, ExportMemRejectsShortRegistration) {
+  EnvRAII devicesPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  std::vector<ibverbx::IbvMr> mrs;
+  ControlMsg msg;
+  EXPECT_EQ(CtranIb::exportMem(nullptr, &mrs, msg), commInvalidArgument);
+  EXPECT_EQ(msg.type, ControlMsgType::UNSPECIFIED);
+}
+
+TEST_F(CtranIbRegMemTest, ExportMemRejectsNullMemoryRegion) {
+  EnvRAII devicesPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  constexpr size_t bufSize = 8192;
+  auto hostMem = std::make_unique<char[]>(bufSize);
+  void* ibRegElem = nullptr;
+  try {
+    ASSERT_EQ(
+        CtranIb::regMem(hostMem.get(), bufSize, 0, &ibRegElem), commSuccess);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+
+  auto* mrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
+  ASSERT_EQ(mrs->size(), 1);
+  auto movedMr = std::move(mrs->front());
+  EXPECT_NE(movedMr.mr(), nullptr);
+  EXPECT_EQ(mrs->front().mr(), nullptr);
+  ControlMsg msg;
+  EXPECT_EQ(CtranIb::exportMem(nullptr, ibRegElem, msg), commInvalidArgument);
+  EXPECT_EQ(msg.type, ControlMsgType::UNSPECIFIED);
+
+  mrs->front() = std::move(movedMr);
+  EXPECT_EQ(CtranIb::deregMem(ibRegElem), commSuccess);
+}
+
+TEST_F(CtranIbRegMemTest, ExportMemRejectsNonpositiveDeviceCount) {
+  EnvRAII devicesPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 0);
+  std::vector<ibverbx::IbvMr> mrs;
+  ControlMsg msg;
+  EXPECT_EQ(CtranIb::exportMem(nullptr, &mrs, msg), commInvalidArgument);
+  EXPECT_EQ(msg.type, ControlMsgType::UNSPECIFIED);
+}
+
+TEST_F(CtranIbRegMemTest, ExportMemRejectsTooManyDevices) {
+  EnvRAII devicesPerRank(
+      NCCL_CTRAN_IB_DEVICES_PER_RANK, CTRAN_MAX_IB_DEVICES_PER_RANK + 1);
+  std::vector<ibverbx::IbvMr> mrs;
+  ControlMsg msg;
+  EXPECT_EQ(CtranIb::exportMem(nullptr, &mrs, msg), commInvalidArgument);
+  EXPECT_EQ(msg.type, ControlMsgType::UNSPECIFIED);
+}
+
+TEST_F(CtranIbRegMemTest, GetRemoteAccessKeyRejectsNullRegistrationHandle) {
+  EnvRAII devicesPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  EXPECT_THROW(CtranIb::getRemoteAccessKey(nullptr), ctran::utils::Exception);
+}
+
+TEST_F(CtranIbRegMemTest, ImportMemRejectsTooManyDevices) {
+  expectImportMemFailureDoesNotModifyOutputs(
+      CTRAN_MAX_IB_DEVICES_PER_RANK + 1, CTRAN_MAX_IB_DEVICES_PER_RANK);
+}
+
+TEST_F(CtranIbRegMemTest, ImportMemRejectsMismatchedKeyCount) {
+  expectImportMemFailureDoesNotModifyOutputs(1, 2);
+}
+
+TEST_F(CtranIbRegMemTest, ImportMemRejectsNullOutputs) {
+  EnvRAII devicesPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  ControlMsg msg(ControlMsgType::IB_EXPORT_MEM);
+  msg.ibDesc.nKeys = 1;
+
+  int originalBuf{};
+  void* buf = &originalBuf;
+  CtranIbRemoteAccessKey key{};
+  key.nKeys = 7;
+  const auto originalKey = key;
+
+  EXPECT_EQ(CtranIb::importMem(nullptr, &key, msg), commInvalidArgument);
+  EXPECT_EQ(key.nKeys, originalKey.nKeys);
+  EXPECT_EQ(key.rkeys, originalKey.rkeys);
+  EXPECT_EQ(CtranIb::importMem(&buf, nullptr, msg), commInvalidArgument);
+  EXPECT_EQ(buf, &originalBuf);
+}
 
 class CtranIbCpuRegMemTestParam
     : public CtranIbRegMemTest,
