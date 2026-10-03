@@ -96,6 +96,20 @@ TEST_F(CommRegisterTest, InvalidHandle) {
   ASSERT_EQ(res, ncclInvalidArgument);
 }
 
+TEST_F(CommRegisterTest, InvalidComm) {
+  void* handle = nullptr;
+  EXPECT_EQ(
+      ncclCommRegister(nullptr, nullptr, 0, &handle), ncclInvalidArgument);
+  EXPECT_EQ(ncclCommDeregister(nullptr, nullptr), ncclInvalidArgument);
+}
+
+TEST_F(CommRegisterTest, InvalidOutputHandle) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+
+  EXPECT_EQ(ncclCommRegister(comm, nullptr, 0, nullptr), ncclInvalidArgument);
+}
+
 const std::string testCtranRegisterModeToStr(enum NCCL_CTRAN_REGISTER mode) {
   switch (mode) {
     case NCCL_CTRAN_REGISTER::none:

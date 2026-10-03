@@ -20,6 +20,9 @@
 #include <unordered_set>
 #include "os.h"
 
+#include "comms/utils/InitFolly.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+
 const char* userHomeDir() {
   return getenv("HOME");
 }
@@ -68,7 +71,11 @@ static void initEnvFunc() {
 
 void initEnv() {
   static std::once_flag once;
-  std::call_once(once, initEnvFunc);
+  std::call_once(once, [] {
+    meta::comms::initFolly();
+    ncclCvarInit();
+    initEnvFunc();
+  });
 }
 
 static void ncclGetCachePolicy(char const* env, int8_t* noCache) {

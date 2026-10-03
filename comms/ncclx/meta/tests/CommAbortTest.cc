@@ -51,6 +51,14 @@ TEST_F(CommAbortTest, NoneScope) {
   EXPECT_TRUE(ctran::utils::getSkipDestroyCtran());
 }
 
+TEST_F(CommAbortTest, NullCommHasNoScopeSideEffects) {
+  EnvRAII env(NCCL_COMM_ABORT_SCOPE, NCCL_COMM_ABORT_SCOPE::none);
+  ctran::utils::setSkipDestroyCtran(false);
+
+  EXPECT_EQ(ncclCommAbort(nullptr), ncclSuccess);
+  EXPECT_FALSE(ctran::utils::getSkipDestroyCtran());
+}
+
 // TODO: need a safe way to test JobScope that will exit(1) without hanging the
 // test
 

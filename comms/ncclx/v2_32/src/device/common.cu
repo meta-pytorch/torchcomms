@@ -9,7 +9,8 @@
 #include "collectives.h"
 #include "common.h"
 #include "nccl_device.h"
-#include "comm.h"
+// [META] Upstream includes "comm.h" here but nothing uses it, and NCCLX's
+// host-only C++ members in ncclComm do not compile under nvcc.
 
 __shared__ ncclShmemData ncclShmem;
 #if __CUDA_ARCH__ < 700
