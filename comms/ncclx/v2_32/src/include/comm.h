@@ -36,6 +36,16 @@
 #include "gin/gin_host_win_stub.h"
 #endif
 
+// [META] NCCLX state on ncclComm and its dependencies.
+#include <memory>
+
+#include "comms/ctran/CtranComm.h"
+#include "comms/utils/commSpecs.h"
+
+namespace meta::comms::colltrace {
+class ICollTrace;
+} // namespace meta::comms::colltrace
+
 #if CUDART_VERSION < 9000
 struct cudaLaunchParams {
   void* func;
@@ -869,6 +879,19 @@ struct ncclComm {
   struct ncclDevrState devrState; // The symmetric runtime state
   struct ncclSymkState symkState; // The symmetric kernels state (built on previous)
 
+  /**
+   * NCCLX specific state
+   */
+  struct CommLogData logMetaData;
+  std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
+
+  // This is the only bridge between ctran and baseline code
+  bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
+  std::unique_ptr<CtranComm> ctranComm_;
+
+  // Disable local transports (P2P and SHM); forces NET for all connections
+  bool noLocal_{false};
+
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> resumeTaskQueue;
@@ -884,9 +907,10 @@ inline bool ncclNvlsSymmetricMultimemEnabled(const struct ncclComm* comm) {
   return comm->nvlsSupport && !(comm->config.nvlsHostMode & ncclNvlsHostModeDisableSymmetricMultimem);
 }
 
-static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
-static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t),
-              "endMagic must be the last field of ncclComm");
+// [META] ncclComm has C++ members (not standard-layout), so offsetof() is not portable.
+// static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
+// static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t),
+//               "endMagic must be the last field of ncclComm");
 
 enum ncclLaunchMode {
   ncclLaunchModeInvalid = 0,
