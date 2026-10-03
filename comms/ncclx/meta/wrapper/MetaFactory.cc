@@ -34,12 +34,32 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
 
 namespace {
 
+// A config-sourced traffic class outside the DSCP range degrades to the env
+// settings rather than aborting, so a misconfigured job still starts. Values
+// that do reach CtranIbConfig are hard-checked there.
+constexpr int kMaxConfigTrafficClass = 255;
+
 CtranIbConfig makeCtranIbConfigFrom(const ncclComm* comm) {
   if (comm->config.ncclxConfig == nullptr ||
       comm->config.ncclxConfig == NCCL_CONFIG_UNDEF_PTR) {
     return {};
   }
   const auto* x = static_cast<const ncclx::Config*>(comm->config.ncclxConfig);
+  // The CTran-specific hint beats the general NcclConfig.traffic_class, which
+  // also feeds the plain net_ib transport and therefore stays on ncclConfig_t.
+  std::optional<int64_t> trafficClass = x->ctranIbTrafficClass;
+  if (!trafficClass.has_value() &&
+      comm->config.trafficClass != NCCL_CONFIG_UNDEF_INT &&
+      comm->config.trafficClass >= 0) {
+    if (comm->config.trafficClass <= kMaxConfigTrafficClass) {
+      trafficClass = comm->config.trafficClass;
+    } else {
+      WARN(
+          "Ignoring out-of-range trafficClass %d (valid range [0, %d]); falling back to env settings.",
+          comm->config.trafficClass,
+          kMaxConfigTrafficClass);
+    }
+  }
   return CtranIbConfig{
       .numQps = x->ctranIbNumQps,
       .qpScalingTh = x->ctranIbQpScalingTh,
@@ -48,7 +68,7 @@ CtranIbConfig makeCtranIbConfigFrom(const ncclComm* comm) {
       .enableLocalFlush = x->ctranIbEnableLocalFlush,
       .maxNumCqe = x->ctranIbMaxNumCqe,
       .maxNumNic = x->ctranIbMaxNumNic,
-      .trafficClass = x->ctranIbTrafficClass,
+      .trafficClass = trafficClass,
   };
 }
 
@@ -56,7 +76,6 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
       .commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      .trafficClass = comm->config.trafficClass,
       .enableProfiler = NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0,
       .ibConfig = makeCtranIbConfigFrom(comm),
   };

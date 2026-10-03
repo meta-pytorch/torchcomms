@@ -36,9 +36,6 @@ using meta::comms::CommBackend;
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
-  // Per-comm traffic class hint sourced from ncclConfig_t.trafficClass.
-  // Negative means "hint not set"; consumers fall back to env/default.
-  int trafficClass{-1};
   std::vector<enum CommBackend> backends = {};
   // The creator supplies this; ctran does not read the sampling cvar
   // itself, so a comm-split child inherits the parent's decision.
@@ -50,8 +47,8 @@ struct ctranConfig {
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        backends == other.backends && trafficClass == other.trafficClass &&
-        enableProfiler == other.enableProfiler && ibConfig == other.ibConfig);
+        backends == other.backends && enableProfiler == other.enableProfiler &&
+        ibConfig == other.ibConfig);
   }
 };
 
