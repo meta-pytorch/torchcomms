@@ -1344,7 +1344,9 @@ cvars:
    description : |-
      Number of CUDA thread blocks for the cthierarchical_ring AllGather IB
      ring phase. For 4x1 IB-only tests, this is the full hierarchical kernel
-     grid size because the NVLink fanout degenerates to nvl_size=1.
+     grid size because the NVLink fanout degenerates to nvl_size=1. A fused
+     launch with an NVLink fanout is capped by the communicator's NVLink
+     channel capacity.
 
  - name        : MCCL_ALLGATHER_HIERARCHICAL_OVERLAP_ENABLE
    type        : bool
