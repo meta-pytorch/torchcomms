@@ -1176,10 +1176,9 @@ const char* CtranIb::ibv_wc_status_str(enum ibverbx::ibv_wc_status status) {
 
 commResult_t CtranIb::resolveTrafficClass(const CtranIbConfig& ibConfig) {
   // Precedence:
-  //   1. explicit CtranIbConfig override
-  //   2. per-comm NcclConfig.traffic_class hint (int in [0, kMaxTrafficClass])
-  //   3. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map matched on commDesc prefix
-  //   4. NCCL_IB_TC global fallback
+  //   1. CtranIbConfig override (per-comm or caller-supplied)
+  //   2. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map matched on commDesc prefix
+  //   3. NCCL_IB_TC global fallback
   // Called once from CtranIb::init(); result stored in trafficClass_.
 
   if (ibConfig.trafficClass.has_value()) {
@@ -1201,34 +1200,6 @@ commResult_t CtranIb::resolveTrafficClass(const CtranIbConfig& ibConfig) {
         commDesc,
         trafficClass_);
     return commSuccess;
-  }
-
-  // 1. Per-comm hint. A negative value means the hint was never set (the
-  // ctranConfig default, and NCCL_CONFIG_UNDEF_INT upstream). A value above
-  // the DSCP range is a misconfiguration: warn and fall back rather than
-  // program a bogus DSCP on the wire.
-  if (comm) {
-    const int hint = comm->config_.trafficClass;
-    if (hint >= 0 && hint <= kMaxTrafficClass) {
-      trafficClass_ = static_cast<uint32_t>(hint);
-      CTRAN_LOG_SUBSYS(
-          INFO,
-          INIT,
-          "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from per-comm hint)",
-          commHash,
-          commDesc,
-          trafficClass_);
-      return commSuccess;
-    }
-    if (hint > kMaxTrafficClass) {
-      CTRAN_LOG(
-          WARN,
-          "CTRAN-IB: commHash {:x}, commDesc {} ignoring out-of-range per-comm trafficClass hint {} (valid range [0, {}]); falling back to env settings.",
-          commHash,
-          commDesc,
-          hint,
-          kMaxTrafficClass);
-    }
   }
 
   // 2. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map. Every entry is validated so a
@@ -1292,7 +1263,7 @@ commResult_t CtranIb::resolveTrafficClass(const CtranIbConfig& ibConfig) {
     return commSuccess;
   }
 
-  // 4. Global fallback.
+  // 3. Global fallback.
   trafficClass_ = static_cast<uint32_t>(NCCL_IB_TC);
   CTRAN_LOG_SUBSYS(
       INFO,

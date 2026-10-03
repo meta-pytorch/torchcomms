@@ -589,8 +589,7 @@ class CtranIb {
           nullptr);
 
   // Resolve the effective traffic class once from:
-  //   explicit CtranIbConfig override
-  //   > per-comm NcclConfig.traffic_class hint (0..255)
+  //   CtranIbConfig override (per-comm or caller-supplied)
   //   > NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map (matched on commDesc prefix)
   //   > NCCL_IB_TC global fallback
   // Called once from init(); result stored in trafficClass_.

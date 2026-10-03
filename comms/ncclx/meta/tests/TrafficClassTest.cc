@@ -35,7 +35,7 @@ class trafficClassTest : public NcclxBaseTestFixture {
 };
 
 // When the hint is set on ncclConfig_t.trafficClass at comm init, both the
-// NCCL comm and its CtranComm mirror should carry the value.
+// NCCL comm and the CtranIbConfig assembled by MetaFactory carry the value.
 TEST_F(trafficClassTest, hintPropagatesToCommAndCtran) {
   EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
   constexpr int kHintValue = 192;
@@ -54,11 +54,13 @@ TEST_F(trafficClassTest, hintPropagatesToCommAndCtran) {
 
   EXPECT_EQ(comm->config.trafficClass, kHintValue);
   ASSERT_NE(nullptr, comm->ctranComm_);
-  EXPECT_EQ(comm->ctranComm_->config_.trafficClass, kHintValue);
+  EXPECT_EQ(
+      comm->ctranComm_->config_.ibConfig.trafficClass, int64_t{kHintValue});
 }
 
 // When the hint is not set, ncclConfig_t.trafficClass stays at the upstream
-// NCCL_CONFIG_UNDEF_INT sentinel (INT_MIN), and CtranComm mirrors that.
+// NCCL_CONFIG_UNDEF_INT sentinel (INT_MIN) and the CTran-side optional stays
+// unset, so CtranIb resolves from the env settings.
 TEST_F(trafficClassTest, hintUnsetLeavesUndefSentinel) {
   EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
   ncclx::test::NcclCommRAII comm(
@@ -67,7 +69,57 @@ TEST_F(trafficClassTest, hintUnsetLeavesUndefSentinel) {
 
   EXPECT_EQ(comm->config.trafficClass, NCCL_CONFIG_UNDEF_INT);
   ASSERT_NE(nullptr, comm->ctranComm_);
-  EXPECT_EQ(comm->ctranComm_->config_.trafficClass, NCCL_CONFIG_UNDEF_INT);
+  EXPECT_FALSE(comm->ctranComm_->config_.ibConfig.trafficClass.has_value());
+}
+
+// An out-of-range ncclConfig_t.trafficClass degrades to the env settings
+// rather than aborting the job, and says so. This check lives at the config
+// boundary now; below it an out-of-range optional is a caller bug and
+// hard-errors.
+TEST_F(trafficClassTest, outOfRangeHintLeavesCtranOptionalUnset) {
+  EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
+
+  ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
+  inputConfig.trafficClass = 1024; // > 255
+
+  ncclx::test::NcclCommRAII comm(
+      globalRank,
+      numRanks,
+      localRank,
+      bootstrap_.get(),
+      /*isMock=*/false,
+      &inputConfig);
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+  ASSERT_NE(nullptr, comm->ctranComm_);
+
+  EXPECT_FALSE(comm->ctranComm_->config_.ibConfig.trafficClass.has_value());
+  // net_ib still sees the value it was given; only the CTran side drops it.
+  EXPECT_EQ(comm->config.trafficClass, 1024);
+}
+
+// The CTran-specific hint is more specific than the general
+// NcclConfig.traffic_class, which also feeds the plain net_ib transport.
+TEST_F(trafficClassTest, ctranIbHintBeatsGeneralTrafficClass) {
+  EnvRAII ctranEnv(NCCL_CTRAN_ENABLE, true);
+
+  ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
+  inputConfig.trafficClass = 96;
+  ncclx::Hints hints({{"ctranIbTrafficClass", "200"}});
+  inputConfig.hints = &hints;
+
+  ncclx::test::NcclCommRAII comm(
+      globalRank,
+      numRanks,
+      localRank,
+      bootstrap_.get(),
+      /*isMock=*/false,
+      &inputConfig);
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+  ASSERT_NE(nullptr, comm->ctranComm_);
+
+  // net_ib still sees the general value.
+  EXPECT_EQ(comm->config.trafficClass, 96);
+  EXPECT_EQ(comm->ctranComm_->config_.ibConfig.trafficClass, int64_t{200});
 }
 
 // Every ctranIb* hint must reach the CtranIbConfig that MetaFactory assembles
