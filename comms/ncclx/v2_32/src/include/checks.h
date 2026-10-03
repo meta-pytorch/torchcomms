@@ -32,6 +32,25 @@
     } \
   } while (false)
 
+// [META] Used by shared NCCLX meta code.
+#define CUDACHECKABORT(cmd) \
+  do { \
+    cudaError_t err = cmd; \
+    if (err != cudaSuccess) { \
+      WARN("Cuda failure '%s'", cudaGetErrorString(err)); \
+      abort(); \
+    } \
+  } while (false)
+
+#define CHECKABORT(statement, fmt, ...) \
+  do { \
+    if (!(statement)) { \
+      WARN("Check failed: %s", #statement); \
+      WARN(fmt, ##__VA_ARGS__); \
+      abort(); \
+    } \
+  } while (0)
+
 // Report failure but clear error and continue
 #define CUDACHECKIGNORE(cmd) \
   do { \
