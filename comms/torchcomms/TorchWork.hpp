@@ -4,9 +4,11 @@
 
 // IWYU pragma: no_include <ATen/ATen.h>
 #include <c10/util/intrusive_ptr.h>
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <future>
+#include <mutex>
 #include <vector>
 
 namespace at {
@@ -22,9 +24,34 @@ namespace torch::comms {
  * TorchWork - Base class representing asynchronous work.
  *
  * Thread Safety:
- * TorchWork is NOT thread-safe. All methods (status(), isCompleted(), wait())
- * must be called from a single thread. Concurrent calls from multiple threads
- * are not supported.
+ * Partially thread-safe -- read this before assuming either extreme.
+ *
+ * Safe against concurrent access:
+ *  - status() and isCompleted()
+ *  - setStatus(), including two threads racing to a terminal status. The first
+ *    terminal transition wins and is sticky; later ones are ignored entirely.
+ *  - registerWorkStartHook() / registerWorkEndHook() against a concurrent
+ *    transition. A hook is either queued and fired by the transition, or fired
+ *    immediately on the registering thread if the transition already
+ *    happened -- never fired twice. See the start-hook exception below.
+ *
+ * NOT thread-safe, still single-threaded by contract:
+ *  - wait(), waitBlocking(), hostSynchronize() and backend accessors.
+ *  - derived-backend state, including tensor references, events, and streams.
+ *    Backends must synchronize that state independently.
+ *
+ * Start-hook exception, by design:
+ *  - a start hook queued before a direct NOT_STARTED -> terminal transition is
+ *    DROPPED, not fired. Start hooks fire only on setStatus(INPROGRESS): a work
+ *    that never started must not report that it did. This is deliberate, and
+ *    TorchWorkTest.StartHookNotFiredOnTerminalStatus pins it. A hook registered
+ *    *after* such a transition still fires immediately, so registering late is
+ *    safe.
+ *
+ * status() is race-free but does not publish or order access to other state.
+ *
+ * Hooks may query the work they are attached to. They run on the thread that
+ * made the transition, or the registering thread on the late path.
  *
  * Work objects should not be destroyed while wait() is in progress.
  */
@@ -47,6 +74,14 @@ class TorchWork : public c10::intrusive_ptr_target {
   }
   bool isCompleted() const {
     return status() == WorkStatus::COMPLETED;
+  }
+
+  bool hasTerminalStatusProducer() const noexcept {
+    return has_terminal_status_producer_.load(std::memory_order_relaxed);
+  }
+
+  void enableTerminalStatusProducer() noexcept {
+    has_terminal_status_producer_.store(true, std::memory_order_relaxed);
   }
 
   // Pure virtual functions that derived classes must implement
@@ -90,42 +125,44 @@ class TorchWork : public c10::intrusive_ptr_target {
   // - Wait pre hook:  fired at the start of wait(), before the sync
   // - Wait post hook: fired at the end of wait(), after the sync
   //
-  // Multiple hooks can be registered; they fire in registration order.
-  // Hooks are NOT thread-safe -- register before concurrent status changes.
+  // Hooks registered before a transition run in order. Late start and end
+  // hooks run immediately and may overlap callbacks already being dispatched.
 
   using WorkHook = std::function<void()>;
 
   void registerWorkStartHook(WorkHook hook) {
-    // If work already started (or finished), fire the hook immediately rather
-    // than enqueuing it (it would never fire otherwise). Mirrors
-    // registerWorkEndHook's terminal-state fallback. This handles backends
-    // (e.g. MCCL) whose ctor sets INPROGRESS before the post-hook registers
-    // the start hook; without this the start event is lost (clog has no "S").
-    // Any status other than NOT_STARTED means the start transition has fired.
-    if (status() != WorkStatus::NOT_STARTED) {
-      hook();
-    } else {
-      start_hooks_.push_back(std::move(hook));
+    {
+      std::lock_guard<std::mutex> lock(hooks_mutex_);
+      if (!start_hooks_fired_) {
+        start_hooks_.push_back(std::move(hook));
+        return;
+      }
     }
+    // Fire late hooks immediately so observers see a complete lifecycle.
+    hook();
   }
 
   void registerWorkEndHook(WorkHook hook) {
-    // If work already reached a terminal state, fire the hook immediately
-    // rather than enqueuing it (it would never fire otherwise).
-    auto s = status();
-    if (s == WorkStatus::COMPLETED || s == WorkStatus::ERROR ||
-        s == WorkStatus::TIMEDOUT) {
-      hook();
-    } else {
-      end_hooks_.push_back(std::move(hook));
+    {
+      std::lock_guard<std::mutex> lock(hooks_mutex_);
+      if (!end_hooks_fired_) {
+        end_hooks_.push_back(std::move(hook));
+        return;
+      }
     }
+    // Fire late hooks immediately because no later terminal transition exists.
+    hook();
   }
 
+  // Wait hooks are reusable, so registration is synchronized with cleanup and
+  // snapshotting rather than latched.
   void registerWorkWaitPreHook(WorkHook hook) {
+    std::lock_guard<std::mutex> lock(hooks_mutex_);
     wait_pre_hooks_.push_back(std::move(hook));
   }
 
   void registerWorkWaitPostHook(WorkHook hook) {
+    std::lock_guard<std::mutex> lock(hooks_mutex_);
     wait_post_hooks_.push_back(std::move(hook));
   }
 
@@ -136,27 +173,62 @@ class TorchWork : public c10::intrusive_ptr_target {
   TorchWork& operator=(TorchWork&&) = delete;
 
  protected:
-  void setStatus(WorkStatus status) {
-    status_ = status;
+  static bool isTerminal(WorkStatus status) {
+    return status == WorkStatus::COMPLETED || status == WorkStatus::ERROR ||
+        status == WorkStatus::TIMEDOUT;
+  }
 
-    if (status == WorkStatus::INPROGRESS) {
-      runStartHooks();
-    } else if (
-        status == WorkStatus::COMPLETED || status == WorkStatus::ERROR ||
-        status == WorkStatus::TIMEDOUT) {
-      runEndHooks();
+  // Serialize status and hook transitions so the first terminal state remains
+  // authoritative and direct-to-terminal work cannot strand late start hooks.
+  void setStatus(WorkStatus status) {
+    std::vector<WorkHook> to_fire;
+    {
+      std::lock_guard<std::mutex> lock(hooks_mutex_);
+      if (end_hooks_fired_) {
+        return;
+      }
+      status_.store(status, std::memory_order_relaxed);
+      if (isTerminal(status)) {
+        end_hooks_fired_ = true;
+        to_fire.swap(end_hooks_);
+        // Direct-to-terminal work cannot emit a start event, so discard queued
+        // start hooks while latching the phase for late registrants.
+        start_hooks_fired_ = true;
+        start_hooks_.clear();
+      } else if (status == WorkStatus::INPROGRESS) {
+        if (start_hooks_fired_) {
+          return;
+        }
+        start_hooks_fired_ = true;
+        to_fire.swap(start_hooks_);
+      }
+    }
+    // Invoke callbacks outside the lock so reentrant hooks cannot deadlock.
+    for (auto& hook : to_fire) {
+      hook();
     }
   }
 
-  // Backend wait() implementations should call these around the actual wait.
+  // Snapshot reusable wait hooks under the lock, then invoke them outside it
+  // so callbacks may safely reenter the work.
   void runWaitPreHooks() {
-    for (auto& hook : wait_pre_hooks_) {
+    std::vector<WorkHook> hooks;
+    {
+      std::lock_guard<std::mutex> lock(hooks_mutex_);
+      hooks = wait_pre_hooks_;
+    }
+    for (auto& hook : hooks) {
       hook();
     }
   }
 
   void runWaitPostHooks() {
-    for (auto& hook : wait_post_hooks_) {
+    std::vector<WorkHook> hooks;
+    {
+      std::lock_guard<std::mutex> lock(hooks_mutex_);
+      hooks = wait_post_hooks_;
+    }
+    for (auto& hook : hooks) {
       hook();
     }
   }
@@ -172,30 +244,13 @@ class TorchWork : public c10::intrusive_ptr_target {
   friend class c10::intrusive_ptr;
 
  private:
-  void runStartHooks() {
-    for (auto& hook : start_hooks_) {
-      hook();
-    }
-  }
-
-  void runEndHooks() {
-    // Guard: end hooks fire at most once, even if setStatus is called
-    // with multiple terminal states (e.g., ERROR then TIMEDOUT).
-    if (end_hooks_fired_) {
-      return;
-    }
-    end_hooks_fired_ = true;
-    for (auto& hook : end_hooks_) {
-      hook();
-    }
-  }
-
   // break weak-ref cycle: hooks registered via postHook() may capture a
   // weak_intrusive_ptr back to this object. after the strong refcount
   // reaches 0, release_resources() clears the hooks, destroying the weak
   // pointers and allowing the weak refcount to reach 0 so the object is
   // deleted.
   void release_resources() override {
+    std::lock_guard<std::mutex> lock(hooks_mutex_);
     start_hooks_.clear();
     end_hooks_.clear();
     wait_pre_hooks_.clear();
@@ -203,6 +258,12 @@ class TorchWork : public c10::intrusive_ptr_target {
   }
 
   std::atomic<WorkStatus> status_{WorkStatus::NOT_STARTED};
+  std::atomic<bool> has_terminal_status_producer_{false};
+
+  // Guard each fired-flag check with its hook-vector mutation so registration
+  // cannot be lost during a transition.
+  std::mutex hooks_mutex_;
+  bool start_hooks_fired_{false};
   bool end_hooks_fired_{false};
 
   std::vector<WorkHook> start_hooks_;

@@ -2239,7 +2239,9 @@ class NCCLXRegistration {
  public:
   NCCLXRegistration() {
     TorchCommFactory::get().register_backend(
-        "ncclx", []() { return std::make_shared<TorchCommNCCLX>(); });
+        "ncclx",
+        []() { return std::make_shared<TorchCommNCCLX>(); },
+        TORCHCOMM_BACKEND_ABI_VERSION);
 
     // Register allocator factory with its own nccl_api instance
     TorchCommFactory::get().register_allocator_factory("ncclx", []() {

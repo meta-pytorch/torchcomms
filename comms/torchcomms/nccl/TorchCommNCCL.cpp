@@ -2022,9 +2022,10 @@ namespace {
 class NCCLRegistration {
  public:
   NCCLRegistration() {
-    torch::comms::TorchCommFactory::get().register_backend("nccl", []() {
-      return std::make_shared<torch::comms::TorchCommNCCL>();
-    });
+    torch::comms::TorchCommFactory::get().register_backend(
+        "nccl",
+        []() { return std::make_shared<torch::comms::TorchCommNCCL>(); },
+        torch::comms::TORCHCOMM_BACKEND_ABI_VERSION);
 
     // Register allocator factory with its own nccl_api instance
     torch::comms::TorchCommFactory::get().register_allocator_factory(

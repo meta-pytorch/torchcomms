@@ -38,6 +38,26 @@ set_target_properties(fake_test_backend PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
+add_library(legacy_direct_registration_test_backend SHARED
+    FakeTorchCommBackend.cpp
+    ${ROOT}/comms/torchcomms/fake/TorchCommFake.cpp
+)
+target_include_directories(legacy_direct_registration_test_backend PRIVATE
+    ${ROOT}
+    ${CONDA_INCLUDE}
+)
+target_compile_features(legacy_direct_registration_test_backend PRIVATE cxx_std_20)
+target_compile_definitions(legacy_direct_registration_test_backend PRIVATE
+    TORCHCOMMS_LEGACY_DIRECT_REGISTRATION_TEST
+)
+target_link_libraries(legacy_direct_registration_test_backend PRIVATE
+    torchcomms
+    ${TORCH_LIBRARIES}
+)
+set_target_properties(legacy_direct_registration_test_backend PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
 # TorchCommOptionsTest - basic options/utils tests
 add_executable(TorchCommOptionsTest
     TorchCommOptionsTest.cpp
@@ -78,7 +98,11 @@ target_link_options(TorchCommFactoryTest PRIVATE
 )
 
 # Add dependency so fake backend is built before factory test runs
-add_dependencies(TorchCommFactoryTest fake_test_backend)
+add_dependencies(
+    TorchCommFactoryTest
+    fake_test_backend
+    legacy_direct_registration_test_backend
+)
 
 # TorchCommOptionsTest's BackendWrapper tag tests load the fake backend
 # dynamically via new_comm("fake_test"), so it also needs the fake backend
@@ -96,5 +120,5 @@ gtest_discover_tests(TorchCommOptionsTest
 # pointing to the fake backend library
 add_test(NAME TorchCommFactoryTest COMMAND TorchCommFactoryTest)
 set_tests_properties(TorchCommFactoryTest PROPERTIES
-    ENVIRONMENT "FAKE_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:fake_test_backend>"
+    ENVIRONMENT "FAKE_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:fake_test_backend>;LEGACY_DIRECT_REGISTRATION_BACKEND_LIB_PATH=$<TARGET_FILE:legacy_direct_registration_test_backend>"
 )
