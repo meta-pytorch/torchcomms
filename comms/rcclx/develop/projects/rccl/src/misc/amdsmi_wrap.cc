@@ -589,13 +589,20 @@ ncclResult_t amd_smi_ensureFabricInitialized() {
         devInfo->fabricSupported = false;
         continue;
       }
-      if (fabricInfo.fabric_info.version != AMDSMI_FABRIC_INFO_CURRENT_VERSION) {
+      // amd-smi 27 moved the version out of the union and renamed the member.
+#if AMDSMI_LIB_VERSION_MAJOR >= 27
+      const uint32_t fabricVersion = fabricInfo.fabric_version;
+      const amdsmi_fabric_info_v1_t* v1 = &fabricInfo.fabric_info.v1;
+#else
+      const uint32_t fabricVersion = fabricInfo.fabric_info.version;
+      const amdsmi_fabric_info_v1_t* v1 = &fabricInfo.fabric_info.fabric_version.v1;
+#endif
+      if (fabricVersion != AMDSMI_FABRIC_INFO_CURRENT_VERSION) {
         WARN("AMD SMI fabric: unexpected fabric info version %u for device %u, expected %u",
-             fabricInfo.fabric_info.version, d, AMDSMI_FABRIC_INFO_CURRENT_VERSION);
+             fabricVersion, d, AMDSMI_FABRIC_INFO_CURRENT_VERSION);
         devInfo->fabricSupported = false;
         continue;
       }
-      const amdsmi_fabric_info_v1_t* v1 = &fabricInfo.fabric_info.fabric_version.v1;
       devInfo->fabricSupported = ((v1->fabric_type == AMDSMI_FABRIC_TYPE_UALOE ||
                                    v1->fabric_type == AMDSMI_FABRIC_TYPE_UALLINK) &&
                                   (v1->accel_state == AMDSMI_FABRIC_ACCELERATOR_VPOD_STATE_ACTIVE ||
