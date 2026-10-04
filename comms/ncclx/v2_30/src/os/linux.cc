@@ -245,6 +245,23 @@ ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
   SYSCHECKGOTO(socketDescriptor = socket(sock->addr.sa.sa_family, SOCK_STREAM, 0), "socket", ret, cleanup);
   // if sock->socketDescriptor is valid, reuse its file descriptor number
   if (ncclOsSocketIsValid(sock)) {
+    // [META] Preserve the interface and traffic class; see meta/baseline_modification_docs/socket_retry_binding.md.
+    char ifName[IFNAMSIZ] = {};
+    socklen_t ifNameLen = sizeof(ifName);
+    SYSCHECKGOTO(getsockopt(sock->socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, ifName, &ifNameLen),
+                 "getsockopt SO_BINDTODEVICE", ret, cleanup);
+    if (ifNameLen > 0) {
+      SYSCHECKGOTO(setsockopt(socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, ifName, ifNameLen),
+                   "setsockopt SO_BINDTODEVICE", ret, cleanup);
+    }
+    const int level = sock->addr.sa.sa_family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
+    const int option = sock->addr.sa.sa_family == AF_INET6 ? IPV6_TCLASS : IP_TOS;
+    int trafficClass = 0;
+    socklen_t trafficClassLen = sizeof(trafficClass);
+    SYSCHECKGOTO(getsockopt(sock->socketDescriptor, level, option, &trafficClass, &trafficClassLen),
+                 "getsockopt traffic class", ret, cleanup);
+    SYSCHECKGOTO(setsockopt(socketDescriptor, level, option, &trafficClass, sizeof(trafficClass)),
+                 "setsockopt traffic class", ret, cleanup);
     SYSCHECKGOTO(dup2(socketDescriptor, sock->socketDescriptor), "dup2", ret, cleanup);
     SYSCHECKGOTO(close(socketDescriptor), "close", ret, cleanup);
   } else {
