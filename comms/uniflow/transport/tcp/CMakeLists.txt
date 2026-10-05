@@ -28,6 +28,11 @@ target_compile_features(uniflow_tcp_transport PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_tcp_transport PRIVATE -fPIC)
 
-target_link_libraries(uniflow_tcp_transport PRIVATE uniflow_build_config)
+target_link_libraries(uniflow_tcp_transport PRIVATE
+    uniflow_build_config
+    uniflow_controller
+    uniflow_cuda
+    uniflow_transport
+)
 
 uniflow_target_hipified(uniflow_tcp_transport)

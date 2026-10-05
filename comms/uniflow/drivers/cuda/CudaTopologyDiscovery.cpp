@@ -16,6 +16,9 @@
 #include <cpuid.h>
 #endif
 
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
+#include "comms/uniflow/drivers/ibverbs/IbvApi.h"
+#endif
 #include "comms/uniflow/drivers/sysfs/SysfsApi.h"
 
 namespace uniflow {
@@ -231,6 +234,7 @@ struct GpuDiscovery {
   uint32_t c2cBwMBps{0}; // Total C2C bandwidth (activeCount * perLinkBw)
 };
 
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
 /// IB width multipliers indexed by bit position in ibv_port_attr.active_width.
 /// Bit 0 = 1x, bit 1 = 4x, bit 2 = 8x, bit 3 = 12x, bit 4 = 2x.
 // clang-format off
@@ -276,6 +280,7 @@ uint32_t ibPortSpeedMbps(uint32_t activeSpeed, uint32_t activeWidth) {
       (wi < static_cast<int>(std::size(kIbvWidths))) ? kIbvWidths[wi] : 0;
   return static_cast<uint32_t>(speed * width);
 }
+#endif
 
 /// Temporary NIC data gathered during discovery, before graph construction.
 /// One entry per physical device, with all active ports collected.
@@ -512,6 +517,7 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
   return gpus;
 }
 
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
 /// Check whether an ibdev sysfs path belongs to a virtual (software) RDMA
 /// device such as RXE (Soft-RoCE).  These live under
 /// /sys/devices/virtual/ and have no PCI backing.
@@ -645,6 +651,7 @@ Result<std::vector<NicDiscovery>> discoverNics(
   }
   return nics;
 }
+#endif
 
 /// Unified PCI device info for PCIe edge construction.
 struct PciDevice {
@@ -817,7 +824,7 @@ struct DiscoveryData {
 Status discoverHardware(
     CudaApi& cudaApi,
     NvmlApi& nvmlApi,
-    IbvApi& ibvApi,
+    [[maybe_unused]] IbvApi* ibvApi,
     SysfsApi& sysfs,
     DiscoveryData& data) {
   auto gpuResult = discoverGpus(cudaApi, nvmlApi, sysfs);
@@ -825,10 +832,14 @@ Status discoverHardware(
     data.gpus = std::move(gpuResult).value();
   }
 
-  auto nicResult = discoverNics(ibvApi, sysfs);
-  if (nicResult) {
-    data.nics = std::move(nicResult).value();
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
+  if (ibvApi != nullptr) {
+    auto nicResult = discoverNics(*ibvApi, sysfs);
+    if (nicResult) {
+      data.nics = std::move(nicResult).value();
+    }
   }
+#endif
 
   data.numaCount = discoverNumaNodeCount(sysfs);
   if (data.numaCount == 0) {
@@ -1027,7 +1038,11 @@ CudaTopologyDiscovery::CudaTopologyDiscovery(
     std::shared_ptr<SysfsApi> sysfsApi)
     : cudaApi_(cudaApi ? std::move(cudaApi) : std::make_shared<CudaApi>()),
       nvmlApi_(nvmlApi ? std::move(nvmlApi) : createNvmlApi()),
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
       ibvApi_(ibvApi ? std::move(ibvApi) : std::make_shared<IbvApi>()),
+#else
+      ibvApi_(std::move(ibvApi)),
+#endif
       sysfsApi_(sysfsApi ? std::move(sysfsApi) : std::make_shared<SysfsApi>()) {
 }
 
@@ -1036,7 +1051,7 @@ Status CudaTopologyDiscovery::discover(Topology& topology) {
 
   DiscoveryData data;
   CHECK_EXPR(
-      discoverHardware(*cudaApi_, *nvmlApi_, *ibvApi_, *sysfsApi_, data));
+      discoverHardware(*cudaApi_, *nvmlApi_, ibvApi_.get(), *sysfsApi_, data));
   buildNodes(topology, data);
   buildP2pMatrix(topology, *cudaApi_);
   buildEdges(topology, *sysfsApi_, data);
