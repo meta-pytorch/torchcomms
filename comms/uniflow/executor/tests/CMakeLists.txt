@@ -6,8 +6,8 @@ add_executable(uniflow_event_base_test
     ${CMAKE_CURRENT_SOURCE_DIR}/EventBaseTest.cpp
 )
 target_compile_features(uniflow_event_base_test PRIVATE cxx_std_20)
-target_include_directories(uniflow_event_base_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_event_base_test PRIVATE
+    uniflow_build_config
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
@@ -20,8 +20,8 @@ add_executable(uniflow_scoped_event_base_thread_test
     ${CMAKE_CURRENT_SOURCE_DIR}/ScopedEventBaseThreadTest.cpp
 )
 target_compile_features(uniflow_scoped_event_base_thread_test PRIVATE cxx_std_20)
-target_include_directories(uniflow_scoped_event_base_thread_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_scoped_event_base_thread_test PRIVATE
+    uniflow_build_config
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
@@ -34,8 +34,8 @@ add_executable(uniflow_stress_flood_test
     ${CMAKE_CURRENT_SOURCE_DIR}/StressFloodTest.cpp
 )
 target_compile_features(uniflow_stress_flood_test PRIVATE cxx_std_20)
-target_include_directories(uniflow_stress_flood_test PRIVATE ${ROOT})
 target_link_libraries(uniflow_stress_flood_test PRIVATE
+    uniflow_build_config
     GTest::gtest
     GTest::gtest_main
     Threads::Threads

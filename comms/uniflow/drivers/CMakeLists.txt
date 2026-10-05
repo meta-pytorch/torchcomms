@@ -16,4 +16,4 @@ target_compile_features(uniflow_drivers PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_drivers PRIVATE -fPIC)
 
-target_include_directories(uniflow_drivers PUBLIC ${ROOT})
+target_link_libraries(uniflow_drivers PRIVATE uniflow_build_config)

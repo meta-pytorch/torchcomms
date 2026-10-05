@@ -180,7 +180,7 @@ Result<RemoteRegisteredSegment> RemoteRegisteredSegment::from(
       UNIFLOW_LOG_WARN(
           "importSegment: transport {} handle {}/{} could not be imported "
           "and will be ignored: {}",
-          transportType,
+          toStringView(transportType),
           i + 1,
           numHandles,
           handleResult.error().message());
