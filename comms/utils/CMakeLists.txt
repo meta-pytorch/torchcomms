@@ -17,17 +17,25 @@ if(NOT spdlog_FOUND)
     FetchContent_MakeAvailable(spdlog)
 endif()
 
-file(GLOB_RECURSE UTILS_SOURCES
+# Globbed relative to this directory so the filters below see only the path
+# inside it. Matching absolute paths would also catch a checkout that merely
+# sits under a directory of the same name (~/fb/torchcomms), and interpolating
+# the checkout path into a regex breaks on any metacharacter in it (c++).
+#
+# fb/ holds source that depends on internal-only libraries -- today the
+# switchstats client, which reaches a switch agent over ServiceRouter. Without
+# the filter the recursive glob folds it into the utils object library, and so
+# into libmccl.so, where the build fails on headers the conda env does not
+# carry. The mirror strips fb/ for the same reason.
+file(GLOB_RECURSE UTILS_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
     "*.cc"
     "*.cu"
 )
-file(GLOB_RECURSE UTILS_CU_SOURCES
+file(GLOB_RECURSE UTILS_CU_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
     "*.cu"
 )
-list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/tests/.*")
-list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
-list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/tests/.*")
-list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
+list(FILTER UTILS_SOURCES EXCLUDE REGEX "(^|/)(tests|test_utils|fb)/")
+list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX "(^|/)(tests|test_utils|fb)/")
 
 add_library(utils OBJECT
     ${UTILS_SOURCES}
