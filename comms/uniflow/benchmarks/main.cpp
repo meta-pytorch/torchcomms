@@ -26,7 +26,7 @@
 #include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
 #else
-// AMD intra-node tier (HIP IPC over XGMI). Its target is only in
+// AMD intra-node tier (the P2P transport over XGMI). Its target is only in
 // uniflow_bench's deps under ovr_config//gpu:amd, so the include must be
 // guarded to match -- unguarded it breaks the NVIDIA build with a missing
 // header.
@@ -81,6 +81,13 @@ struct CliOptions {
   std::string barrierDir;
   int barrierRanks{0};
   int barrierIndex{-1};
+  // xgmi_bandwidth buffers, each "device" (cudaMalloc, shared through HIP IPC)
+  // or "vmm" (cuMem VMM, shared as POSIX fds). Strings and plain values so they
+  // parse on NVIDIA too, where xgmi_bandwidth is compiled out.
+  std::string xgmiSrcMemory{"device"};
+  std::string xgmiDstMemory{"device"};
+  size_t xgmiVmmChunkSize{0};
+  bool xgmiP2pEnableVmm{true};
 };
 
 std::vector<int> parseIntList(const std::string& s) {
@@ -222,6 +229,17 @@ void printUsage(const char* prog) {
       << "                         overstated (measured overlap 1.0-2.1 of 8)\n"
       << "  --measurement-barrier-ranks <n>   Number of instances to wait for\n"
       << "  --measurement-barrier-index <i>   This instance's unique index in [0,n)\n"
+      << "  --xgmi-memory <m>[,<m>]  xgmi_bandwidth buffers: device (cudaMalloc,\n"
+      << "                         shared through IPC) or vmm (cuMem VMM, shared as\n"
+      << "                         POSIX fds); one value for both, or the local\n"
+      << "                         source then the peer-imported destination\n"
+      << "                         (default: device)\n"
+      << "  --xgmi-vmm-chunk-size <bytes>  Build VMM buffers from chunks of this\n"
+      << "                         size, rounded up to the allocation granularity\n"
+      << "                         (default: 0, one chunk per buffer)\n"
+      << "  --xgmi-p2p-vmm <on|off>  P2P VMM sharing; off skips the VMM check on\n"
+      << "                         registration, and needs device buffers\n"
+      << "                         (default: on)\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -271,6 +289,9 @@ CliOptions parseArgs(int argc, char** argv) {
       {"measurement-barrier-dir", required_argument, nullptr, 280},
       {"measurement-barrier-ranks", required_argument, nullptr, 281},
       {"measurement-barrier-index", required_argument, nullptr, 282},
+      {"xgmi-memory", required_argument, nullptr, 283},
+      {"xgmi-vmm-chunk-size", required_argument, nullptr, 284},
+      {"xgmi-p2p-vmm", required_argument, nullptr, 285},
       {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
@@ -404,6 +425,42 @@ CliOptions parseArgs(int argc, char** argv) {
           std::exit(1);
         }
         break;
+      case 283: {
+        const std::string value = optarg;
+        const auto comma = value.find(',');
+        opts.xgmiSrcMemory = value.substr(0, comma);
+        opts.xgmiDstMemory = opts.xgmiSrcMemory;
+        if (comma != std::string::npos) {
+          opts.xgmiDstMemory = value.substr(comma + 1);
+        }
+        for (const auto& memory : {opts.xgmiSrcMemory, opts.xgmiDstMemory}) {
+          if (memory != "device" && memory != "vmm") {
+            std::cerr << "Invalid value for --xgmi-memory: '" << optarg
+                      << "' (expected device|vmm[,device|vmm])\n";
+            std::exit(1);
+          }
+        }
+        break;
+      }
+      case 284:
+        try {
+          opts.xgmiVmmChunkSize = std::stoull(optarg);
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --xgmi-vmm-chunk-size: '" << optarg
+                    << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 285: {
+        const std::string value = optarg;
+        if (value != "on" && value != "off") {
+          std::cerr << "Invalid value for --xgmi-p2p-vmm: '" << optarg
+                    << "' (expected on|off)\n";
+          std::exit(1);
+        }
+        opts.xgmiP2pEnableVmm = value == "on";
+        break;
+      }
       case 'd':
         opts.direction = optarg;
         break;
@@ -549,6 +606,13 @@ CliOptions parseArgs(int argc, char** argv) {
                  "than --measurement-barrier-ranks\n";
     std::exit(1);
   }
+  // With VMM sharing off, P2P would hand VMM memory to HIP IPC, which cannot
+  // share it; some runtimes return a handle the peer cannot open.
+  if (!opts.xgmiP2pEnableVmm &&
+      (opts.xgmiSrcMemory == "vmm" || opts.xgmiDstMemory == "vmm")) {
+    std::cerr << "--xgmi-p2p-vmm off needs --xgmi-memory device\n";
+    std::exit(1);
+  }
 
   return opts;
 }
@@ -582,8 +646,18 @@ int main(int argc, char** argv) {
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
 #else
+  const auto toXgmiMemory = [](const std::string& memory) {
+    return memory == "vmm" ? uniflow::benchmark::XgmiMemory::Vmm
+                           : uniflow::benchmark::XgmiMemory::Device;
+  };
   runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>());
+      std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>(
+          uniflow::benchmark::XgmiOptions{
+              .srcMemory = toXgmiMemory(opts.xgmiSrcMemory),
+              .dstMemory = toXgmiMemory(opts.xgmiDstMemory),
+              .vmmChunkSize = opts.xgmiVmmChunkSize,
+              .p2pEnableVmm = opts.xgmiP2pEnableVmm,
+          }));
 #endif
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(
