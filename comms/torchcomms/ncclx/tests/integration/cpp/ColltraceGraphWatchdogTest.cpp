@@ -77,7 +77,8 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
 
   std::shared_ptr<torch::comms::TorchComm>
   createTorchComm(int rank, int worldSize, std::chrono::milliseconds timeout) {
-    auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+    auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(
+        getLocalRank(), getLocalWorldSize());
 
     // Connect a new TCPStore client to the mixin's existing server.
     auto mixinStore = getTCPStore();
@@ -203,7 +204,8 @@ TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
 
   ASSERT_NE(torchcomm, nullptr);
 
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   auto tensor = at::ones(
       {32}, at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, deviceId));
 
@@ -275,7 +277,8 @@ TEST_F(
 
   ASSERT_NE(torchcomm, nullptr);
 
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   auto tensor = at::ones(
       {32}, at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, deviceId));
 

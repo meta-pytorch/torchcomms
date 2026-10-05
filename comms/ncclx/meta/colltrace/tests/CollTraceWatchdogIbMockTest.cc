@@ -168,7 +168,8 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
           "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
-  auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
+  auto deviceId =
+      mccl::CudaTestUtil::getCudaDeviceId(getLocalRank(), getLocalWorldSize());
   NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
   mccl::cuda::CudaStream stream;
 
