@@ -93,6 +93,15 @@ class TorchCommsBuildInfoTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "lowercase SHA-256"):
                 torchcomms_build_info.dependency_prefix_digest()
 
+    def test_source_tree_requires_sha256(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"TORCHCOMMS_SOURCE_TREE_SHA256": "not-a-digest"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "lowercase SHA-256"):
+                torchcomms_build_info.source_tree_sha256()
+
     def test_soname_parser(self) -> None:
         dynamic = (
             "0x000000000000000e (SONAME)             "
@@ -122,7 +131,14 @@ class TorchCommsBuildInfoTest(unittest.TestCase):
     def test_build_information_records_explicit_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
-            with mock.patch.dict(os.environ, {"USE_SYSTEM_LIBS": "1"}, clear=True):
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "USE_SYSTEM_LIBS": "1",
+                    "TORCHCOMMS_SOURCE_TREE_SHA256": "b" * 64,
+                },
+                clear=True,
+            ):
                 information = torchcomms_build_info.build_information(
                     root=root,
                     package_root=root / "package",
@@ -137,6 +153,7 @@ class TorchCommsBuildInfoTest(unittest.TestCase):
                 )
         self.assertEqual(information["schema_version"], 1)
         self.assertEqual(information["torchcomms_revision"], "a" * 40)
+        self.assertEqual(information["torchcomms_source_tree_sha256"], "b" * 64)
         self.assertEqual(information["enabled_backends"], ["nccl", "ncclx"])
         self.assertTrue(information["use_system_libs"])
 

@@ -114,6 +114,15 @@ def dependency_prefix_digest() -> str | None:
     return digest
 
 
+def source_tree_sha256() -> str | None:
+    digest = os.environ.get("TORCHCOMMS_SOURCE_TREE_SHA256", "").strip().lower()
+    if not digest:
+        return None
+    if SHA256_PATTERN.fullmatch(digest) is None:
+        raise RuntimeError("TORCHCOMMS_SOURCE_TREE_SHA256 must be a lowercase SHA-256")
+    return digest
+
+
 def ncclx_identity(root: pathlib.Path, enabled: bool) -> str | None:
     if not enabled:
         return None
@@ -180,6 +189,7 @@ def build_information(
         "schema_version": 1,
         "package_version": package_version,
         "torchcomms_revision": torchcomms_revision,
+        "torchcomms_source_tree_sha256": source_tree_sha256(),
         "source_dirty": source_dirty,
         "pytorch_version": pytorch_version,
         "python_version": sys.version.split()[0],
