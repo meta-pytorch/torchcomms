@@ -59,6 +59,11 @@ set_target_properties(ctran PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+if(TORCHCOMMS_GENERATED_CVARS_ROOT)
+    target_include_directories(ctran BEFORE PRIVATE
+        "${TORCHCOMMS_GENERATED_CVARS_ROOT}"
+    )
+endif()
 target_include_directories(ctran PRIVATE
     ${ROOT}
     ${CONDA_INCLUDE}
