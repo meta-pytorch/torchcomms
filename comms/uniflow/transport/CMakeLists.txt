@@ -19,9 +19,7 @@ target_compile_features(uniflow_transport PUBLIC cxx_std_20)
 
 target_compile_options(uniflow_transport PRIVATE -fPIC)
 
-target_include_directories(uniflow_transport PUBLIC
-    ${ROOT}
-)
+target_link_libraries(uniflow_transport PRIVATE uniflow_build_config)
 
 # Sub-components. The intra-node GPU tier is vendor-split: NVLink on NVIDIA,
 # P2P/XGMI on AMD. MultiTransport.cpp compiles NVLink out behind

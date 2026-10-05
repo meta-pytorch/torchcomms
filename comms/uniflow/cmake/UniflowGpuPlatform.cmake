@@ -71,11 +71,10 @@ endif()
 # <out_var>. On CUDA the inputs are returned unchanged, so callers list their
 # sources once and stay platform-neutral.
 #
-# Outputs keep their path relative to the repository root under
-# ${CMAKE_BINARY_DIR}/hipified, so a translated header is reachable at the same
-# "comms/uniflow/..." include path as its original. That directory precedes
-# ${ROOT} on the include path of translated targets, which is what makes a
-# translated .cpp pick up the translated header instead of the CUDA one.
+# Outputs keep their path relative to the UniFlow source root under
+# ${UNIFLOW_HIPIFY_DIR}, which precedes the build include tree on the include
+# path. A translated header is therefore reachable through the same
+# "comms/uniflow/..." include path as its original.
 function(uniflow_hipify out_var)
   if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
     set(${out_var} ${ARGN} PARENT_SCOPE)
@@ -85,11 +84,12 @@ function(uniflow_hipify out_var)
   set(generated "")
   foreach(source IN LISTS ARGN)
     get_filename_component(absolute "${source}" ABSOLUTE)
-    file(RELATIVE_PATH relative "${ROOT}" "${absolute}")
+    file(RELATIVE_PATH relative "${UNIFLOW_SOURCE_DIR}" "${absolute}")
     if(relative MATCHES "^\\.\\.")
-      message(FATAL_ERROR "uniflow_hipify: ${source} is outside ROOT (${ROOT})")
+      message(FATAL_ERROR
+          "uniflow_hipify: ${source} is outside UniFlow (${UNIFLOW_SOURCE_DIR})")
     endif()
-    set(output "${UNIFLOW_HIPIFY_DIR}/${relative}")
+    set(output "${UNIFLOW_HIPIFY_DIR}/comms/uniflow/${relative}")
     get_filename_component(output_dir "${output}" DIRECTORY)
     file(MAKE_DIRECTORY "${output_dir}")
     add_custom_command(
