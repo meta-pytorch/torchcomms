@@ -11,6 +11,11 @@ import sys
 
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as build_ext_orig
+from torchcomms_build_info import (
+    build_information,
+    source_identity,
+    write_build_information,
+)
 
 try:
     import torch
@@ -55,6 +60,7 @@ def flag_str(val: bool):
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 TORCH_ROOT = os.path.dirname(torch.__file__)
+TORCHCOMMS_REVISION, TORCHCOMMS_SOURCE_DIRTY = source_identity(pathlib.Path(ROOT))
 
 
 def get_torch_pybind11_include_root(build_temp: pathlib.Path) -> pathlib.Path:
@@ -168,6 +174,22 @@ class build_ext(build_ext_orig):
             # All extensions are built from the same directory so we can
             # just use the first one
             break
+        if not self.dry_run:
+            package_root = pathlib.Path(self.build_lib).absolute() / "torchcomms"
+            enabled_backends = [name for name, enabled in BACKEND_FLAGS if enabled]
+            information = build_information(
+                root=pathlib.Path(ROOT),
+                package_root=package_root,
+                package_version=PACKAGE_VERSION,
+                pytorch_version=torch.__version__,
+                pytorch_cxx11_abi=bool(torch._C._GLIBCXX_USE_CXX11_ABI),
+                torchcomms_revision=TORCHCOMMS_REVISION,
+                source_dirty=TORCHCOMMS_SOURCE_DIRTY,
+                use_ncclx=USE_NCCLX,
+                bundle_observatory=TORCHCOMMS_BUNDLE_OBSERVATORY,
+                enabled_backends=enabled_backends,
+            )
+            write_build_information(package_root / "_build_info.json", information)
 
     def build_cmake(self, ext):
         cwd = pathlib.Path().absolute()
@@ -267,12 +289,15 @@ backend_entry_points = ["fake = torchcomms._comms"] + [
 if USE_NCCL:
     backend_entry_points.append("nccl-lazy = torchcomms._comms_nccl")
 
+PACKAGE_VERSION = get_version()
+
 setup(
     name="torchcomms",
-    version=get_version(),
+    version=PACKAGE_VERSION,
     packages=find_packages("comms"),
     package_dir={"": "comms"},
     package_data={
+        "torchcomms": ["_build_info.json"],
         "torchcomms.triton.fb": ["*.bc"],
     },
     entry_points={
