@@ -9,6 +9,8 @@ target_link_libraries(uniflow_topology_discovery PRIVATE
 
 add_library(uniflow_drivers INTERFACE)
 target_link_libraries(uniflow_drivers INTERFACE uniflow_topology_discovery)
+target_sources(uniflow_drivers INTERFACE
+  $<TARGET_OBJECTS:uniflow_topology_discovery>)
 
 if(UNIFLOW_ENABLE_CUDA)
   add_subdirectory(nvml)
@@ -22,8 +24,15 @@ if(UNIFLOW_ENABLE_CUDA)
     uniflow_nvml
     uniflow_sysfs
   )
+  target_sources(uniflow_drivers INTERFACE
+    $<TARGET_OBJECTS:uniflow_cuda>
+    $<TARGET_OBJECTS:uniflow_nvml>
+    $<TARGET_OBJECTS:uniflow_sysfs>
+  )
   if(UNIFLOW_ENABLE_RDMA)
     target_link_libraries(uniflow_drivers INTERFACE uniflow_ibv)
+    target_sources(uniflow_drivers INTERFACE
+      $<TARGET_OBJECTS:uniflow_ibv>)
   endif()
 else()
   target_sources(uniflow_topology_discovery PRIVATE EmptyTopologyDiscovery.cpp)

@@ -2,9 +2,17 @@
 
 cmake_minimum_required(VERSION 3.20)
 
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" UNIFLOW_PACKAGE_VERSION)
+string(STRIP "${UNIFLOW_PACKAGE_VERSION}" UNIFLOW_PACKAGE_VERSION)
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" UNIFLOW_VERSION
+  "${UNIFLOW_PACKAGE_VERSION}")
+if(NOT UNIFLOW_VERSION)
+  message(FATAL_ERROR "Invalid UniFlow version: ${UNIFLOW_PACKAGE_VERSION}")
+endif()
+
 # Standalone project support (for OSS builds)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(uniflow LANGUAGES CXX)
+  project(uniflow VERSION "${UNIFLOW_VERSION}" LANGUAGES CXX)
   if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'RelWithDebInfo' as none was specified.")
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Choose the type of build." FORCE)
@@ -15,6 +23,7 @@ else()
 endif()
 
 find_package(Threads REQUIRED)
+include(GNUInstallDirs)
 
 set(UNIFLOW_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -77,6 +86,7 @@ endif()
 unset(_UNIFLOW_INCLUDE_LINK_RESULT)
 
 set(UNIFLOW_MINIMUM_SPDLOG_VERSION 1.15.2)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Fetched fmt and spdlog libraries can be linked into the shared UniFlow
 # library, so they must be compiled as position-independent code too.
@@ -141,6 +151,9 @@ elseif(NOT UNIFLOW_USE_SYSTEM_SPDLOG OR NOT spdlog_FOUND)
       "No system spdlog CMake package was found; fetching fmt and spdlog")
   endif()
   include(FetchContent)
+  set(FMT_DOC OFF CACHE BOOL "" FORCE)
+  set(FMT_INSTALL ${UNIFLOW_INSTALL_CPP} CACHE BOOL "" FORCE)
+  set(FMT_TEST OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(
       fmt
       GIT_REPOSITORY https://github.com/fmtlib/fmt.git
@@ -150,6 +163,7 @@ elseif(NOT UNIFLOW_USE_SYSTEM_SPDLOG OR NOT spdlog_FOUND)
 
   set(SPDLOG_BUILD_PIC ON CACHE BOOL "" FORCE)
   set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+  set(SPDLOG_INSTALL ${UNIFLOW_INSTALL_CPP} CACHE BOOL "" FORCE)
   FetchContent_Declare(
       spdlog
       GIT_REPOSITORY https://github.com/gabime/spdlog.git
@@ -158,6 +172,14 @@ elseif(NOT UNIFLOW_USE_SYSTEM_SPDLOG OR NOT spdlog_FOUND)
   FetchContent_MakeAvailable(spdlog)
   set(UNIFLOW_SPDLOG_TARGET spdlog::spdlog)
   set(UNIFLOW_FMT_TARGET fmt::fmt)
+  if(UNIFLOW_INSTALL_CPP)
+    install(FILES "${fmt_SOURCE_DIR}/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/fmt"
+      COMPONENT Development)
+    install(FILES "${spdlog_SOURCE_DIR}/LICENSE"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/spdlog"
+      COMPONENT Development)
+  endif()
 else()
   # TcpController.cpp includes fmt directly, so the system spdlog must use
   # external fmt or std::format rather than its bundled fmt copy.
@@ -195,7 +217,7 @@ add_library(uniflow_build_config INTERFACE)
 target_compile_features(uniflow_build_config INTERFACE cxx_std_20)
 target_include_directories(uniflow_build_config INTERFACE
   $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
-  $<INSTALL_INTERFACE:include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_compile_definitions(uniflow_build_config INTERFACE
   UNIFLOW_CMAKE_BUILD=1
@@ -245,51 +267,57 @@ add_library(uniflow ${UNIFLOW_LIB_TYPE}
     ${UNIFLOW_CORE_HEADERS}
     ${UNIFLOW_CORE_SOURCES}
 )
+add_library(uniflow::uniflow ALIAS uniflow)
 
 target_compile_features(uniflow PUBLIC cxx_std_20)
 
 target_include_directories(uniflow PUBLIC
     $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
-    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(uniflow PUBLIC
     Threads::Threads
-    ${UNIFLOW_SPDLOG_TARGET}
+    $<BUILD_INTERFACE:${UNIFLOW_FMT_TARGET}>
+    $<BUILD_INTERFACE:${UNIFLOW_SPDLOG_TARGET}>
+    $<INSTALL_INTERFACE:fmt::fmt>
+    $<INSTALL_INTERFACE:spdlog::spdlog>
 )
 
 target_link_libraries(uniflow PRIVATE
-    uniflow_build_config
-    uniflow_controller
-    uniflow_drivers
-    uniflow_executor
-    uniflow_logging
-    uniflow_topology_discovery
-    uniflow_transport
+    $<BUILD_INTERFACE:uniflow_build_config>
+    $<BUILD_INTERFACE:uniflow_controller>
+    $<BUILD_INTERFACE:uniflow_drivers>
+    $<BUILD_INTERFACE:uniflow_executor>
+    $<BUILD_INTERFACE:uniflow_logging>
+    $<BUILD_INTERFACE:uniflow_topology_discovery>
+    $<BUILD_INTERFACE:uniflow_transport>
 )
 
 if(UNIFLOW_ENABLE_CUDA)
   target_link_libraries(uniflow PRIVATE
-    uniflow_cuda
-    uniflow_nvml
-    uniflow_sysfs
+    $<BUILD_INTERFACE:uniflow_cuda>
+    $<BUILD_INTERFACE:uniflow_nvml>
+    $<BUILD_INTERFACE:uniflow_sysfs>
   )
   target_link_libraries(uniflow PUBLIC ${UNIFLOW_GPU_LIBRARIES})
   uniflow_target_hipified(uniflow)
 endif()
 if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  target_link_libraries(uniflow PRIVATE uniflow_nvlink_transport)
+  target_link_libraries(uniflow PRIVATE
+    $<BUILD_INTERFACE:uniflow_nvlink_transport>)
 elseif(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  target_link_libraries(uniflow PRIVATE uniflow_p2p_transport)
+  target_link_libraries(uniflow PRIVATE
+    $<BUILD_INTERFACE:uniflow_p2p_transport>)
 endif()
 if(UNIFLOW_ENABLE_RDMA)
   target_link_libraries(uniflow PRIVATE
-    uniflow_ibv
-    uniflow_rdma_transport
-  )
+    $<BUILD_INTERFACE:uniflow_ibv>
+    $<BUILD_INTERFACE:uniflow_rdma_transport>)
 endif()
 if(UNIFLOW_ENABLE_TCP)
-  target_link_libraries(uniflow PRIVATE uniflow_tcp_transport)
+  target_link_libraries(uniflow PRIVATE
+    $<BUILD_INTERFACE:uniflow_tcp_transport>)
 endif()
 
 target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
@@ -317,4 +345,58 @@ endif()
 
 if(UNIFLOW_BUILD_BENCHMARKS)
   add_subdirectory(benchmarks)
+endif()
+
+if(UNIFLOW_INSTALL_CPP)
+  include(CMakePackageConfigHelpers)
+
+  install(TARGETS uniflow
+    EXPORT uniflowTargets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT Runtime
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Runtime
+      NAMELINK_COMPONENT Development
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  )
+
+  foreach(_UNIFLOW_PUBLIC_HEADER IN LISTS UNIFLOW_PUBLIC_HEADERS)
+    file(RELATIVE_PATH _UNIFLOW_HEADER_PATH
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${_UNIFLOW_PUBLIC_HEADER}")
+    get_filename_component(_UNIFLOW_HEADER_DIRECTORY
+      "${_UNIFLOW_HEADER_PATH}" DIRECTORY)
+    install(FILES "${_UNIFLOW_PUBLIC_HEADER}"
+      DESTINATION
+        "${CMAKE_INSTALL_INCLUDEDIR}/comms/uniflow/${_UNIFLOW_HEADER_DIRECTORY}"
+      COMPONENT Development
+    )
+  endforeach()
+  unset(_UNIFLOW_HEADER_DIRECTORY)
+  unset(_UNIFLOW_HEADER_PATH)
+  unset(_UNIFLOW_PUBLIC_HEADER)
+
+  set(_UNIFLOW_CMAKE_INSTALL_DIR
+    "${CMAKE_INSTALL_LIBDIR}/cmake/uniflow")
+  configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/uniflowConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfig.cmake"
+    INSTALL_DESTINATION "${_UNIFLOW_CMAKE_INSTALL_DIR}"
+  )
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfigVersion.cmake"
+    VERSION "${UNIFLOW_VERSION}"
+    COMPATIBILITY SameMajorVersion
+  )
+  install(EXPORT uniflowTargets
+    FILE uniflowTargets.cmake
+    NAMESPACE uniflow::
+    DESTINATION "${_UNIFLOW_CMAKE_INSTALL_DIR}"
+    COMPONENT Development
+  )
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/uniflowConfigVersion.cmake"
+    DESTINATION "${_UNIFLOW_CMAKE_INSTALL_DIR}"
+    COMPONENT Development
+  )
+  unset(_UNIFLOW_CMAKE_INSTALL_DIR)
 endif()
