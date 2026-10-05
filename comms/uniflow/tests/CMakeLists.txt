@@ -6,6 +6,7 @@ function(uniflow_add_test TARGET_NAME SOURCE)
   add_executable(${TARGET_NAME} ${SOURCE})
   target_link_libraries(${TARGET_NAME} PRIVATE
     uniflow::uniflow
+    uniflow_build_config
     GTest::gtest
     GTest::gtest_main
   )
