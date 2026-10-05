@@ -350,12 +350,8 @@ if(UNIFLOW_BUILD_PYTHON)
 endif()
 
 if(UNIFLOW_BUILD_TESTS)
-  enable_testing()
+  include(CTest)
   add_subdirectory(tests)
-  add_subdirectory(executor/tests)
-  add_subdirectory(controller/tests)
-  add_subdirectory(core/tests)
-  add_subdirectory(logging/tests)
 endif()
 
 if(UNIFLOW_BUILD_BENCHMARKS)
