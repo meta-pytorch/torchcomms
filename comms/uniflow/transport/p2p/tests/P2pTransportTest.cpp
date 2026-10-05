@@ -5,12 +5,15 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
@@ -85,6 +88,9 @@ class P2pTransportFactoryTest : public ::testing::Test {
 };
 
 TEST_F(P2pTransportFactoryTest, SupportedReflectsDeviceCount) {
+  // AMD builds also gate on the device arch.
+  ON_CALL(*mock_, getDeviceArch(_))
+      .WillByDefault(Return(Result<std::string>("gfx950")));
   EXPECT_CALL(*mock_, getDeviceCount()).WillOnce(Return(Result<int>(2)));
   EXPECT_FALSE(P2pTransportFactory::supported(mock_).hasError());
 
@@ -113,11 +119,12 @@ TEST_F(P2pTransportFactoryTest, RegisterSegmentExportsIpcHandle) {
   // Inspect the serialized payload to confirm the exported fields.
   auto parsed = P2pRegistrationHandle::deserialize(handle.value()->serialize());
   ASSERT_FALSE(parsed.hasError());
-  EXPECT_EQ(parsed.value().ipcHandle, ipc);
-  EXPECT_EQ(parsed.value().ownerPid, static_cast<int32_t>(::getpid()));
-  EXPECT_EQ(parsed.value().base, reinterpret_cast<uint64_t>(&buf));
-  EXPECT_EQ(parsed.value().offset, 0u);
-  EXPECT_EQ(parsed.value().size, sizeof(buf));
+  const auto& p = std::get<P2pRegistrationHandle::IpcPayload>(parsed.value());
+  EXPECT_EQ(p.ipcHandle, ipc);
+  EXPECT_EQ(p.ownerPid, static_cast<int32_t>(::getpid()));
+  EXPECT_EQ(p.base, reinterpret_cast<uint64_t>(&buf));
+  EXPECT_EQ(p.offset, 0u);
+  EXPECT_EQ(p.size, sizeof(buf));
 }
 
 TEST_F(P2pTransportFactoryTest, RegisterSegmentSubAllocationRecordsOffset) {
@@ -143,10 +150,11 @@ TEST_F(P2pTransportFactoryTest, RegisterSegmentSubAllocationRecordsOffset) {
 
   auto parsed = P2pRegistrationHandle::deserialize(handle.value()->serialize());
   ASSERT_FALSE(parsed.hasError());
-  EXPECT_EQ(parsed.value().ipcHandle, ipc);
-  EXPECT_EQ(parsed.value().base, reinterpret_cast<uint64_t>(allocBase));
-  EXPECT_EQ(parsed.value().offset, 64u);
-  EXPECT_EQ(parsed.value().size, 128u);
+  const auto& p = std::get<P2pRegistrationHandle::IpcPayload>(parsed.value());
+  EXPECT_EQ(p.ipcHandle, ipc);
+  EXPECT_EQ(p.base, reinterpret_cast<uint64_t>(allocBase));
+  EXPECT_EQ(p.offset, 64u);
+  EXPECT_EQ(p.size, 128u);
 }
 
 TEST_F(P2pTransportFactoryTest, ImportSamePidReusesBaseWithoutIpcOpen) {
@@ -305,6 +313,25 @@ TEST_F(P2pTransportFactoryTest, ImportRejectsOffsetPlusSizeOverflow) {
   EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
 }
 
+TEST_F(P2pTransportFactoryTest, ImportRejectsVmmPayload) {
+  const int fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+  ASSERT_GE(fd, 0);
+  P2pRegistrationHandle local(
+      P2pRegistrationHandle::VmmPayload{
+          .ownerPid = static_cast<int32_t>(::getpid()),
+          .exporterDevice = 0,
+          .offset = 0,
+          .size = 256,
+          .chunks = {{.fd = fd, .inode = 1, .size = 4096}}});
+
+  EXPECT_CALL(*mock_, ipcOpenMemHandle(_)).Times(0);
+
+  auto factory = makeFactory();
+  auto result = factory.importSegment(256, local.serialize());
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().code(), ErrCode::NotImplemented);
+}
+
 TEST(P2pTransportTest, ConnectRequiresBindFirst) {
   auto mock = std::make_shared<NiceMock<MockCudaApi>>();
   ScopedEventBaseThread ebt;
@@ -400,7 +427,7 @@ class P2pTransportPutGetTest : public ::testing::Test {
 
     // The remote handle maps to remoteBuf_; use a distinct fake VA as the
     // segment pointer so a bug that copies to the segment ptr instead of
-    // mappedPtr() would fail. ownedByIpc=false keeps the destructor trivial.
+    // mappedPtr() would fail. A null mapping keeps the destructor trivial.
     remoteSeg_ = SegmentTest::makeRemote(
         // NOLINTNEXTLINE(performance-no-int-to-ptr)
         reinterpret_cast<void*>(0xDEAD0000),
@@ -409,8 +436,7 @@ class P2pTransportPutGetTest : public ::testing::Test {
             remoteBuf_,
             /*offset=*/0,
             sizeof(remoteBuf_),
-            /*ownedByIpc=*/false,
-            mock_));
+            /*mapping=*/nullptr));
   }
 
   void connectTransport() {
@@ -547,23 +573,20 @@ TEST_F(P2pTransportPutGetTest, PutQueryEventErrorDrainsAndFails) {
   EXPECT_EQ(status.error().code(), ErrCode::DriverError);
 }
 
-// A moved-from remote handle yields a null mappedPtr(). Both put() and get()
-// must reject it instead of doing nullptr + offset pointer math and handing the
-// result to a device-to-device memcpy.
+// A remote handle with a null base yields a null mappedPtr(). Both put() and
+// get() must reject it instead of doing nullptr + offset pointer math and
+// handing the result to a device-to-device memcpy.
 TEST_F(P2pTransportPutGetTest, RejectsNullMappedPointer) {
   connectTransport();
 
   auto handle = std::make_unique<P2pRemoteRegistrationHandle>(
-      remoteBuf_,
-      /*offset=*/0,
+      /*mappedBase=*/nullptr,
+      /*offset=*/64,
       sizeof(remoteBuf_),
-      /*ownedByIpc=*/false,
-      mock_);
-  // Move out of the handle so mappedPtr() reports null.
-  P2pRemoteRegistrationHandle drained(std::move(*handle));
+      /*mapping=*/nullptr);
   ASSERT_EQ(handle->mappedPtr(), nullptr);
 
-  auto movedFromSeg = SegmentTest::makeRemote(
+  auto nullBaseSeg = SegmentTest::makeRemote(
       // NOLINTNEXTLINE(performance-no-int-to-ptr)
       reinterpret_cast<void*>(0xDEAD0000),
       sizeof(remoteBuf_),
@@ -572,7 +595,7 @@ TEST_F(P2pTransportPutGetTest, RejectsNullMappedPointer) {
   EXPECT_CALL(*mock_, memcpyAsync(_, _, _, _, _)).Times(0);
   EXPECT_CALL(*mock_, eventCreate(_)).Times(0);
 
-  TransferRequest req{localSeg_.span(), movedFromSeg.span()};
+  TransferRequest req{localSeg_.span(), nullBaseSeg.span()};
 
   auto putStatus = transport_->put(std::span(&req, 1)).get();
   ASSERT_TRUE(putStatus.hasError());
