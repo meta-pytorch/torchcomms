@@ -24,6 +24,42 @@ set(UNIFLOW_HIPIFY_DIR ${CMAKE_CURRENT_BINARY_DIR}/hipified)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+option(UNIFLOW_BUILD_PYTHON "Build the UniFlow Python extension" OFF)
+option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
+option(UNIFLOW_BUILD_BENCHMARKS "Build UniFlow benchmarks" OFF)
+option(UNIFLOW_ENABLE_CUDA "Build the CUDA backend" ON)
+
+set(UNIFLOW_MINIMUM_CUDA_VERSION 12.8)
+if(UNIFLOW_ENABLE_CUDA)
+  include(UniflowGpuPlatform)
+endif()
+
+option(UNIFLOW_ENABLE_RDMA "Build the RDMA transport" ON)
+option(UNIFLOW_ENABLE_NVLINK "Build the NVLink transport" ON)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+  set(_UNIFLOW_ENABLE_TCP_DEFAULT ON)
+else()
+  set(_UNIFLOW_ENABLE_TCP_DEFAULT OFF)
+endif()
+option(UNIFLOW_ENABLE_TCP
+  "Build the TCP transport" ${_UNIFLOW_ENABLE_TCP_DEFAULT})
+unset(_UNIFLOW_ENABLE_TCP_DEFAULT)
+option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
+option(UNIFLOW_INSTALL_CPP "Install the UniFlow C++ SDK" ON)
+option(UNIFLOW_BUILD_SHARED_LIBS
+  "Build UniFlow shared libraries" ${UNIFLOW_STANDALONE})
+
+if(NOT UNIFLOW_ENABLE_CUDA)
+  foreach(_UNIFLOW_CUDA_FEATURE IN ITEMS RDMA NVLINK TCP)
+    if(UNIFLOW_ENABLE_${_UNIFLOW_CUDA_FEATURE})
+      message(STATUS
+        "Disabling UniFlow ${_UNIFLOW_CUDA_FEATURE}: CUDA is disabled")
+      set(UNIFLOW_ENABLE_${_UNIFLOW_CUDA_FEATURE} OFF CACHE BOOL "" FORCE)
+    endif()
+  endforeach()
+  unset(_UNIFLOW_CUDA_FEATURE)
+endif()
+
 set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
 file(
@@ -40,7 +76,6 @@ if(NOT _UNIFLOW_INCLUDE_LINK_RESULT STREQUAL "0")
 endif()
 unset(_UNIFLOW_INCLUDE_LINK_RESULT)
 
-option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
 set(UNIFLOW_MINIMUM_SPDLOG_VERSION 1.15.2)
 
 # Fetched fmt and spdlog libraries can be linked into the shared UniFlow
@@ -139,21 +174,17 @@ target_include_directories(uniflow_build_config INTERFACE
   $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
   $<INSTALL_INTERFACE:include>
 )
+target_compile_definitions(uniflow_build_config INTERFACE
+  UNIFLOW_CMAKE_BUILD=1
+  $<$<BOOL:${UNIFLOW_ENABLE_RDMA}>:UNIFLOW_ENABLE_RDMA_TRANSPORT=1>
+  $<$<AND:$<STREQUAL:${UNIFLOW_GPU_PLATFORM},CUDA>,$<BOOL:${UNIFLOW_ENABLE_NVLINK}>>:UNIFLOW_ENABLE_NVLINK_TRANSPORT=1>
+  $<$<BOOL:${UNIFLOW_ENABLE_TCP}>:UNIFLOW_ENABLE_TCP_TRANSPORT=1>
+)
 target_link_libraries(uniflow_build_config INTERFACE
   Threads::Threads
   ${UNIFLOW_FMT_TARGET}
   ${UNIFLOW_SPDLOG_TARGET}
 )
-
-include(UniflowGpuPlatform)
-
-# TCP is integrated into MultiTransport on AMD only; on NVIDIA the intra-node
-# tier is NVLink and TCP is not part of the selection.
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  set(UNIFLOW_ENABLE_TCP_TRANSPORT ON)
-else()
-  set(UNIFLOW_ENABLE_TCP_TRANSPORT OFF)
-endif()
 
 # Sub-components
 add_subdirectory(executor)
@@ -163,7 +194,9 @@ add_subdirectory(core)
 add_subdirectory(drivers)
 add_subdirectory(logging)
 
-uniflow_finalize_hipify()
+if(UNIFLOW_ENABLE_CUDA)
+  uniflow_finalize_hipify()
+endif()
 
 # Sources
 set(UNIFLOW_SOURCES
@@ -175,17 +208,12 @@ set(UNIFLOW_SOURCES
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
-# Included via add_subdirectory: build STATIC library for parent to consume
-if(UNIFLOW_STANDALONE)
+# Select the concrete library type without changing the caller's global
+# BUILD_SHARED_LIBS setting.
+if(UNIFLOW_BUILD_SHARED_LIBS)
   set(UNIFLOW_LIB_TYPE SHARED)
 else()
   set(UNIFLOW_LIB_TYPE STATIC)
-endif()
-
-if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  set(UNIFLOW_INTRA_NODE_TRANSPORT_OBJECTS $<TARGET_OBJECTS:uniflow_nvlink_transport>)
-else()
-  set(UNIFLOW_INTRA_NODE_TRANSPORT_OBJECTS $<TARGET_OBJECTS:uniflow_p2p_transport>)
 endif()
 
 add_library(uniflow ${UNIFLOW_LIB_TYPE}
@@ -193,25 +221,9 @@ add_library(uniflow ${UNIFLOW_LIB_TYPE}
     ${UNIFLOW_PUBLIC_HEADERS}
     ${UNIFLOW_CORE_HEADERS}
     ${UNIFLOW_CORE_SOURCES}
-    $<TARGET_OBJECTS:uniflow_controller>
-    $<TARGET_OBJECTS:uniflow_transport>
-    ${UNIFLOW_INTRA_NODE_TRANSPORT_OBJECTS}
-    $<TARGET_OBJECTS:uniflow_rdma_transport>
-    $<TARGET_OBJECTS:uniflow_cuda>
-    $<TARGET_OBJECTS:uniflow_drivers>
-    $<TARGET_OBJECTS:uniflow_nvml>
-    $<TARGET_OBJECTS:uniflow_ibv>
-    $<TARGET_OBJECTS:uniflow_sysfs>
-    $<TARGET_OBJECTS:uniflow_logging>
 )
 
 target_compile_features(uniflow PUBLIC cxx_std_20)
-
-if(UNIFLOW_ENABLE_TCP_TRANSPORT)
-  target_sources(uniflow PRIVATE $<TARGET_OBJECTS:uniflow_tcp_transport>)
-  target_compile_definitions(
-      uniflow PUBLIC UNIFLOW_ENABLE_TCP_TRANSPORT=1)
-endif()
 
 target_include_directories(uniflow PUBLIC
     $<BUILD_INTERFACE:${UNIFLOW_BUILD_INCLUDE_DIR}>
@@ -221,23 +233,47 @@ target_include_directories(uniflow PUBLIC
 target_link_libraries(uniflow PUBLIC
     Threads::Threads
     ${UNIFLOW_SPDLOG_TARGET}
-    uniflow_build_config
-    uniflow_executor
-    ${UNIFLOW_GPU_LIBRARIES}
 )
 
-uniflow_target_hipified(uniflow)
+target_link_libraries(uniflow PRIVATE
+    uniflow_build_config
+    uniflow_controller
+    uniflow_drivers
+    uniflow_executor
+    uniflow_logging
+    uniflow_topology_discovery
+    uniflow_transport
+)
+
+if(UNIFLOW_ENABLE_CUDA)
+  target_link_libraries(uniflow PRIVATE
+    uniflow_cuda
+    uniflow_nvml
+    uniflow_sysfs
+  )
+  target_link_libraries(uniflow PUBLIC ${UNIFLOW_GPU_LIBRARIES})
+  uniflow_target_hipified(uniflow)
+endif()
+if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  target_link_libraries(uniflow PRIVATE uniflow_nvlink_transport)
+elseif(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+  target_link_libraries(uniflow PRIVATE uniflow_p2p_transport)
+endif()
+if(UNIFLOW_ENABLE_RDMA)
+  target_link_libraries(uniflow PRIVATE
+    uniflow_ibv
+    uniflow_rdma_transport
+  )
+endif()
+if(UNIFLOW_ENABLE_TCP)
+  target_link_libraries(uniflow PRIVATE uniflow_tcp_transport)
+endif()
 
 target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
 
 if(UNIFLOW_LIB_TYPE STREQUAL SHARED)
   target_link_options(uniflow PRIVATE "LINKER:--no-undefined")
 endif()
-
-# Python binding: the uniflow._core extension that the Python package imports.
-# Off by default so builds that only embed the C++ library need neither Python
-# nor pybind11.
-option(UNIFLOW_BUILD_PYTHON "Build the uniflow._core Python extension" OFF)
 
 if(UNIFLOW_BUILD_PYTHON)
   if(NOT UNIFLOW_LIB_TYPE STREQUAL SHARED)
@@ -247,7 +283,6 @@ if(UNIFLOW_BUILD_PYTHON)
   add_subdirectory(python)
 endif()
 
-option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
 if(UNIFLOW_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
@@ -255,4 +290,8 @@ if(UNIFLOW_BUILD_TESTS)
   add_subdirectory(controller/tests)
   add_subdirectory(core/tests)
   add_subdirectory(logging/tests)
+endif()
+
+if(UNIFLOW_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
 endif()

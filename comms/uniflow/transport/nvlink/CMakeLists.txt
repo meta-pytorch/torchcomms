@@ -22,4 +22,6 @@ target_compile_options(uniflow_nvlink_transport PRIVATE -fPIC)
 target_link_libraries(uniflow_nvlink_transport PRIVATE
     uniflow_build_config
     uniflow_cuda
+    uniflow_nvml
+    uniflow_transport
 )
