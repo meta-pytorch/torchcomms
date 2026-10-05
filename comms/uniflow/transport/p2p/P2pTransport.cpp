@@ -8,8 +8,15 @@
 #include <array>
 #include <limits>
 #include <string_view>
+#include <variant>
 
 #include "comms/uniflow/logging/Logger.h"
+#if defined(__HIP_PLATFORM_AMD__)
+
+#include <optional>
+
+#include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
+#endif
 
 namespace uniflow {
 namespace {
@@ -45,6 +52,26 @@ Result<int32_t> decodeDeviceId(
   }
   return deviceId;
 }
+
+#if defined(__HIP_PLATFORM_AMD__)
+// The devices other than deviceId that can access its memory.
+Result<std::vector<int>> peerDevices(CudaApi& cudaApi, int deviceId) {
+  auto count = cudaApi.getDeviceCount();
+  CHECK_RETURN(count);
+  std::vector<int> peers;
+  for (int device = 0; device < count.value(); ++device) {
+    if (device == deviceId) {
+      continue;
+    }
+    auto canAccess = cudaApi.deviceCanAccessPeer(device, deviceId);
+    CHECK_RETURN(canAccess);
+    if (canAccess.value()) {
+      peers.push_back(device);
+    }
+  }
+  return peers;
+}
+#endif
 
 // TODO(D110509654): the event-completion machinery below (poll -> re-dispatch
 // on the EventBase) is structurally shared with NVLinkTransport::transfer, but
@@ -433,6 +460,23 @@ Status P2pTransportFactory::supported(std::shared_ptr<CudaApi> cudaApi) {
   return Ok();
 }
 
+#if defined(__HIP_PLATFORM_AMD__)
+P2pTransportFactory::P2pTransportFactory(
+    int deviceId,
+    EventBase* evb,
+    std::shared_ptr<CudaApi> cudaApi,
+    std::shared_ptr<CudaDriverApi> cudaDriverApi,
+    bool enableVmm)
+    : TransportFactory(TransportType::NVLink),
+      deviceId_(deviceId),
+      evb_(evb),
+      cudaApi_(std::move(cudaApi)),
+      enableVmm_(enableVmm),
+      vmm_(
+          deviceId,
+          cudaDriverApi ? std::move(cudaDriverApi)
+                        : std::make_shared<CudaDriverApi>()) {
+#else
 P2pTransportFactory::P2pTransportFactory(
     int deviceId,
     EventBase* evb,
@@ -441,6 +485,7 @@ P2pTransportFactory::P2pTransportFactory(
       deviceId_(deviceId),
       evb_(evb),
       cudaApi_(std::move(cudaApi)) {
+#endif
   CHECK_THROW_EXCEPTION(evb_ != nullptr, std::invalid_argument);
   if (!cudaApi_) {
     cudaApi_ = std::make_shared<CudaApi>();
@@ -455,6 +500,34 @@ P2pTransportFactory::registerSegment(Segment& segment) {
   }
 
   CudaDeviceGuard deviceGuard(*cudaApi_, deviceId_);
+#if defined(__HIP_PLATFORM_AMD__)
+
+  std::optional<Err> vmmFailure;
+  if (enableVmm_ && vmm_.isVmm(segment.mutable_data())) {
+    // Peer devices write this segment when they run a get() from an
+    // IPC-imported buffer, whichever way the segment itself is shared. Without
+    // the grant that copy faults the GPU, so a failed grant fails the
+    // registration instead of falling back.
+    auto peers = peerDevices(*cudaApi_, deviceId_);
+    CHECK_RETURN(peers);
+    auto granted = vmm_.grantPeerAccess(
+        segment.mutable_data(), segment.len(), peers.value());
+    CHECK_RETURN(granted);
+    if (!granted.value()) {
+      UNIFLOW_LOG_WARN(
+          "P2P registerSegment: segment is not a well-formed VMM range; peer "
+          "access was not granted");
+    }
+    auto vmm = vmm_.exportSegment(segment.mutable_data(), segment.len());
+    if (vmm.hasValue()) {
+      return std::move(vmm).value();
+    }
+    UNIFLOW_LOG_WARN(
+        "P2P registerSegment: VMM export failed, falling back to IPC: {}",
+        vmm.error().message());
+    vmmFailure = std::move(vmm).error();
+  }
+#endif
 
   // Export the IPC handle at the *allocation base*, recording the segment's
   // offset within it. A segment may be a sub-range of a larger allocation (e.g.
@@ -471,6 +544,14 @@ P2pTransportFactory::registerSegment(Segment& segment) {
   }
 
   auto handle = cudaApi_->ipcGetMemHandle(allocBase);
+#if defined(__HIP_PLATFORM_AMD__)
+  if (handle.hasError() && vmmFailure.has_value()) {
+    return Err(
+        handle.error().code(),
+        "P2P registerSegment: VMM export failed (" + vmmFailure->message() +
+            ") and IPC export failed (" + handle.error().message() + ")");
+  }
+#endif
   CHECK_RETURN(handle);
 
   const auto offset = reinterpret_cast<uintptr_t>(segPtr) -
@@ -489,7 +570,37 @@ P2pTransportFactory::importSegment(
     std::span<const uint8_t> payload) {
   auto parsed = P2pRegistrationHandle::deserialize(payload);
   CHECK_RETURN(parsed);
-  const auto& p = parsed.value();
+#if defined(__HIP_PLATFORM_AMD__)
+  if (const auto* vmm =
+          std::get_if<P2pRegistrationHandle::VmmPayload>(&parsed.value())) {
+    if (!enableVmm_) {
+      return Err(
+          ErrCode::NotImplemented,
+          "P2P importSegment: VMM sharing is disabled");
+    }
+    if (segmentLength != static_cast<size_t>(vmm->size)) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "P2P importSegment: segment length mismatch (expected " +
+              std::to_string(segmentLength) + ", payload " +
+              std::to_string(vmm->size) + ")");
+    }
+    CudaDeviceGuard deviceGuard(*cudaApi_, deviceId_);
+    auto mapped = vmm_.importSegment(*vmm);
+    CHECK_RETURN(mapped);
+    return std::move(mapped).value();
+  }
+  const auto& p = std::get<P2pRegistrationHandle::IpcPayload>(parsed.value());
+#else
+  const auto* ipc =
+      std::get_if<P2pRegistrationHandle::IpcPayload>(&parsed.value());
+  if (ipc == nullptr) {
+    return Err(
+        ErrCode::NotImplemented,
+        "P2P importSegment: POSIX-fd VMM payloads are not supported");
+  }
+  const auto& p = *ipc;
+#endif
 
   if (segmentLength != static_cast<size_t>(p.size)) {
     return Err(
@@ -519,11 +630,7 @@ P2pTransportFactory::importSegment(
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     auto* base = reinterpret_cast<void*>(p.base);
     return std::make_unique<P2pRemoteRegistrationHandle>(
-        base,
-        p.offset,
-        static_cast<size_t>(p.size),
-        /*ownedByIpc=*/false,
-        cudaApi_);
+        base, p.offset, static_cast<size_t>(p.size), /*mapping=*/nullptr);
   }
 
   auto mapped = cudaApi_->ipcOpenMemHandle(p.ipcHandle);
@@ -532,8 +639,7 @@ P2pTransportFactory::importSegment(
       mapped.value(),
       p.offset,
       static_cast<size_t>(p.size),
-      /*ownedByIpc=*/true,
-      cudaApi_);
+      std::make_unique<P2pIpcMapping>(mapped.value(), cudaApi_));
 }
 
 Result<std::unique_ptr<Transport>> P2pTransportFactory::createTransport(

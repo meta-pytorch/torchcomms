@@ -94,6 +94,24 @@ class CudaDriverApi {
       CUmemGenericAllocationHandle* handle,
       void* osHandle,
       CUmemAllocationHandleType shHandleType);
+#if defined(__HIP_PLATFORM_AMD__)
+
+  // On AMD, a failing call on this class does not leave a runtime error
+  // pending unless one was already pending.
+
+  /// Fails for memory that was not mapped through the VMM API, which makes it
+  /// a safe VMM classifier: unlike cuMemRetainAllocationHandle it does not
+  /// crash for hipMalloc memory.
+  virtual Status cuMemGetAccess(
+      unsigned long long* flags,
+      const CUmemLocation* location,
+      CUdeviceptr ptr);
+
+  /// Import a POSIX fd produced by cuMemExportToShareableHandle. The caller
+  /// keeps ownership of fd. Absorbs the ROCm change from passing the fd
+  /// through a pointer to passing it by value.
+  virtual Status importPosixFd(CUmemGenericAllocationHandle* handle, int fd);
+#endif
 
   // Wraps cuMemGetHandleForAddressRange, which hipify-perl from ROCm 7.2 and
   // TheRock translates but torch hipify does not.

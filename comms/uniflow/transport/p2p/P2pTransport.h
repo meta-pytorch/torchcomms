@@ -15,6 +15,9 @@
 #include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/transport/Transport.h"
 #include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
+#if defined(__HIP_PLATFORM_AMD__)
+#include "comms/uniflow/transport/p2p/P2pVmm.h"
+#endif
 
 namespace uniflow {
 
@@ -110,8 +113,9 @@ class P2pTransport : public Transport {
   std::shared_ptr<CudaApi> cudaApi_;
 };
 
-/// Factory for the intra-node P2P transport. Registration exports a HIP IPC
-/// handle; import opens it (cross-process) or reuses the exporter pointer
+/// Factory for the intra-node P2P transport. Registration exports a CUDA/HIP
+/// IPC handle (on AMD, VMM memory is exported as POSIX fds first; see the AMD
+/// constructor); import opens it (cross-process) or reuses the exporter pointer
 /// (same-process).
 class P2pTransportFactory : public TransportFactory {
  public:
@@ -123,10 +127,37 @@ class P2pTransportFactory : public TransportFactory {
   /// NVIDIA the gate does not apply and only the device count is checked.
   static Status supported(std::shared_ptr<CudaApi> cudaApi = nullptr);
 
+#if defined(__HIP_PLATFORM_AMD__)
+  /// On AMD, registration first exports VMM (hipMem) memory as one POSIX fd
+  /// per chunk (see P2pVmm), which importers pull through pidfd_getfd; other
+  /// memory, and VMM memory whose export fails, uses the HIP IPC handle. Wait
+  /// on transfer futures before deregistering a segment, and do not register
+  /// or deregister during stream capture.
+  ///
+  /// The chunk handles retained for VMM export are never released, including
+  /// when export then fails and the segment falls back to IPC. On runtimes
+  /// whose retain adds a reference, VMM memory the owner frees after it was
+  /// registered stays allocated until process exit.
+  ///
+  /// Registering VMM memory first grants read-write access to it to every
+  /// other device that can access this one, since peers run get() copies into
+  /// it; a failed grant fails the registration. The grant changes the owner's
+  /// mapping and is kept after deregistration.
+  ///
+  /// @p enableVmm false restores IPC-only sharing: VMM memory is exported
+  /// through IPC and peer VMM payloads are rejected without driver calls.
+  P2pTransportFactory(
+      int deviceId,
+      EventBase* evb,
+      std::shared_ptr<CudaApi> cudaApi = nullptr,
+      std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
+      bool enableVmm = true);
+#else
   P2pTransportFactory(
       int deviceId,
       EventBase* evb,
       std::shared_ptr<CudaApi> cudaApi = nullptr);
+#endif
 
   ~P2pTransportFactory() override = default;
 
@@ -148,6 +179,10 @@ class P2pTransportFactory : public TransportFactory {
   int deviceId_{-1};
   EventBase* evb_{nullptr};
   std::shared_ptr<CudaApi> cudaApi_;
+#if defined(__HIP_PLATFORM_AMD__)
+  bool enableVmm_{true};
+  P2pVmm vmm_;
+#endif
 };
 
 } // namespace uniflow
