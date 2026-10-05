@@ -49,6 +49,42 @@ separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
 list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "glog")
 list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX "gflags")
 
+# CMake treats compiler search paths as implicit and may omit an explicit -L
+# for CONDA_LIB. Resolve prefix-owned libraries to full paths so an activated
+# build environment cannot silently supply a different Folly or Abseil build.
+function(torchcomms_resolve_prefix_link_flags output_variable)
+    set(resolved_flags "")
+    foreach(link_flag ${ARGN})
+        if(link_flag MATCHES "^-L")
+            continue()
+        elseif(link_flag MATCHES "^-l:([^/]+)$")
+            set(prefix_library "${CONDA_LIB}/${CMAKE_MATCH_1}")
+            if(NOT EXISTS "${prefix_library}")
+                message(FATAL_ERROR
+                    "Required prefix library does not exist: ${prefix_library}")
+            endif()
+            list(APPEND resolved_flags "${prefix_library}")
+        elseif(link_flag MATCHES "^-l(.+)$")
+            set(library_name "${CMAKE_MATCH_1}")
+            if(EXISTS "${CONDA_LIB}/lib${library_name}.a")
+                list(APPEND resolved_flags
+                    "${CONDA_LIB}/lib${library_name}.a")
+            elseif(EXISTS "${CONDA_LIB}/lib${library_name}.so")
+                list(APPEND resolved_flags
+                    "${CONDA_LIB}/lib${library_name}.so")
+            else()
+                list(APPEND resolved_flags "${link_flag}")
+            endif()
+        else()
+            list(APPEND resolved_flags "${link_flag}")
+        endif()
+    endforeach()
+    set(${output_variable} "${resolved_flags}" PARENT_SCOPE)
+endfunction()
+
+torchcomms_resolve_prefix_link_flags(
+    FOLLY_LDFLAGS_RESOLVED ${FOLLY_LDFLAGS})
+
 execute_process(
     COMMAND pkg-config --libs --static absl_log absl_check
     OUTPUT_VARIABLE ABSL_LDFLAGS_RAW
@@ -59,10 +95,30 @@ if(NOT PKG_RESULT EQUAL 0)
     message(FATAL_ERROR "pkg-config for absl_log/absl_check failed")
 endif()
 separate_arguments(ABSL_LDFLAGS NATIVE_COMMAND "${ABSL_LDFLAGS_RAW}")
+torchcomms_resolve_prefix_link_flags(
+    ABSL_LDFLAGS_RESOLVED ${ABSL_LDFLAGS})
 
 # Check NCCLX include exists
 if(NOT EXISTS "${NCCLX_INCLUDE}")
     message(FATAL_ERROR "NCCLX include not found at ${NCCLX_INCLUDE}")
+endif()
+
+if(NOT USE_SYSTEM_LIBS)
+    # Symbol renaming must not modify the revision-pinned dependency prefix.
+    # Copy the archive into the build tree so repeated wheel builds consume
+    # identical dependency bytes.
+    set(NCCLX_RENAMED_STATIC_LIB
+        "${CMAKE_CURRENT_BINARY_DIR}/libnccl_static_torchcomms.a")
+    add_custom_command(
+        OUTPUT "${NCCLX_RENAMED_STATIC_LIB}"
+        COMMAND "${CMAKE_COMMAND}" -E copy
+            "${NCCLX_STATIC_LIB}" "${NCCLX_RENAMED_STATIC_LIB}"
+        COMMAND "${ROOT}/rename_symbols.sh" "${NCCLX_RENAMED_STATIC_LIB}"
+        DEPENDS "${NCCLX_STATIC_LIB}" "${ROOT}/rename_symbols.sh"
+        VERBATIM
+    )
+    add_custom_target(torchcomms_ncclx_renamed_archive
+        DEPENDS "${NCCLX_RENAMED_STATIC_LIB}")
 endif()
 
 # Check if NCCL Device API headers are available (requires NCCLX 2.28+)
@@ -112,6 +168,10 @@ add_library(torchcomms_comms_ncclx MODULE
     comms/utils/GraphCaptureSideStream.cc
     ${TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES}
 )
+if(NOT USE_SYSTEM_LIBS)
+    add_dependencies(torchcomms_comms_ncclx
+        torchcomms_ncclx_renamed_archive)
+endif()
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_comms_ncclx"
@@ -169,15 +229,15 @@ else()
     # references with nothing to satisfy them; a MODULE tolerates that and the
     # failure lands at import instead of at link.
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
-        ${NCCLX_STATIC_LIB}
+        ${NCCLX_RENAMED_STATIC_LIB}
         ${NCCLX_OBSERVATORY_LIB}
-        "-l:libfolly.a"
-        "-l:libcrypto.a"
-        "-l:libssl.a"
-        "-l:libxxhash.a"
-        "-l:libboost_filesystem.a"
-        "-l:libboost_context.a"
-        ${FOLLY_LDFLAGS}
+        "${CONDA_LIB}/libfolly.a"
+        "${CONDA_LIB}/libcrypto.a"
+        "${CONDA_LIB}/libssl.a"
+        "${CONDA_LIB}/libxxhash.a"
+        "${CONDA_LIB}/libboost_filesystem.a"
+        "${CONDA_LIB}/libboost_context.a"
+        ${FOLLY_LDFLAGS_RESOLVED}
     )
     # Rename NCCL symbols to avoid conflicting with OSS nccl* that is bundled
     # with PyTorch.
@@ -186,11 +246,6 @@ else()
         PRE_LINK
         COMMAND "${ROOT}/rename_symbols.sh"
                 '$<TARGET_OBJECTS:torchcomms_comms_ncclx>'
-    )
-    add_custom_command(
-        TARGET torchcomms_comms_ncclx
-        PRE_LINK
-        COMMAND "${ROOT}/rename_symbols.sh" "${NCCLX_STATIC_LIB}"
     )
 
     # Keep static NCCLX and Folly symbols local to this extension. Other
@@ -221,7 +276,7 @@ target_link_libraries(torchcomms_comms_ncclx PRIVATE atomic)
 # references among the absl_log_* archives themselves.
 target_link_libraries(torchcomms_comms_ncclx PRIVATE
     "-Wl,--start-group"
-    ${ABSL_LDFLAGS}
+    ${ABSL_LDFLAGS_RESOLVED}
     "-Wl,--end-group"
 )
 

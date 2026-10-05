@@ -8,9 +8,17 @@ import os.path
 import pathlib
 import shlex
 import sys
+from typing import cast
 
-from setuptools import Extension, find_packages, setup
+from setuptools import Command, Extension, find_packages, setup
+from setuptools.command.build import build as build_orig
 from setuptools.command.build_ext import build_ext as build_ext_orig
+from setuptools.command.egg_info import egg_info as egg_info_orig
+from wheel.bdist_wheel import bdist_wheel as bdist_wheel_orig
+
+# setup.py imports a source-tree helper below. Keep that import from creating
+# __pycache__ in a revision-addressed source materialization.
+sys.dont_write_bytecode = True
 from torchcomms_build_info import (
     build_information,
     source_identity,
@@ -167,6 +175,61 @@ class CMakeExtension(Extension):
         super().__init__(name, sources=[])
 
 
+def configured_directory(name: str) -> pathlib.Path | None:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    path = pathlib.Path(value)
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} must be an absolute path")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_dir():
+        raise RuntimeError(f"{name} is not a directory: {resolved}")
+    return resolved
+
+
+def required_executable(name: str) -> pathlib.Path:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required")
+    path = pathlib.Path(value)
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} must be an absolute path")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise RuntimeError(f"{name} is not executable: {resolved}")
+    return resolved
+
+
+def python_build_directory(name: str) -> pathlib.Path:
+    root = configured_directory("TORCHCOMMS_PYTHON_BUILD_DIR")
+    if root is None:
+        raise RuntimeError(
+            "TORCHCOMMS_PYTHON_BUILD_DIR is required for isolated builds"
+        )
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class IsolatedBuild(build_orig):
+    def initialize_options(self):
+        super().initialize_options()
+        self.build_base = str(python_build_directory("build"))
+
+
+class IsolatedEggInfo(egg_info_orig):
+    def initialize_options(self):
+        super().initialize_options()
+        self.egg_base = str(python_build_directory("metadata"))
+
+
+class IsolatedBdistWheel(bdist_wheel_orig):
+    def initialize_options(self):
+        super().initialize_options()
+        self.bdist_dir = str(python_build_directory("wheel"))
+
+
 class build_ext(build_ext_orig):
     def run(self):
         for ext in self.extensions:
@@ -176,6 +239,12 @@ class build_ext(build_ext_orig):
             break
         if not self.dry_run:
             package_root = pathlib.Path(self.build_lib).absolute() / "torchcomms"
+            strip_value = os.environ.get("STRIP_EXECUTABLE", "").strip()
+            if strip_value:
+                strip = required_executable("STRIP_EXECUTABLE")
+                for artifact in sorted(package_root.glob("*.so*")):
+                    if artifact.is_file() and not artifact.is_symlink():
+                        self.spawn([str(strip), "--strip-debug", str(artifact)])
             enabled_backends = [name for name, enabled in BACKEND_FLAGS if enabled]
             information = build_information(
                 root=pathlib.Path(ROOT),
@@ -200,10 +269,23 @@ class build_ext(build_ext_orig):
         build_temp.mkdir(parents=True, exist_ok=True)
         extdir = pathlib.Path(self.get_ext_fullpath(ext.name))
 
-        build_flags = []
+        compile_flags = shlex.split(os.environ.get("TORCHCOMMS_COMPILE_FLAGS", ""))
+        build_flags = list(compile_flags)
+        cuda_flags = shlex.split(os.environ.get("TORCHCOMMS_CUDA_FLAGS", ""))
+        linker_flags = shlex.split(os.environ.get("TORCHCOMMS_LINKER_FLAGS", ""))
         if detect_hipify_v2():
             build_flags += ["-DHIPIFY_V2"]
         pybind11_include_root = get_torch_pybind11_include_root(build_temp)
+        cmake_prefixes = []
+        dependency_prefix = os.environ.get("CONDA_PREFIX", "").strip()
+        if dependency_prefix:
+            cmake_prefixes.append(dependency_prefix)
+        configured_prefixes = os.environ.get("CMAKE_PREFIX_PATH", "").strip()
+        if configured_prefixes:
+            cmake_prefixes.extend(configured_prefixes.split(os.pathsep))
+        cmake_prefixes.append(TORCH_ROOT)
+        cmake_prefix_path = ";".join(dict.fromkeys(cmake_prefixes))
+        cuda_home = os.environ.get("CUDA_HOME", "").strip()
 
         cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
         print(f"- Building with {cfg} configuration")
@@ -214,9 +296,13 @@ class build_ext(build_ext_orig):
             f"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY={extdir.parent.absolute()}",
             f"-DCMAKE_INSTALL_PREFIX={extdir.parent.absolute()}",
             f"-DCMAKE_INSTALL_DIR={extdir.parent.absolute()}",
-            f"-DCMAKE_PREFIX_PATH={TORCH_ROOT}",
+            f"-DCMAKE_PREFIX_PATH={cmake_prefix_path}",
             f"-DTORCHCOMMS_PYBIND11_INCLUDE_DIR={pybind11_include_root}",
-            f"-DCMAKE_CXX_FLAGS={shlex.quote(' '.join(build_flags))}",
+            f"-DCMAKE_C_FLAGS={' '.join(compile_flags)}",
+            f"-DCMAKE_CXX_FLAGS={' '.join(build_flags)}",
+            f"-DCMAKE_CUDA_FLAGS={' '.join(cuda_flags)}",
+            f"-DCMAKE_SHARED_LINKER_FLAGS={' '.join(linker_flags)}",
+            f"-DCMAKE_MODULE_LINKER_FLAGS={' '.join(linker_flags)}",
             f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DLIB_SUFFIX={os.environ.get('LIB_SUFFIX', 'lib')}",
             f"-DUSE_NCCL={flag_str(USE_NCCL)}",
@@ -231,6 +317,13 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
             f"-DTORCHCOMMS_BUNDLE_OBSERVATORY={flag_str(TORCHCOMMS_BUNDLE_OBSERVATORY)}",
         ]
+        if cuda_home:
+            cmake_args.extend(
+                [
+                    f"-DCUDAToolkit_ROOT={cuda_home}",
+                    f"-DCUDA_TOOLKIT_ROOT_DIR={cuda_home}",
+                ]
+            )
         parallel_level = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "").strip()
         if parallel_level:
             try:
@@ -291,6 +384,17 @@ if USE_NCCL:
 
 PACKAGE_VERSION = get_version()
 
+cmdclass: dict[str, type[Command]] = {"build_ext": build_ext}
+if configured_directory("TORCHCOMMS_PYTHON_BUILD_DIR") is not None:
+    cmdclass.update(
+        {
+            "bdist_wheel": IsolatedBdistWheel,
+            "build": cast(type[Command], IsolatedBuild),
+            "egg_info": IsolatedEggInfo,
+        }
+    )
+
+
 setup(
     name="torchcomms",
     version=PACKAGE_VERSION,
@@ -304,7 +408,7 @@ setup(
         "torchcomms.backends": backend_entry_points,
     },
     ext_modules=ext_modules,
-    cmdclass={"build_ext": build_ext},
+    cmdclass=cmdclass,
     install_requires=install_requires,
     extras_require=extras_require,
 )
