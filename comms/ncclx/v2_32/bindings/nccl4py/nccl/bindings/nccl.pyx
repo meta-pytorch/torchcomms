@@ -246,8 +246,8 @@ cdef class UniqueId:
 cdef _get_config_dtype_offsets():
     cdef ncclConfig_t pod
     return _numpy.dtype({
-        'names': ['size_', 'magic', 'version', 'blocking', 'cga_cluster_size', 'min_ctas', 'max_ctas', 'net_name', 'split_share', 'traffic_class', 'comm_name', 'collnet_enable', 'cta_policy', 'shrink_share', 'nvls_ctas', 'n_channels_per_net_peer', 'nvlink_centric_sched', 'graph_usage_mode', 'num_rma_ctx', 'max_p2p_peers', 'graph_stream_ordering', 'launch_order_implicit', 'num_rma_sig', 'rma_eager_init', 'host_cft_mode', 'nvls_host_mode'],
-        'formats': [_numpy.uint64, _numpy.uint32, _numpy.uint32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32],
+        'names': ['size_', 'magic', 'version', 'blocking', 'cga_cluster_size', 'min_ctas', 'max_ctas', 'net_name', 'split_share', 'traffic_class', 'comm_name', 'collnet_enable', 'cta_policy', 'shrink_share', 'nvls_ctas', 'n_channels_per_net_peer', 'nvlink_centric_sched', 'graph_usage_mode', 'num_rma_ctx', 'max_p2p_peers', 'graph_stream_ordering', 'launch_order_implicit', 'num_rma_sig', 'rma_eager_init', 'host_cft_mode', 'nvls_host_mode', 'comm_desc', 'split_group_ranks', 'split_group_size', 'fast_init_mode', 'hints', 'ncclx_config'],
+        'formats': [_numpy.uint64, _numpy.uint32, _numpy.uint32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.intp, _numpy.int32, _numpy.int32, _numpy.intp, _numpy.intp],
         'offsets': [
             (<intptr_t>&(pod.size)) - (<intptr_t>&pod),
             (<intptr_t>&(pod.magic)) - (<intptr_t>&pod),
@@ -275,6 +275,12 @@ cdef _get_config_dtype_offsets():
             (<intptr_t>&(pod.rmaEagerInit)) - (<intptr_t>&pod),
             (<intptr_t>&(pod.hostCftMode)) - (<intptr_t>&pod),
             (<intptr_t>&(pod.nvlsHostMode)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.commDesc)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.splitGroupRanks)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.splitGroupSize)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.fastInitMode)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.hints)) - (<intptr_t>&pod),
+            (<intptr_t>&(pod.ncclxConfig)) - (<intptr_t>&pod),
         ],
         'itemsize': sizeof(ncclConfig_t),
     })
@@ -329,6 +335,12 @@ cdef class Config:
         self._ptr[0].rmaEagerInit = -2147483648
         self._ptr[0].hostCftMode = -2147483648
         self._ptr[0].nvlsHostMode = -2147483648
+        self._ptr[0].commDesc = NULL
+        self._ptr[0].splitGroupRanks = NULL
+        self._ptr[0].splitGroupSize = -2147483648
+        self._ptr[0].fastInitMode = -2147483648
+        self._ptr[0].hints = NULL
+        self._ptr[0].ncclxConfig = NULL
 
     def __dealloc__(self):
         cdef ncclConfig_t *ptr
@@ -607,6 +619,17 @@ cdef class Config:
         if self._readonly:
             raise ValueError("This Config instance is read-only")
         self._ptr[0].maxP2pPeers = val
+
+    def set_hints(self, hints_ptr: int, hints_obj) -> None:
+        """Attach NCCLX hints and retain their owner for the config lifetime."""
+        if self._readonly:
+            raise ValueError("This Config instance is read-only")
+        if hints_obj is None:
+            raise ValueError("hints_obj must own hints_ptr")
+        if hints_ptr != hints_obj.as_ptr():
+            raise ValueError("hints_ptr must point to hints_obj")
+        self._ptr[0].hints = <void*><intptr_t>hints_ptr
+        self._refs["_ncclx_hints"] = hints_obj
 
     @property
     def graph_stream_ordering(self):

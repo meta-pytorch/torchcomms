@@ -186,6 +186,12 @@ ctypedef struct ncclConfig_t 'ncclConfig_t':
     int rmaEagerInit
     int hostCftMode
     int nvlsHostMode
+    char* commDesc
+    int* splitGroupRanks
+    int splitGroupSize
+    int fastInitMode
+    void* hints
+    void* ncclxConfig
 
 ctypedef struct nccl_bindings_nccl__anon_pod0:
     int vendorId
