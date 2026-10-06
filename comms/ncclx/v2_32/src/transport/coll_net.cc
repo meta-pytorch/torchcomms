@@ -479,7 +479,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
                                      void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   ncclResult_t ret = ncclSuccess;
   if (reqSize != sizeof(struct collNetConnectArgs)) {
-    WARN("sendProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs));
+    ERR(ncclInternalError, "sendProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs));
     return ncclInternalError;
   }
   struct collNetConnectArgs* args = (struct collNetConnectArgs*)reqBuff;
@@ -499,7 +499,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
 
   // Collnet connect is allowed to fail. Gracefully handle that case by returning NULL to the caller.
   if (respSize != sizeof(struct connectMap*)) {
-    WARN("sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
+    ERR(ncclInternalError, "sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
     return ncclInternalError;
   }
   if (resources->collNetComm == NULL) {
@@ -576,7 +576,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
                                      void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   ncclResult_t ret = ncclSuccess;
   if (reqSize != sizeof(struct collNetConnectArgs)) {
-    WARN("recvProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs));
+    ERR(ncclInternalError, "recvProxyConnect: reqSize is %d != %ld", reqSize, sizeof(struct collNetConnectArgs));
     return ncclInternalError;
   }
   struct collNetConnectArgs* args = (struct collNetConnectArgs*)reqBuff;
@@ -590,7 +590,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
 
   // Collnet connect is allowed to fail. Gracefully handle that case by returning NULL to the caller.
   if (respSize != sizeof(struct connectMap*)) {
-    WARN("sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
+    ERR(ncclInternalError, "sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
     return ncclInternalError;
   }
   if (resources->collNetComm == NULL) {
@@ -660,7 +660,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   for (int p = 0; p < NCCL_NUM_PROTOCOLS; p++) info->mhandles[p] = resources->mhandles[p];
 
   if (respSize != sizeof(struct connectMap*)) {
-    WARN("recvProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
+    ERR(ncclInternalError, "recvProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
     return ncclInternalError;
   }
   *((struct connectMap**)respBuff) = &resources->map;
@@ -1024,7 +1024,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
             int sendBeg = calcRegionOffset(args, 0, s, sub->received, 0);
             int sendEnd = calcRegionOffset(args, 0, s, sub->received, 1);
             if (sendEnd - sendBeg != connFifo[buffSlot].size) {
-              WARN("CollNet sizes: want=%d got=%ld", sendEnd - sendBeg, connFifo[buffSlot].size);
+              ERR(ncclInternalError, "CollNet sizes: want=%d got=%ld", sendEnd - sendBeg, connFifo[buffSlot].size);
               return ncclInternalError;
             }
           }
