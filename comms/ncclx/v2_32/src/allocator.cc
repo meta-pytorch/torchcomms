@@ -231,14 +231,14 @@ ncclResult_t ncclSpaceTryAlloc(struct ncclSpace* a, int64_t limit, int64_t size,
 ncclResult_t ncclSpaceAlloc(struct ncclSpace* a, int64_t limit, int64_t size, int align, int64_t* outOffset) {
   ncclResult_t res = ncclSpaceTryAlloc(a, limit, size, align, outOffset);
   if (res != ncclSuccess)
-    WARN("Allocation failed. No suitable space found to accommodate size=0x%lx within limit=0x%lx", (long)size,
+    ERR(res, "Allocation failed. No suitable space found to accommodate size=0x%lx within limit=0x%lx", (long)size,
          (long)limit);
   return res;
 }
 
 ncclResult_t ncclSpaceFree(struct ncclSpace* a, int64_t offset, int64_t size) {
   if (a->count == 0 || a->cuts[a->count - 1] <= offset) {
-    WARN("No allocation found at offset=0x%lx", (long)offset);
+    ERR(ncclInternalError, "No allocation found at offset=0x%lx", (long)offset);
     return ncclInternalError;
   }
 
@@ -250,7 +250,7 @@ ncclResult_t ncclSpaceFree(struct ncclSpace* a, int64_t offset, int64_t size) {
   int64_t hi = a->cuts[i];
 
   if (offset < lo || hi < offset + size) {
-    WARN("Given size=0x%lx extends beyond allocation.", (long)size);
+    ERR(ncclInternalError, "Given size=0x%lx extends beyond allocation.", (long)size);
     return ncclInternalError;
   }
 
@@ -440,7 +440,7 @@ ncclResult_t ncclShadowPoolFree(struct ncclShadowPool* pool, void* devObj, cudaS
   struct ncclShadowObject** pobj = &pool->table[b];
   while (true) {
     if (*pobj == nullptr) {
-      WARN("Device object does not exist in shadow pool.");
+      ERR(ncclInternalError, "Device object does not exist in shadow pool.");
       return ncclInternalError;
     }
     if ((*pobj)->devObj == devObj) break;
@@ -474,7 +474,7 @@ ncclResult_t ncclShadowPoolToHost(struct ncclShadowPool* pool, void* devObj, voi
   struct ncclShadowObject* obj = pool->table[b];
   while (true) {
     if (obj == nullptr) {
-      WARN("Device object does not exist in shadow pool.");
+      ERR(ncclInternalError, "Device object does not exist in shadow pool.");
       return ncclInternalError;
     }
     if (obj->devObj == devObj) break;
