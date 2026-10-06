@@ -12,7 +12,7 @@ target_link_libraries(uniflow_drivers INTERFACE uniflow_topology_discovery)
 target_sources(uniflow_drivers INTERFACE
   $<TARGET_OBJECTS:uniflow_topology_discovery>)
 
-if(UNIFLOW_ENABLE_CUDA)
+if(NOT UNIFLOW_GPU_PLATFORM STREQUAL NONE)
   add_subdirectory(nvml)
   add_subdirectory(sysfs)
   if(UNIFLOW_ENABLE_RDMA)
