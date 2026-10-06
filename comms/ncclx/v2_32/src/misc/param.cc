@@ -18,7 +18,20 @@
 #include <string>
 #include <mutex>
 #include <unordered_set>
+#include <utility>
 #include "os.h"
+
+#include <atomic>
+
+#include <folly/synchronization/CallOnce.h>
+
+#include "comms/utils/logger/CommsLogging.h"
+#include "comms/utils/logger/LoggerRuntime.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/InitFolly.h"
+#include "meta/NcclxLogger.h"
+
+#include "cuda_runtime_api.h"
 
 const char* userHomeDir() {
   return getenv("HOME");
@@ -67,8 +80,15 @@ static void initEnvFunc() {
 }
 
 void initEnv() {
-  static std::once_flag once;
-  std::call_once(once, initEnvFunc);
+  // folly::call_once, not std::call_once: initFolly()/ncclCvarInit() can throw,
+  // and std::call_once deadlocks rather than retrying on a throwing callable.
+  static folly::once_flag once;
+  folly::call_once(once, [] {
+    meta::comms::initFolly();
+    ncclCvarInit();
+    initEnvFunc();
+    initNcclLogger();
+  });
 }
 
 static void ncclGetCachePolicy(char const* env, int8_t* noCache) {
@@ -108,6 +128,99 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
 }
 
 const char* ncclGetEnv(const char* name) {
-  ncclInitEnv();
+  /*
+   * The plugin is published only after its initialization callback succeeds.
+   * Query it directly once published so logger reset during ncclInitEnv() does
+   * not recursively enter the active call_once.
+   */
+  if (!ncclEnvPluginInitialized()) {
+    ncclInitEnv();
+  }
   return ncclEnvPluginGetEnv(name);
+}
+
+static const char* getNcclLoggerEnv(const char* name) {
+  return ncclEnvPluginInitialized() ? ncclEnvPluginGetEnv(name)
+                                    : std::getenv(name);
+}
+
+/*
+ * Native lines are filtered by the level mask before they reach the sink, but
+ * NCCLX_LOG and CollTrace output is filtered only by the sink level, so the
+ * sink must admit the most verbose level the mask enables. ATTN counts as
+ * WARN, which keeps every scalar NCCL_DEBUG value on its 2.30 sink level.
+ */
+static meta::comms::logger::LogLevel ncclLoggerLevelFromMask(uint32_t mask) {
+  using meta::comms::logger::LogLevel;
+  constexpr std::pair<ncclDebugLogLevel, LogLevel> kLevels[] = {
+      {NCCL_LOG_VERSION, LogLevel::VERSION},
+      {NCCL_LOG_ERROR, LogLevel::ERROR},
+      {NCCL_LOG_WARN, LogLevel::WARN},
+      {NCCL_LOG_ATTN, LogLevel::WARN},
+      {NCCL_LOG_INFO, LogLevel::INFO},
+      {NCCL_LOG_ABORT, LogLevel::ABORT},
+      {NCCL_LOG_TRACE, LogLevel::TRACE},
+  };
+  auto level = LogLevel::NONE;
+  for (const auto& [ncclLevel, loggerLevel] : kLevels) {
+    if (mask & (1u << ncclLevel)) {
+      level = std::max(level, loggerLevel);
+    }
+  }
+  return level;
+}
+
+static std::atomic<bool> ncclLoggerIsInitialized{false};
+
+bool ncclLoggerInitialized() noexcept {
+  return ncclLoggerIsInitialized.load(std::memory_order_acquire);
+}
+
+void initNcclLogger(bool configureCommsLogger) noexcept {
+  try {
+    meta::comms::logger::initCommLoggerRuntime();
+    const auto subSystemMask = meta::comms::logger::parseDebugSubsysMask(
+        getNcclLoggerEnv("NCCL_DEBUG_SUBSYS"));
+    const auto logFilePath = meta::comms::logger::parseDebugFile(
+        getNcclLoggerEnv("NCCL_DEBUG_FILE"));
+    const auto threadContextFn = []() {
+      int cudaDev = -1;
+      (void)cudaGetDevice(&cudaDev);
+      return cudaDev;
+    };
+    const auto errorCallback = [](std::string_view message) {
+      meta::comms::logger::setLastError(std::string{message}, {});
+    };
+    const auto logLevel = meta::comms::logger::loggerLevelToSpdlogLevel(
+        ncclLoggerLevelFromMask(ncclDebugConfiguredLevelMask()));
+    const auto asyncLogging = meta::comms::logger::parseDebugLoggingAsync(
+        getNcclLoggerEnv("NCCL_DEBUG_LOGGING_ASYNC"),
+        NCCL_DEBUG_LOGGING_ASYNC);
+
+    const auto configureLoggers = [&](std::string_view outputPath) {
+      meta::comms::logger::configureCommsAndNamedSpdlogLoggers(
+          ncclx::logging::kNcclxLoggerName,
+          "NCCL",
+          outputPath,
+          threadContextFn,
+          errorCallback,
+          asyncLogging,
+          logLevel,
+          configureCommsLogger);
+    };
+    try {
+      configureLoggers(logFilePath);
+    } catch (const spdlog::spdlog_ex&) {
+      /*
+       * Keep the shared and NCCLX loggers on one destination. If either file
+       * backend cannot be created, retry both on stdout rather than leaving a
+       * partially configured split route.
+       */
+      configureLoggers({});
+    }
+    meta::comms::logger::setSubSystemMask(subSystemMask);
+    ncclLoggerIsInitialized.store(true, std::memory_order_release);
+  } catch (...) {
+    meta::comms::logger::reportCommsLoggingFailureToStderr("ERROR");
+  }
 }

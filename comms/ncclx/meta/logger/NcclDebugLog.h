@@ -17,6 +17,12 @@ inline constexpr spdlog::level::level_enum ncclLogLevelToSpdlogLevel(
       return spdlog::level::err;
     case NCCL_LOG_WARN:
       return spdlog::level::warn;
+#ifdef NCCL_LOG_HAS_ATTN
+    // Upstream 2.32+ notices; the native level mask has already decided
+    // whether they print, so keep them visible at the WARN sink level.
+    case NCCL_LOG_ATTN:
+      return spdlog::level::warn;
+#endif
     case NCCL_LOG_TRACE:
       return spdlog::level::debug;
     case NCCL_LOG_NONE:
