@@ -152,6 +152,19 @@ TEST_F(CommSetConfigTest, RejectNcclxFlatFieldCommDesc) {
   EXPECT_EQ(ncclInvalidUsage, ncclx::commSetConfig(comm, &newConfig));
 }
 
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 32, 0)
+TEST_F(CommSetConfigTest, RejectFlatFieldNvlsHostMode) {
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+
+  ncclConfig_t newConfig = NCCL_CONFIG_INITIALIZER;
+  newConfig.nvlsHostMode = 1;
+
+  EXPECT_EQ(ncclInvalidUsage, ncclx::commSetConfig(comm, &newConfig));
+}
+#endif
+
 TEST_F(CommSetConfigTest, RejectUninitializedConfig) {
   ncclx::test::NcclCommRAII comm(
       globalRank, numRanks, localRank, bootstrap_.get());
