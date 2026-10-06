@@ -25,13 +25,14 @@ namespace {
     }                                                             \
   } while (0)
 
-#define NCCLCHECK(cmd)                                                  \
-  do {                                                                  \
-    ncclResult_t r = (cmd);                                             \
-    if (r != ncclSuccess) {                                             \
-      UNIFLOW_LOG_ERROR("NCCL error {}: {}", r, ncclGetErrorString(r)); \
-      return {};                                                        \
-    }                                                                   \
+#define NCCLCHECK(cmd)                                                      \
+  do {                                                                      \
+    ncclResult_t r = (cmd);                                                 \
+    if (r != ncclSuccess) {                                                 \
+      UNIFLOW_LOG_ERROR(                                                    \
+          "NCCL error {}: {}", static_cast<int>(r), ncclGetErrorString(r)); \
+      return {};                                                            \
+    }                                                                       \
   } while (0)
 
 #define CUDACHECK_THROW(cmd)                                    \
