@@ -51,7 +51,10 @@ namespace torch::comms {
  * status() is race-free but does not publish or order access to other state.
  *
  * Hooks may query the work they are attached to. They run on the thread that
- * made the transition, or the registering thread on the late path.
+ * made the transition, or the registering thread on the late path. Start and
+ * end hooks are failure-isolated observers: an exception is logged and does
+ * not escape or suppress later lifecycle observers. Reusable wait-hook
+ * exceptions still propagate to the caller of wait().
  *
  * Work objects should not be destroyed while wait() is in progress.
  */
@@ -139,7 +142,7 @@ class TorchWork : public c10::intrusive_ptr_target {
       }
     }
     // Fire late hooks immediately so observers see a complete lifecycle.
-    hook();
+    runLifecycleHook(hook);
   }
 
   void registerWorkEndHook(WorkHook hook) {
@@ -151,7 +154,7 @@ class TorchWork : public c10::intrusive_ptr_target {
       }
     }
     // Fire late hooks immediately because no later terminal transition exists.
-    hook();
+    runLifecycleHook(hook);
   }
 
   // Wait hooks are reusable, so registration is synchronized with cleanup and
@@ -205,7 +208,7 @@ class TorchWork : public c10::intrusive_ptr_target {
     }
     // Invoke callbacks outside the lock so reentrant hooks cannot deadlock.
     for (auto& hook : to_fire) {
-      hook();
+      runLifecycleHook(hook);
     }
   }
 
@@ -244,6 +247,8 @@ class TorchWork : public c10::intrusive_ptr_target {
   friend class c10::intrusive_ptr;
 
  private:
+  static void runLifecycleHook(WorkHook& hook) noexcept;
+
   // break weak-ref cycle: hooks registered via postHook() may capture a
   // weak_intrusive_ptr back to this object. after the strong refcount
   // reaches 0, release_resources() clears the hooks, destroying the weak
