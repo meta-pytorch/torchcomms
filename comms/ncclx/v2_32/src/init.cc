@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "channel.h"
 #include "nvmlwrap.h"
 #include "gdrwrap.h"
@@ -293,6 +294,14 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
   comm->destructorHead = dtor;
 }
 
+// [META:PER_COMM_CONFIG] Release the canonical ncclx::Config owned by the comm.
+static void ncclxCommFree(ncclComm_t comm) {
+  if (comm->config.ncclxConfig != nullptr) {
+    delete static_cast<ncclx::Config*>(comm->config.ncclxConfig);
+    comm->config.ncclxConfig = nullptr;
+  }
+}
+
 static ncclResult_t commFree(ncclComm_t comm) {
   int abort = 0;
   /* commFree() should not involve any sync among ranks. */
@@ -398,6 +407,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
   free(comm->topParentRanks);
   free(comm->topParentLocalRanks);
   free(comm->gproxyConn);
+  ncclxCommFree(comm);
 
   NCCLCHECK(ncclRegCleanup(comm));
 
@@ -2552,8 +2562,42 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
   return ret;
 }
 
+// [META:PER_COMM_CONFIG] ncclConfig_t carries an owning pointer to an
+// ncclx::Config, so a bytewise copy would leave parent and child sharing one
+// object and double-free it. Clone it instead.
+static void deepCopyCommConfig(ncclConfig_t* dst, const ncclConfig_t* src) {
+  *dst = *src;
+  if (src->ncclxConfig) {
+    dst->ncclxConfig = new ncclx::Config(*static_cast<ncclx::Config*>(src->ncclxConfig));
+  }
+}
+
+// [META:PER_COMM_CONFIG] Copy a caller's config into a local one for parsing.
+// Reads at most the caller's declared size, since a caller built against an
+// older nccl.h has a smaller struct; the remaining fields keep their defaults.
+static void copyCallerCommConfig(ncclConfig_t* dst, const ncclConfig_t* src) {
+  *dst = NCCL_CONFIG_INITIALIZER;
+  if (src != nullptr) {
+    size_t srcSize;
+    memcpy(&srcSize, src, sizeof(srcSize));
+    memcpy(dst, src, std::min(srcSize, sizeof(ncclConfig_t)));
+    if (srcSize < offsetof(ncclConfig_t, magic) + sizeof(dst->magic)) {
+      dst->magic = 0; // Let parseCommConfig reject it as uninitialized.
+    }
+    dst->size = sizeof(ncclConfig_t);
+  }
+  dst->ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+}
+
+// [META:PER_COMM_CONFIG] Free a parsed ncclx::Config that no comm took. A no-op
+// after a successful handoff, because parseCommConfig clears the source pointer.
+static void releaseUnownedCommConfig(ncclConfig_t* config) {
+  delete static_cast<ncclx::Config*>(config->ncclxConfig);
+  config->ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+}
+
 static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parnet) {
-  memcpy(&childComm->config, &parnet->config, sizeof(ncclConfig_t));
+  deepCopyCommConfig(&childComm->config, &parnet->config);
   NCCLCHECK(envConfigOverride(childComm));
   return ncclSuccess;
 }
@@ -2819,6 +2863,11 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   comm->config.rmaEagerInit = internalConfigPtr->rmaEagerInit;
   comm->config.hostCftMode = internalConfigPtr->hostCftMode;
   comm->config.nvlsHostMode = internalConfigPtr->nvlsHostMode;
+  // [META:PER_COMM_CONFIG] Hand the parsed ncclx::Config to the comm and clear
+  // the caller's pointer, so the caller's releaseUnownedCommConfig() skips it.
+  // From here ncclxCommFree() deletes it, in commFree() or on a failed init.
+  comm->config.ncclxConfig = internalConfigPtr->ncclxConfig;
+  config->ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
   // Resolve to system default (serialize) if neither user config nor env var set it.
@@ -2936,6 +2985,7 @@ exit:
 fail:
   if (job && !launchedJob) ncclCommInitJobFree(job);
   if (comm) {
+    ncclxCommFree(comm); // [META:PER_COMM_CONFIG]
     free(comm->abortFlag);
     if (comm->abortFlagDev) (void)ncclCudaHostFree((void*)comm->abortFlagDev);
     free(comm->abortFlagRefCount);
@@ -2955,11 +3005,14 @@ ncclResult_t ncclCommInitRank(ncclComm_t* newcomm, int nranks, ncclUniqueId comm
 
   int cudaDev;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  NCCLCHECK(ncclxParseCommConfig(&config)); // [META:PER_COMM_CONFIG]
   CUDACHECK(cudaGetDevice(&cudaDev));
 
   NCCLCHECK(ncclGroupStartInternal());
 
-  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, &config, __func__), ret, fail);
+  ret = ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, &config, __func__);
+  releaseUnownedCommConfig(&config); // [META:PER_COMM_CONFIG]
+  NCCLCHECKGOTO(ret, ret, fail);
 
   NVTX3_RANGE_ADD_PAYLOAD(CommInitRank, NcclNvtxParamsCommInitRankSchema,
                           NVTX3_PAYLOAD((*newcomm)->commHash, nranks, myrank, cudaDev));
@@ -2978,6 +3031,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
   int totalnDev;
   int* gpuFlags = NULL;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  std::vector<ncclConfig_t> configs; // [META:PER_COMM_CONFIG]
   int oldDev = 0;
 
   NVTX3_RANGE(NcclNvtxParamsCommInitAll);
@@ -3018,18 +3072,29 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
 
   ncclUniqueId uniqueId;
   NCCLCHECKGOTO(ncclGetUniqueId(&uniqueId), ret, fail);
+  // [META:PER_COMM_CONFIG] One parsed config per comm, since each comm takes
+  // ownership of its own (one shared config would be freed ndev times; v2_30
+  // has that double free). Parsed before the group starts so a failure cannot
+  // return with the thread still inside it.
+  configs.assign(ndev, config);
+  for (auto& c : configs) {
+    NCCLCHECKGOTO(ncclxParseCommConfig(&c), ret, fail);
+  }
   NCCLCHECKGOTO(ncclGroupStartInternal(), ret, fail);
   for (int i = 0; i < ndev; i++) {
     // Ignore return codes .. we need to call ncclGroupEnd to clean up anyway
     int dev = devlist ? devlist[i] : i;
     CUDACHECKGOTO(cudaSetDevice(dev), ret, fail);
-    ncclCommInitRankDev(comms + i, ndev, 1, &uniqueId, i, dev, &config, __func__);
+    ncclCommInitRankDev(comms + i, ndev, 1, &uniqueId, i, dev, &configs[i], __func__);
   }
   NCCLCHECKGOTO(ncclGroupEndInternal(), ret, fail);
 
   NVTX3_RANGE_ADD_PAYLOAD(CommInitAll, NcclNvtxParamsCommInitAllSchema, NVTX3_PAYLOAD(comms[0]->commHash, ndev));
 
 exit:
+  for (auto& c : configs) {
+    releaseUnownedCommConfig(&c); // [META:PER_COMM_CONFIG]
+  }
   (void)cudaSetDevice(oldDev);
   free(gpuFlags);
   return ret;
@@ -3051,6 +3116,7 @@ NCCL_API(ncclResult_t, ncclCommInitRankConfig, ncclComm_t* comm, int nranks, ncc
          ncclConfig_t* config);
 ncclResult_t ncclCommInitRankConfig(ncclComm_t* newcomm, int nranks, ncclUniqueId commId, int myrank,
                                     ncclConfig_t* config) {
+  if (newcomm) *newcomm = nullptr; // [META] fail: reads *newcomm
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
@@ -3064,10 +3130,14 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t* newcomm, int nranks, ncclUniqueI
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  if (config == NULL) internalConfigPtr = &internalConfig;
-  else internalConfigPtr = config;
-  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, internalConfigPtr, __func__), ret,
-                fail);
+  // [META:PER_COMM_CONFIG] Always go through the local copy so the parsed
+  // ncclx::Config is not written into the caller's struct.
+  copyCallerCommConfig(&internalConfig, config);
+  NCCLCHECKGOTO(ncclxParseCommConfig(&internalConfig), ret, fail);
+  internalConfigPtr = &internalConfig;
+  ret = ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, internalConfigPtr, __func__);
+  releaseUnownedCommConfig(&internalConfig); // [META:PER_COMM_CONFIG]
+  NCCLCHECKGOTO(ret, ret, fail);
 
 exit:
   ncclGroupErrCheck(ret);
@@ -3089,6 +3159,7 @@ NCCL_API(ncclResult_t, ncclCommInitRankScalable, ncclComm_t* newcomm, int nranks
          ncclUniqueId* commId, ncclConfig_t* config);
 ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myrank, int nId, ncclUniqueId* commId,
                                       ncclConfig_t* config) {
+  if (newcomm) *newcomm = nullptr; // [META] fail: reads *newcomm
   NCCLCHECK(ncclInitEnv());
   NVTX3_RANGE(NcclNvtxParamsCommInitRankScalable);
 
@@ -3101,10 +3172,14 @@ ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myran
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  if (config == NULL) internalConfigPtr = &internalConfig;
-  else internalConfigPtr = config;
-  NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, nId, commId, myrank, cudaDev, internalConfigPtr, __func__), ret,
-                fail);
+  // [META:PER_COMM_CONFIG] Always go through the local copy so the parsed
+  // ncclx::Config is not written into the caller's struct.
+  copyCallerCommConfig(&internalConfig, config);
+  NCCLCHECKGOTO(ncclxParseCommConfig(&internalConfig), ret, fail);
+  internalConfigPtr = &internalConfig;
+  ret = ncclCommInitRankDev(newcomm, nranks, nId, commId, myrank, cudaDev, internalConfigPtr, __func__);
+  releaseUnownedCommConfig(&internalConfig); // [META:PER_COMM_CONFIG]
+  NCCLCHECKGOTO(ret, ret, fail);
 
 exit:
   ncclGroupErrCheck(ret);
@@ -3599,10 +3674,20 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
       comm->childAbortFlagDev = childComm->abortFlagDev;
       *childComm->abortFlagRefCount = 1;
     }
-    if (config == NULL) {
+    if (config == nullptr) {
+      // copyCommConfig deep-copies, so the child inherits the parent's
+      // ncclx::Config (allgatherAlgo and friends) with its own copy.
       NCCLCHECKGOTO(copyCommConfig(childComm, comm), res, fail);
     } else {
-      NCCLCHECKGOTO(parseCommConfig(childComm, config), res, fail);
+      // [META:PER_COMM_CONFIG] Parse into a local copy: ncclxParseCommConfig
+      // allocates an ncclx::Config and stores the pointer in the struct it is
+      // given, and the caller's config is not ours to mutate or own.
+      ncclConfig_t childInternalConfig;
+      copyCallerCommConfig(&childInternalConfig, config);
+      res = ncclxParseCommConfig(&childInternalConfig);
+      if (res == ncclSuccess) res = parseCommConfig(childComm, &childInternalConfig);
+      releaseUnownedCommConfig(&childInternalConfig);
+      NCCLCHECKGOTO(res, res, fail);
     }
 
     /* start with ncclInProgress and will be changed to ncclSuccess if init succeeds. */
@@ -3645,6 +3730,7 @@ fail:
       if (childComm->abortFlagDev) ncclCudaHostFree(childComm->abortFlagDev);
       if (childComm->abortFlagRefCount) free(childComm->abortFlagRefCount);
     }
+    ncclxCommFree(childComm); // [META:PER_COMM_CONFIG]
     free(childComm);
   }
   if (newcomm) *newcomm = NULL;
@@ -3718,7 +3804,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   bool isExistingRank = (comm != NULL);
   struct ncclCommInitRankAsyncJob* job = NULL;
   ncclComm_t newComm = NULL;
-  struct ncclBootstrapHandle recvHandle;
+  struct ncclBootstrapHandle recvHandle{};
 
   *newcomm = NULL; // Initialize output parameter early in case of early errors
 
@@ -3796,10 +3882,18 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   *newComm->abortFlagRefCount = 1;
 
   // Configure the new communicator
-  if (isExistingRank && config == NULL) {
+  if (isExistingRank && config == nullptr) {
+    // Deep copy, so the grown comm gets its own ncclx::Config.
     NCCLCHECKGOTO(copyCommConfig(newComm, comm), res, fail);
   } else {
-    NCCLCHECKGOTO(parseCommConfig(newComm, config), res, fail);
+    // [META:PER_COMM_CONFIG] New ranks without a config start from defaults;
+    // either way parse into a local copy rather than the caller's struct.
+    ncclConfig_t growInternalConfig;
+    copyCallerCommConfig(&growInternalConfig, config);
+    res = ncclxParseCommConfig(&growInternalConfig);
+    if (res == ncclSuccess) res = parseCommConfig(newComm, &growInternalConfig);
+    releaseUnownedCommConfig(&growInternalConfig);
+    NCCLCHECKGOTO(res, res, fail);
   }
 
   newComm->initState = ncclInProgress;
@@ -3870,6 +3964,7 @@ fail:
       if (newComm->abortFlagDev) (void)ncclCudaHostFree((void*)newComm->abortFlagDev);
       free(newComm->abortFlagRefCount);
     }
+    ncclxCommFree(newComm); // [META:PER_COMM_CONFIG]
     free(newComm);
     if (newcomm) *newcomm = NULL;
   }
