@@ -7,8 +7,13 @@
 
 #include "common.h"
 
+#include <new>
+
 #include "gin/gin_host.h"
 #include "gin.h"
+// [NCCLX-PerCommConfig] Use NcclxIbNetCommConfig so ctx is compatible with
+// ncclIbListen/ncclIbConnect which cast ctx to NcclxIbNetCommConfig*.
+#include "meta/transport/NcclxIbNetCommConfig.h"
 
 const int NCCL_GIN_IB_ALLGATHER_TAG = 0xa0;
 const int NCCL_GIN_IB_ALLTOALL_TAG = 0xa1;
@@ -100,15 +105,20 @@ ncclResult_t ncclGinIbInitType(void** ctx, uint64_t commId, ncclDebugLogger_t lo
   NCCLCHECK(ncclGinIbGdrSupport(&gdrSupport, type == NCCL_GIN_TYPE_GDAKI));
   if (!gdrSupport) return ncclInternalError;
 
-  ncclNetCommConfig_t* netCommConfig = nullptr;
-  NCCLCHECK(ncclCalloc(&netCommConfig, 1));
-  netCommConfig->trafficClass = NCCL_NET_TRAFFIC_CLASS_UNDEF;
-  *ctx = netCommConfig;
+  // [NCCLX-PerCommConfig] Allocate NcclxIbNetCommConfig (not ncclNetCommConfig_t)
+  // because ncclx::ncclxIbCommInit, called inside ncclIbConnectImpl and
+  // ncclIbAcceptImpl, reads the ctx as that type. GIN passes 1 QP per device
+  // directly, so the per-comm QP override does not apply to it.
+  ncclx::NcclxIbNetCommConfig* ncclxConfig = nullptr;
+  NEW_NOTHROW(ncclxConfig, ncclx::NcclxIbNetCommConfig);
+  ncclxConfig->trafficClass = NCCL_NET_TRAFFIC_CLASS_UNDEF;
+  *ctx = ncclxConfig;
   return ncclSuccess;
 }
 
 ncclResult_t ncclGinIbFinalize(void* ctx) {
-  if (ctx) free(ctx);
+  // [NCCLX-PerCommConfig] Match allocation in ncclGinIbInitType
+  delete static_cast<ncclx::NcclxIbNetCommConfig*>(ctx);
   return ncclIbFinalizeDevices();
 }
 
