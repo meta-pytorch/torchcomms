@@ -11,6 +11,8 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/AlgoStrConv.h"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cctype>
 #include <limits>
@@ -582,6 +584,15 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
       config->nvlinkCentricSched != NCCL_CONFIG_UNDEF_INT ||
       config->graphUsageMode != NCCL_CONFIG_UNDEF_INT ||
       config->numRmaCtx != NCCL_CONFIG_UNDEF_INT ||
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 31, 0)
+      config->maxP2pPeers != NCCL_CONFIG_UNDEF_INT ||
+      config->graphStreamOrdering != NCCL_CONFIG_UNDEF_INT ||
+      config->launchOrderImplicit != NCCL_CONFIG_UNDEF_INT ||
+      config->numRmaSig != NCCL_CONFIG_UNDEF_INT ||
+      config->rmaEagerInit != NCCL_CONFIG_UNDEF_INT ||
+      config->hostCftMode != NCCL_CONFIG_UNDEF_INT ||
+      config->nvlsHostMode != NCCL_CONFIG_UNDEF_INT ||
+#endif
       config->netName != NCCL_CONFIG_UNDEF_PTR ||
       config->commName != NCCL_CONFIG_UNDEF_PTR ||
       config->commDesc != nullptr ||
