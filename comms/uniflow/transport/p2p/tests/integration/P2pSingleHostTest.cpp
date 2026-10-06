@@ -45,12 +45,16 @@ namespace {
 // rather than a silently-ignored error code.
 #define ASSERT_CUDA(expr) ASSERT_EQ((expr), cudaSuccess) << #expr
 
-int gpuCount() {
-  int count = 0;
-  if (cudaGetDeviceCount(&count) != cudaSuccess) {
-    return 0;
+bool isGpuUnavailable(cudaError_t status) {
+  if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver) {
+    return true;
   }
-  return count;
+#ifndef __HIP_PLATFORM_AMD__
+  if (status == cudaErrorStubLibrary) {
+    return true;
+  }
+#endif
+  return false;
 }
 
 struct CudaBuffer {
@@ -81,6 +85,30 @@ struct CudaBuffer {
 class P2pSingleHostTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    int deviceCount = 0;
+    const auto status = cudaGetDeviceCount(&deviceCount);
+    if (isGpuUnavailable(status) ||
+        (status == cudaSuccess && deviceCount < 2)) {
+      GTEST_SKIP() << "need >= 2 GPUs, found " << deviceCount;
+    }
+    ASSERT_EQ(status, cudaSuccess)
+        << "GPU device discovery failed: " << cudaGetErrorString(status);
+
+    int canAccess01 = 0;
+    const auto accessStatus01 = cudaDeviceCanAccessPeer(&canAccess01, 0, 1);
+    ASSERT_EQ(accessStatus01, cudaSuccess)
+        << "GPU P2P capability query 0 -> 1 failed: "
+        << cudaGetErrorString(accessStatus01);
+
+    int canAccess10 = 0;
+    const auto accessStatus10 = cudaDeviceCanAccessPeer(&canAccess10, 1, 0);
+    ASSERT_EQ(accessStatus10, cudaSuccess)
+        << "GPU P2P capability query 1 -> 0 failed: "
+        << cudaGetErrorString(accessStatus10);
+
+    if (canAccess01 == 0 || canAccess10 == 0) {
+      GTEST_SKIP() << "bidirectional GPU P2P access is unavailable";
+    }
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
   }
   void TearDown() override {
@@ -119,9 +147,6 @@ class P2pSingleHostTest : public ::testing::Test {
 };
 
 TEST_F(P2pSingleHostTest, TwoTransportsConnect) {
-  if (gpuCount() < 2) {
-    GTEST_SKIP() << "need >= 2 GPUs, found " << gpuCount();
-  }
   auto pair = ConnectedPair{};
   ASSERT_NO_FATAL_FAILURE(connectPair(pair));
   EXPECT_EQ(pair.transport0->state(), TransportState::Connected);
@@ -131,9 +156,6 @@ TEST_F(P2pSingleHostTest, TwoTransportsConnect) {
 }
 
 TEST_F(P2pSingleHostTest, GpuPut) {
-  if (gpuCount() < 2) {
-    GTEST_SKIP() << "need >= 2 GPUs, found " << gpuCount();
-  }
   constexpr size_t kSize = 1 << 20; // 1 MiB
   ConnectedPair pair;
   ASSERT_NO_FATAL_FAILURE(connectPair(pair));
@@ -190,9 +212,6 @@ TEST_F(P2pSingleHostTest, GpuPut) {
 }
 
 TEST_F(P2pSingleHostTest, GpuGet) {
-  if (gpuCount() < 2) {
-    GTEST_SKIP() << "need >= 2 GPUs, found " << gpuCount();
-  }
   constexpr size_t kSize = 1 << 20; // 1 MiB
   ConnectedPair pair;
   ASSERT_NO_FATAL_FAILURE(connectPair(pair));
@@ -253,9 +272,6 @@ TEST_F(P2pSingleHostTest, GpuGet) {
 // base, and the recorded offset is applied on import). Proves the pre-offset
 // region is untouched, i.e. data did not land at the allocation base.
 TEST_F(P2pSingleHostTest, GpuPutSubAllocation) {
-  if (gpuCount() < 2) {
-    GTEST_SKIP() << "need >= 2 GPUs, found " << gpuCount();
-  }
   constexpr size_t kSize = 1 << 20; // 1 MiB segment
   constexpr size_t kOffset = 1
       << 20; // segment starts 1 MiB into the allocation
