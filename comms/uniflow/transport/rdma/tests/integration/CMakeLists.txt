@@ -1,8 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-add_executable(SingleHostTest SingleHostTest.cpp)
-target_link_libraries(SingleHostTest
-    uniflow_rdma_transport GTest::gtest_main)
-target_compile_features(SingleHostTest PUBLIC cxx_std_20)
-target_include_directories(SingleHostTest PUBLIC ${ROOT})
-add_test(NAME SingleHostTest COMMAND SingleHostTest)
+set(_UNIFLOW_RDMA_TEST_LABELS rdma multi_gpu)
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  list(APPEND _UNIFLOW_RDMA_TEST_LABELS cuda)
+endif()
+
+uniflow_add_gpu_test(
+  uniflow_rdma_single_host_test SingleHostTest.cpp
+  "${_UNIFLOW_RDMA_TEST_LABELS}")

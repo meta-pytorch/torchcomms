@@ -159,15 +159,22 @@ class NVLinkTransportIntegrationTest : public ::testing::Test {
   void SetUp() override {
     // Check that at least 2 GPUs are available.
     int deviceCount = 0;
-    auto err = cudaGetDeviceCount(&deviceCount);
-    if (err != cudaSuccess || deviceCount < 2) {
+    const auto status = cudaGetDeviceCount(&deviceCount);
+    if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver ||
+        status == cudaErrorStubLibrary ||
+        (status == cudaSuccess && deviceCount < 2)) {
       GTEST_SKIP() << "Need at least 2 GPUs, found " << deviceCount;
     }
+    ASSERT_EQ(status, cudaSuccess)
+        << "GPU device discovery failed: " << cudaGetErrorString(status);
 
 #ifdef EXPECTED_GPU_NAME
     // Verify the GPU matches the expected type for this test target.
     cudaDeviceProp prop{};
-    cudaGetDeviceProperties(&prop, kDeviceA);
+    const auto propertyStatus = cudaGetDeviceProperties(&prop, kDeviceA);
+    ASSERT_EQ(propertyStatus, cudaSuccess)
+        << "GPU property discovery failed: "
+        << cudaGetErrorString(propertyStatus);
     if (std::string(prop.name).find(EXPECTED_GPU_NAME) == std::string::npos) {
       GTEST_SKIP() << "Expected " << EXPECTED_GPU_NAME << " GPU, found "
                    << prop.name;
@@ -176,7 +183,9 @@ class NVLinkTransportIntegrationTest : public ::testing::Test {
 
     // Check P2P support between device 0 and device 1.
     auto canAccess = cudaApi_.deviceCanAccessPeer(kDeviceA, kDeviceB);
-    if (canAccess.hasError() || !canAccess.value()) {
+    ASSERT_TRUE(canAccess.hasValue())
+        << "P2P capability discovery failed: " << canAccess.error().message();
+    if (!canAccess.value()) {
       GTEST_SKIP() << "P2P not supported between device " << kDeviceA
                    << " and device " << kDeviceB;
     }

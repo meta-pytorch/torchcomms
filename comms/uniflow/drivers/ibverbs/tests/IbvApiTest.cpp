@@ -14,8 +14,10 @@ class IbvApiTest : public ::testing::Test {
 
     auto result = api_.getDeviceList(&numDevices_);
     ASSERT_TRUE(result.hasValue()) << result.error().message();
-    ASSERT_GT(numDevices_, 0);
     deviceList_ = result.value();
+    if (numDevices_ == 0) {
+      GTEST_SKIP() << "No RDMA device is available";
+    }
   }
 
   void TearDown() override {

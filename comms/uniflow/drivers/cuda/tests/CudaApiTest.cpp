@@ -2,9 +2,13 @@
 
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 
+#include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace uniflow {
@@ -13,9 +17,21 @@ namespace {
 // The IPC / arch wrappers are thin pass-throughs to the runtime, so the real
 // coverage is a GPU round-trip. Skip when no device is present so the target
 // still builds/links and passes on CPU-only hosts, and runs for real on GPU CI.
-bool hasGpu(CudaApi& api) {
-  auto count = api.getDeviceCount();
-  return count.hasValue() && count.value() > 0;
+int gpuCount() {
+  int count = 0;
+  const auto status = cudaGetDeviceCount(&count);
+  if (status == cudaSuccess) {
+    return count;
+  }
+  if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver
+#ifndef __HIP_PLATFORM_AMD__
+      || status == cudaErrorStubLibrary
+#endif
+  ) {
+    return 0;
+  }
+  throw std::runtime_error(
+      std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(status));
 }
 
 // Pins the neutral wire size to the driver ABI. The same invariant is enforced
@@ -27,7 +43,7 @@ TEST(CudaApiTest, IpcMemHandleSizeMatchesAbi) {
 
 TEST(CudaApiTest, GetDeviceArchReturnsNonEmpty) {
   CudaApi api;
-  if (!hasGpu(api)) {
+  if (gpuCount() == 0) {
     GTEST_SKIP() << "no GPU available";
   }
   ASSERT_FALSE(api.setDevice(0).hasError());
@@ -39,7 +55,7 @@ TEST(CudaApiTest, GetDeviceArchReturnsNonEmpty) {
 
 TEST(CudaApiTest, IpcGetMemHandleReturnsNonZeroHandle) {
   CudaApi api;
-  if (!hasGpu(api)) {
+  if (gpuCount() == 0) {
     GTEST_SKIP() << "no GPU available";
   }
   ASSERT_FALSE(api.setDevice(0).hasError());
@@ -63,7 +79,7 @@ TEST(CudaApiTest, IpcGetMemHandleReturnsNonZeroHandle) {
 
 TEST(CudaApiTest, EventSynchronizeReturnsOnlyOnceTheEventCompleted) {
   CudaApi api;
-  if (!hasGpu(api)) {
+  if (gpuCount() == 0) {
     GTEST_SKIP() << "no GPU available";
   }
   ASSERT_FALSE(api.setDevice(0).hasError());

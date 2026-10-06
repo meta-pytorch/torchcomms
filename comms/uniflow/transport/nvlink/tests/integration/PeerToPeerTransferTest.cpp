@@ -13,6 +13,8 @@
 
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 
+#include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -23,6 +25,18 @@
 namespace uniflow {
 
 namespace {
+
+bool isGpuUnavailable(cudaError_t status) {
+  if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver) {
+    return true;
+  }
+#ifndef __HIP_PLATFORM_AMD__
+  if (status == cudaErrorStubLibrary) {
+    return true;
+  }
+#endif
+  return false;
+}
 
 // Peer-to-peer GPU transfer test fixture.
 // Tests intra-node GPU-to-GPU transfers over the GPU interconnect (XGMI on AMD,
@@ -35,14 +49,20 @@ class PeerToPeerTransferTest : public ::testing::Test {
 
   void SetUp() override {
     // Check if we have at least 2 GPUs.
-    auto deviceCount = cudaApi_->getDeviceCount();
-    if (!deviceCount.hasValue() || deviceCount.value() < 2) {
+    int deviceCount = 0;
+    const auto status = cudaGetDeviceCount(&deviceCount);
+    if (isGpuUnavailable(status) ||
+        (status == cudaSuccess && deviceCount < 2)) {
       GTEST_SKIP() << "P2P transfer test requires at least 2 GPUs";
     }
+    ASSERT_EQ(status, cudaSuccess)
+        << "GPU device discovery failed: " << cudaGetErrorString(status);
 
     // Check if P2P is supported between devices.
     auto canAccess = cudaApi_->deviceCanAccessPeer(kDeviceA, kDeviceB);
-    if (!canAccess.hasValue() || !canAccess.value()) {
+    ASSERT_TRUE(canAccess.hasValue())
+        << "P2P capability discovery failed: " << canAccess.error().message();
+    if (!canAccess.value()) {
       GTEST_SKIP() << "P2P not supported between GPU " << kDeviceA
                    << " and GPU " << kDeviceB;
     }

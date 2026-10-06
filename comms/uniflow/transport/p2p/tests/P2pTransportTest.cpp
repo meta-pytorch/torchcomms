@@ -85,6 +85,12 @@ class P2pTransportFactoryTest : public ::testing::Test {
 };
 
 TEST_F(P2pTransportFactoryTest, SupportedReflectsDeviceCount) {
+#if defined(__HIP_PLATFORM_AMD__)
+  EXPECT_CALL(*mock_, getDeviceArch(0))
+      .WillOnce(Return(Result<std::string>("gfx942")));
+  EXPECT_CALL(*mock_, getDeviceArch(1))
+      .WillOnce(Return(Result<std::string>("gfx942")));
+#endif
   EXPECT_CALL(*mock_, getDeviceCount()).WillOnce(Return(Result<int>(2)));
   EXPECT_FALSE(P2pTransportFactory::supported(mock_).hasError());
 
