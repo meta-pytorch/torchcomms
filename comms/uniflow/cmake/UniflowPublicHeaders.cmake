@@ -29,4 +29,12 @@ set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/TransportType.h
 )
 
+if(UNIFLOW_ENABLE_TCP)
+  list(APPEND UNIFLOW_PUBLIC_HEADERS
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/controller/TcpController.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/tcp/TcpPinnedSlabPool.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/tcp/TcpTransport.h
+  )
+endif()
+
 unset(_UNIFLOW_PUBLIC_HEADER_ROOT)
