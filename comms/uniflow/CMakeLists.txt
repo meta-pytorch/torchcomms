@@ -40,32 +40,67 @@ set(UNIFLOW_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(UNIFLOW_HIPIFY_DIR ${CMAKE_CURRENT_BINARY_DIR}/hipified)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-include(CMakeDependentOption)
 
 option(UNIFLOW_BUILD_PYTHON "Build the UniFlow Python extension" OFF)
 option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
 option(UNIFLOW_BUILD_BENCHMARKS "Build UniFlow benchmarks" OFF)
-option(UNIFLOW_ENABLE_CUDA "Build the CUDA backend" ON)
 
 set(UNIFLOW_MINIMUM_CUDA_VERSION 12.8)
-if(UNIFLOW_ENABLE_CUDA)
-  include(UniflowGpuPlatform)
-endif()
+include(UniflowGpuPlatform)
 
-cmake_dependent_option(
-  UNIFLOW_ENABLE_RDMA "Build the RDMA transport" ON
-  "UNIFLOW_ENABLE_CUDA" OFF)
-cmake_dependent_option(
-  UNIFLOW_ENABLE_NVLINK "Build the NVLink transport" ON
-  "UNIFLOW_ENABLE_CUDA" OFF)
+function(_uniflow_resolve_feature_option name description default_value)
+  if(DEFINED ${name})
+    set(requested_value "${${name}}")
+  else()
+    set(requested_value AUTO)
+  endif()
+  string(TOUPPER "${requested_value}" requested_value)
+  if(NOT requested_value MATCHES "^(AUTO|ON|OFF)$")
+    message(FATAL_ERROR
+      "Invalid ${name}=${requested_value}; expected AUTO, ON, or OFF.")
+  endif()
+
+  set(${name} "${requested_value}" CACHE STRING
+    "${description}: AUTO, ON, or OFF" FORCE)
+  set_property(CACHE ${name} PROPERTY STRINGS AUTO ON OFF)
+
+  if(requested_value STREQUAL AUTO)
+    set(resolved_value "${default_value}")
+  else()
+    set(resolved_value "${requested_value}")
+  endif()
+  set(${name} "${resolved_value}" PARENT_SCOPE)
+  message(STATUS "${name} = ${resolved_value} (${requested_value})")
+endfunction()
+
+if(UNIFLOW_GPU_PLATFORM STREQUAL NONE)
+  set(_UNIFLOW_ENABLE_RDMA_DEFAULT OFF)
+else()
+  set(_UNIFLOW_ENABLE_RDMA_DEFAULT ON)
+endif()
+_uniflow_resolve_feature_option(
+  UNIFLOW_ENABLE_RDMA "Build the RDMA transport"
+  ${_UNIFLOW_ENABLE_RDMA_DEFAULT})
+unset(_UNIFLOW_ENABLE_RDMA_DEFAULT)
+
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  set(_UNIFLOW_ENABLE_NVLINK_DEFAULT ON)
+else()
+  set(_UNIFLOW_ENABLE_NVLINK_DEFAULT OFF)
+endif()
+_uniflow_resolve_feature_option(
+  UNIFLOW_ENABLE_NVLINK "Build the NVLink transport"
+  ${_UNIFLOW_ENABLE_NVLINK_DEFAULT})
+unset(_UNIFLOW_ENABLE_NVLINK_DEFAULT)
+
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   set(_UNIFLOW_ENABLE_TCP_DEFAULT ON)
 else()
   set(_UNIFLOW_ENABLE_TCP_DEFAULT OFF)
 endif()
-cmake_dependent_option(
-  UNIFLOW_ENABLE_TCP "Build the TCP transport" ${_UNIFLOW_ENABLE_TCP_DEFAULT}
-  "UNIFLOW_ENABLE_CUDA" OFF)
+_uniflow_resolve_feature_option(
+  UNIFLOW_ENABLE_TCP "Build the TCP transport"
+  ${_UNIFLOW_ENABLE_TCP_DEFAULT})
 unset(_UNIFLOW_ENABLE_TCP_DEFAULT)
 option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
 if(UNIFLOW_STANDALONE AND
@@ -82,6 +117,16 @@ unset(_UNIFLOW_INSTALL_CPP_DEFAULT)
 option(UNIFLOW_ALLOW_DEPENDENCY_OVERWRITE
   "Allow fetched fmt and spdlog to overwrite files in the install prefix" OFF)
 
+if(UNIFLOW_GPU_PLATFORM STREQUAL NONE AND
+   (UNIFLOW_ENABLE_RDMA OR UNIFLOW_ENABLE_NVLINK OR UNIFLOW_ENABLE_TCP))
+  message(FATAL_ERROR
+    "RDMA, NVLink, and TCP require a GPU platform in this release; disable "
+    "them or choose UNIFLOW_GPU_PLATFORM=CUDA|HIP.")
+endif()
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP AND UNIFLOW_ENABLE_NVLINK)
+  message(FATAL_ERROR
+    "NVLink is available only with UNIFLOW_GPU_PLATFORM=CUDA.")
+endif()
 set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
 file(
@@ -430,7 +475,7 @@ target_compile_definitions(uniflow_build_config INTERFACE
   UNIFLOW_CMAKE_BUILD=1
   $<$<BOOL:${UNIFLOW_ENABLE_RDMA}>:UNIFLOW_ENABLE_RDMA_TRANSPORT=1>
   $<$<AND:$<STREQUAL:${UNIFLOW_GPU_PLATFORM},CUDA>,$<BOOL:${UNIFLOW_ENABLE_NVLINK}>>:UNIFLOW_ENABLE_NVLINK_TRANSPORT=1>
-  $<$<AND:$<BOOL:${UNIFLOW_ENABLE_CUDA}>,$<STREQUAL:${UNIFLOW_GPU_PLATFORM},HIP>>:UNIFLOW_ENABLE_P2P_TRANSPORT=1>
+  $<$<STREQUAL:${UNIFLOW_GPU_PLATFORM},HIP>:UNIFLOW_ENABLE_P2P_TRANSPORT=1>
   $<$<BOOL:${UNIFLOW_ENABLE_TCP}>:UNIFLOW_ENABLE_TCP_TRANSPORT=1>
 )
 target_link_libraries(uniflow_build_config INTERFACE
@@ -464,7 +509,7 @@ add_library(uniflow_objects OBJECT
     ${UNIFLOW_CORE_SOURCES}
 )
 target_link_libraries(uniflow_objects PRIVATE uniflow_build_config)
-if(UNIFLOW_ENABLE_CUDA)
+if(NOT UNIFLOW_GPU_PLATFORM STREQUAL NONE)
   target_link_libraries(uniflow_objects PRIVATE ${UNIFLOW_GPU_LIBRARIES})
   uniflow_target_hipified(uniflow_objects)
 endif()
@@ -490,7 +535,7 @@ if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
     $<TARGET_OBJECTS:uniflow_nvlink_transport>)
   target_link_libraries(uniflow_implementation INTERFACE
     uniflow_nvlink_transport)
-elseif(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+elseif(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   target_sources(uniflow_implementation INTERFACE
     $<TARGET_OBJECTS:uniflow_p2p_transport>)
   target_link_libraries(uniflow_implementation INTERFACE
@@ -533,7 +578,7 @@ target_link_libraries(uniflow PUBLIC
 target_link_libraries(uniflow PRIVATE
     $<BUILD_INTERFACE:uniflow_implementation>)
 
-if(UNIFLOW_ENABLE_CUDA)
+if(NOT UNIFLOW_GPU_PLATFORM STREQUAL NONE)
   target_link_libraries(uniflow PUBLIC ${UNIFLOW_GPU_LIBRARIES})
   uniflow_target_hipified(uniflow)
   uniflow_finalize_hipify()
@@ -647,6 +692,6 @@ if(UNIFLOW_INSTALL_CPP)
   unset(_UNIFLOW_CMAKE_INSTALL_DIR)
 endif()
 
-if(UNIFLOW_ENABLE_CUDA)
+if(NOT UNIFLOW_GPU_PLATFORM STREQUAL NONE)
   uniflow_finalize_hipify()
 endif()

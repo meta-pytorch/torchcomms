@@ -3,10 +3,9 @@
 find_package(GTest REQUIRED)
 
 set(_UNIFLOW_TESTS_REQUIRE_GMOCK OFF)
-if((UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA) OR
-   UNIFLOW_ENABLE_TCP OR
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA OR UNIFLOW_ENABLE_TCP OR
    UNIFLOW_ENABLE_RDMA OR
-   (UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP) OR
+   UNIFLOW_GPU_PLATFORM STREQUAL HIP OR
    (UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA))
   set(_UNIFLOW_TESTS_REQUIRE_GMOCK ON)
 endif()
@@ -55,7 +54,7 @@ function(uniflow_add_gpu_test TARGET_NAME SOURCE)
   uniflow_target_hipified(${TARGET_NAME})
 endfunction()
 
-if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   uniflow_hipify(_UNIFLOW_TEST_HEADERS
     "${UNIFLOW_SOURCE_DIR}/drivers/cuda/mock/MockCudaApi.h"
     "${UNIFLOW_SOURCE_DIR}/drivers/cuda/mock/MockCudaDriverApi.h")
@@ -67,7 +66,7 @@ add_subdirectory(../controller/tests controller_tests)
 add_subdirectory(../core/tests core_tests)
 add_subdirectory(../executor/tests executor_tests)
 add_subdirectory(../logging/tests logging_tests)
-if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
   add_subdirectory(../drivers/cuda/tests cuda_driver_tests)
   add_subdirectory(../drivers/nvml/tests nvml_driver_tests)
   add_subdirectory(../transport/tests/unit transport_unit_tests)
@@ -82,7 +81,7 @@ endif()
 if(UNIFLOW_ENABLE_RDMA)
   add_subdirectory(../transport/rdma/tests rdma_tests)
 endif()
-if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   add_subdirectory(../transport/p2p/tests p2p_tests)
 endif()
 if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)

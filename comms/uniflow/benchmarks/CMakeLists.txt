@@ -45,7 +45,7 @@ if(UNIFLOW_ENABLE_TCP)
     $<TARGET_OBJECTS:uniflow_tcp_bandwidth_bench>)
 endif()
 
-if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+if(UNIFLOW_ENABLE_NVLINK)
   add_library(uniflow_connection_setup_bench OBJECT
     bench/ConnectionSetupBenchmark.cpp)
   add_library(uniflow_nvlink_bandwidth_bench OBJECT
@@ -63,7 +63,7 @@ if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
   unset(_UNIFLOW_NVLINK_BENCH_TARGET)
 endif()
 
-if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   uniflow_hipify(_UNIFLOW_XGMI_BANDWIDTH_BENCH_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/bench/XgmiBandwidthBenchmark.cpp)
   add_library(uniflow_xgmi_bandwidth_bench OBJECT
@@ -77,7 +77,7 @@ if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
     $<TARGET_OBJECTS:uniflow_xgmi_bandwidth_bench>)
 endif()
 
-if(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
   find_package(NCCL QUIET)
   if(NCCL_FOUND)
     add_library(uniflow_nccl_send_recv_bench OBJECT
