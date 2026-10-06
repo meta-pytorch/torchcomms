@@ -34,7 +34,7 @@
     doca_error_t err = call; \
     if (err != DOCA_SUCCESS) { \
       /* Print the back trace*/ \
-      WARN("DOCA failure %d", err); \
+      ERR(ncclSystemError, "DOCA failure %d", err); \
       return ncclSystemError; \
     } \
   } while (0)
@@ -44,7 +44,7 @@
     doca_error_t err = call; \
     if (err != DOCA_SUCCESS) { \
       /* Print the back trace*/ \
-      WARN("DOCA failure %d", err); \
+      ERR(ncclSystemError, "DOCA failure %d", err); \
       RES = ncclSystemError; \
       goto label; \
     } \
@@ -281,7 +281,7 @@ public:
 
   ncclResult_t allocate_elements(unsigned int num_elements, unsigned int* out_start_idx) {
     if (this->next_unused_idx + num_elements > this->num_elements) {
-      WARN("Not enough space to get elements");
+      ERR(ncclInvalidUsage, "Not enough space to get elements");
       return ncclInvalidUsage;
     }
 
@@ -815,7 +815,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
           goto retry_create_qp_group_list_hl;
         }
 
-        WARN("DOCA Error %d", docaStatus);
+        ERR(ncclSystemError, "DOCA Error %d", docaStatus);
         status = ncclSystemError;
         goto out;
       }
@@ -851,7 +851,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
           goto retry_create_qp_list_hl;
         }
 
-        WARN("DOCA Error %d", docaStatus);
+        ERR(ncclSystemError, "DOCA Error %d", docaStatus);
         status = ncclSystemError;
         goto out;
       }
