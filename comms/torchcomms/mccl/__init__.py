@@ -1,37 +1,36 @@
 #!/usr/bin/env python3
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-"""MCCL-owned Python registration hooks for the TorchComms plugin."""
+"""TorchComms-owned registration hooks for the MCCL backend plugin."""
 
-from typing import Any, Optional
+import importlib
+from pathlib import Path
+
+from ._identity import validate_installed_build_info
+from ._registration import register_c10d_backend
+
+
+_BUILD_INFO_PATH = Path(__file__).with_name("_build_info.json")
+_BACKEND_LOADED = False
+
+
+def _ensure_backend_loaded() -> None:
+    global _BACKEND_LOADED
+    if _BACKEND_LOADED:
+        return
+    if _BUILD_INFO_PATH.is_file():
+        validate_installed_build_info(_BUILD_INFO_PATH)
+    importlib.import_module("torchcomms._comms_mccl")
+    _BACKEND_LOADED = True
 
 
 def _register_c10d_backend() -> None:
     """Register the TorchComms MCCL implementation as a CUDA c10d backend."""
-    import torch.distributed as dist
-    import torchcomms._comms_mccl  # noqa: F401
-    from torch.distributed.distributed_c10d import _create_torchcomms_backend
+    register_c10d_backend(_ensure_backend_loaded)
 
-    def create_backend(opts: Any, backend_options: Optional[object]) -> Any:
-        process_group = opts.process_group
-        return _create_torchcomms_backend(
-            "mccl",
-            "cuda",
-            group_rank=opts.group_rank,
-            group_size=opts.group_size,
-            group_name=opts.group_id,
-            store=opts.store,
-            device_id=(
-                process_group.bound_device_id if process_group is not None else None
-            ),
-            backend_options=backend_options,
-            timeout=opts.timeout,
-            enable_reconfigure=opts.enable_reconfigure,
-        )
 
-    dist.Backend.register_backend(
-        "mccl",
-        create_backend,
-        extended_api=True,
-        devices=["cuda"],
-    )
+# The companion wheel points TorchComms discovery at this module. Its generated
+# build identity is also the marker that distinguishes that wheel from internal
+# source-tree imports, whose existing lazy registration path remains unchanged.
+if _BUILD_INFO_PATH.is_file():
+    _ensure_backend_loaded()

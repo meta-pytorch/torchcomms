@@ -6,8 +6,6 @@
 #include <fmt/core.h>
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 
-#include "comms/ctran/utils/Alloc.h"
-#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
@@ -1558,19 +1556,14 @@ class MCCLRegistration {
                   // alloc_fn
                   [](size_t size, int device, cudaStream_t /* stream */) {
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
-                    ::mccl::initLib();
-                    TORCH_CHECK(
-                        ctran::utils::commCudaLibraryInit() == commSuccess,
-                        "MCCL mem allocator: commCudaLibraryInit failed");
                     meta::comms::StreamCaptureModeGuard captureGuard{
                         cudaStreamCaptureModeRelaxed};
-                    char* ptr = nullptr;
-                    commResult_t result = ctran::utils::commCudaMalloc(
-                        &ptr, size, nullptr, "torchcomms::mccl::memAlloc");
+                    void* ptr = nullptr;
+                    commResult_t result = ::mccl::memAlloc(&ptr, size);
                     TORCH_CHECK(
                         result == commSuccess,
                         "MCCL mem allocator: commCudaMalloc failed");
-                    return static_cast<void*>(ptr);
+                    return ptr;
                   },
                   // free_fn
                   [](void* ptr,
@@ -1580,8 +1573,7 @@ class MCCLRegistration {
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
                     meta::comms::StreamCaptureModeGuard captureGuard{
                         cudaStreamCaptureModeRelaxed};
-                    commResult_t result = ctran::utils::commCudaFree(
-                        static_cast<char*>(ptr), nullptr);
+                    commResult_t result = ::mccl::memFree(ptr);
                     TORCH_CHECK(
                         result == commSuccess,
                         "MCCL mem allocator: commCudaFree failed");

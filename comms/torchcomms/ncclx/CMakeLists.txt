@@ -141,20 +141,9 @@ endif()
 
 set(TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES "")
 if(USE_SYSTEM_LIBS)
-    # CudaRAII.cc calls out-of-line logger and GPU-memory-accounting helpers.
-    # libnccl.so cannot supply them: it is built
-    # -fvisibility=hidden behind version.script, which exports only the nccl*
-    # ABI, so on the USE_SYSTEM_LIBS path the references survive to dlopen and
-    # importing the extension fails. The static path gets the definitions from
-    # the libnccl_static.a archive instead.
-    #
-    # These sources are the whole out-of-line closure: SpdlogLogger.cc needs
-    # formatCommsLogMessage() from CommsLogFormatter.cc. McclCudaMemory.cc
-    # delegates accounting to GpuMemoryTracker.cc. RateLimit.h is header-only.
-    find_package(spdlog CONFIG REQUIRED)
+    # The shared NCCLX library cannot supply TorchComms memory accounting.
+    # The static path gets these definitions from the NCCLX archive instead.
     list(APPEND TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES
-        comms/utils/logger/SpdlogLogger.cc
-        comms/utils/logger/CommsLogFormatter.cc
         comms/utils/memtrace/McclCudaMemory.cc
         comms/utils/memtrace/GpuMemoryTracker.cc
     )
@@ -165,7 +154,6 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
     comms/utils/CudaRAII.cc
-    comms/utils/GraphCaptureSideStream.cc
     ${TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES}
 )
 if(NOT USE_SYSTEM_LIBS)
@@ -188,8 +176,8 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
 )
 torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
-# CudaRAII.cc includes SpdlogLogger.h directly, so this target must carry
-# the logger's compile-time configuration instead of relying on CTRAN.
+# NCCLX headers use the shared communications logger and must carry its
+# compile-time configuration.
 target_compile_definitions(torchcomms_comms_ncclx PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
     SPDLOG_FMT_EXTERNAL
