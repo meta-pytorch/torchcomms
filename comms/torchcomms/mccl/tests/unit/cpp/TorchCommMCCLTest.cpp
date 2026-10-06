@@ -126,6 +126,16 @@ class TorchCommMCCLTest : public ::testing::Test {
     comm.commState_ = TorchCommMCCL::CommState::TIMEOUT;
   }
 
+  static void enqueueWork(
+      TorchCommMCCL& comm,
+      c10::intrusive_ptr<TorchWorkMCCL> work) {
+    comm.workq_.enqueueWork(std::move(work), /*stream=*/nullptr);
+  }
+
+  static bool hasMcclBackend(const TorchCommMCCL& comm) {
+    return comm.mccl_comm_ != nullptr;
+  }
+
  private:
   // CommState is private to TorchCommMCCL; the fixture is a friend, the derived
   // TEST_F bodies are not, so the enum may only be named here.
@@ -247,6 +257,30 @@ TEST_F(TorchCommMCCLTest, OptedOutCommSkipsWatchdogFailureBranch) {
   runWatchdogIteration(*mccl);
 
   EXPECT_EQ(0, hookRuns);
+}
+
+TEST_F(TorchCommMCCLTest, FinalizeRejectsWorkErrorBeforeBackendTeardown) {
+  auto mccl = makeHealthyComm(
+      /*abortProcess=*/false, /*enableReconfigure=*/false);
+
+  auto mockWork = std::make_unique<::mccl::testing::MockWorkHandle>();
+  EXPECT_CALL(*mockWork, getResult())
+      .WillOnce(Return(
+          std::optional<mccl::Result>(mccl::Result{
+              .code = commInternalError, .message = "collective failed"})));
+  enqueueWork(
+      *mccl,
+      c10::make_intrusive<TorchWorkMCCL>(
+          /*comm=*/nullptr,
+          /*stream=*/nullptr,
+          /*inputTensor=*/at::Tensor{},
+          /*outputTensor=*/at::Tensor{},
+          /*workHandle=*/std::move(mockWork),
+          /*timeout=*/std::chrono::minutes(10)));
+
+  EXPECT_THROW(mccl->finalize(), std::runtime_error);
+  EXPECT_TRUE(mccl->isInitialized());
+  EXPECT_TRUE(hasMcclBackend(*mccl));
 }
 
 TEST_F(TorchCommMCCLTest, ForwardsLifecycleEventsFromMccl) {

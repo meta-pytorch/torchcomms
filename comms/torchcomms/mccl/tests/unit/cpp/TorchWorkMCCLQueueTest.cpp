@@ -3,6 +3,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <array>
+#include <vector>
+
 #include "comms/mccl/McclTypes.h"
 #include "comms/mccl/tests/MockWorkHandle.h"
 #include "comms/torchcomms/mccl/TorchWorkMCCL.hpp"
@@ -24,14 +27,15 @@ class TorchWorkMCCLQueueTest : public ::testing::Test {
   }
 
   c10::intrusive_ptr<TorchWorkMCCL> createWork(
-      std::unique_ptr<mccl::testing::MockWorkHandle> mockHandle) {
+      std::unique_ptr<mccl::testing::MockWorkHandle> mockHandle,
+      std::chrono::milliseconds timeout = std::chrono::milliseconds(600000)) {
     return c10::make_intrusive<TorchWorkMCCL>(
         /*comm=*/nullptr,
         /*stream=*/nullptr,
         /*inputTensors=*/at::Tensor{},
         /*outputTensors=*/at::Tensor{},
         /*workHandle=*/std::move(mockHandle),
-        /*timeout=*/std::chrono::milliseconds(600000));
+        timeout);
   }
 
   std::unique_ptr<TorchWorkMCCLQueue> queue_;
@@ -107,8 +111,6 @@ TEST_F(TorchWorkMCCLQueueTest, GarbageCollectReturnsErrorOnFailedWork) {
   EXPECT_EQ(status, TorchWork::WorkStatus::ERROR);
 }
 
-// Test: terminal work is not popped, so every later garbageCollect() re-reports
-// its latched status without re-querying the handle.
 TEST_F(TorchWorkMCCLQueueTest, GarbageCollectKeepsReportingTerminalStatus) {
   auto mockHandle = createMockWorkHandle();
   mccl::Result errorResult{.code = commInternalError, .message = "test error"};
@@ -123,6 +125,118 @@ TEST_F(TorchWorkMCCLQueueTest, GarbageCollectKeepsReportingTerminalStatus) {
   EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::ERROR);
   EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::ERROR);
   EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::ERROR);
+
+  EXPECT_EQ(work.use_count(), 1);
+}
+
+TEST_F(TorchWorkMCCLQueueTest, TimedOutWorkIsReleasedAfterBackendCompletion) {
+  auto mockHandle = createMockWorkHandle();
+  mccl::Result successResult{.code = commSuccess, .message = ""};
+
+  EXPECT_CALL(*mockHandle, getResult())
+      .WillOnce(::testing::Return(std::nullopt))
+      .WillOnce(::testing::Return(successResult));
+
+  auto work = createWork(
+      std::move(mockHandle), /*timeout=*/std::chrono::milliseconds(-1));
+  auto laterHandle = createMockWorkHandle();
+  EXPECT_CALL(*laterHandle, getResult())
+      .WillOnce(::testing::Return(successResult));
+  auto later = createWork(std::move(laterHandle));
+
+  queue_->enqueueWork(work, kTestStream1);
+  queue_->enqueueWork(later, kTestStream1);
+
+  EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::TIMEDOUT);
+  EXPECT_EQ(work.use_count(), 2);
+  EXPECT_EQ(later.use_count(), 1);
+
+  EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::TIMEDOUT);
+  EXPECT_EQ(work.use_count(), 1);
+}
+
+TEST_F(TorchWorkMCCLQueueTest, TerminalHeadDoesNotBlindLaterWorkOnSameStream) {
+  mccl::Result errorResult{.code = commInternalError, .message = "test error"};
+  mccl::Result successResult{.code = commSuccess, .message = ""};
+
+  auto failingHandle = createMockWorkHandle();
+  EXPECT_CALL(*failingHandle, getResult())
+      .WillOnce(::testing::Return(errorResult));
+
+  auto laterHandle = createMockWorkHandle();
+  EXPECT_CALL(*laterHandle, getResult())
+      .WillOnce(::testing::Return(successResult));
+
+  queue_->enqueueWork(createWork(std::move(failingHandle)), kTestStream1);
+  auto later = createWork(std::move(laterHandle));
+  int laterEndCount = 0;
+  later->registerWorkEndHook([&laterEndCount] { ++laterEndCount; });
+  queue_->enqueueWork(later, kTestStream1);
+
+  EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::ERROR);
+
+  EXPECT_EQ(later->status(), TorchWork::WorkStatus::COMPLETED);
+  EXPECT_EQ(laterEndCount, 1);
+  EXPECT_EQ(later.use_count(), 1);
+}
+
+// Give every stream a failed head so coverage is independent of unordered-map
+// traversal order.
+TEST_F(TorchWorkMCCLQueueTest, TerminalHeadDoesNotBlindOtherStreams) {
+  mccl::Result errorResult{.code = commInternalError, .message = "test error"};
+  mccl::Result successResult{.code = commSuccess, .message = ""};
+
+  static const cudaStream_t kTestStream2 = reinterpret_cast<cudaStream_t>(0x1);
+
+  std::vector<c10::intrusive_ptr<TorchWorkMCCL>> laterWorks;
+  std::array<int, 2> laterEndCounts{};
+  size_t streamIndex = 0;
+  for (auto stream : {kTestStream1, kTestStream2}) {
+    auto failingHandle = createMockWorkHandle();
+    EXPECT_CALL(*failingHandle, getResult())
+        .WillOnce(::testing::Return(errorResult));
+
+    auto laterHandle = createMockWorkHandle();
+    EXPECT_CALL(*laterHandle, getResult())
+        .WillOnce(::testing::Return(successResult));
+
+    queue_->enqueueWork(createWork(std::move(failingHandle)), stream);
+    laterWorks.push_back(createWork(std::move(laterHandle)));
+    laterWorks.back()->registerWorkEndHook(
+        [&, index = streamIndex] { ++laterEndCounts[index]; });
+    queue_->enqueueWork(laterWorks.back(), stream);
+    ++streamIndex;
+  }
+
+  EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::ERROR);
+
+  for (size_t i = 0; i < laterWorks.size(); ++i) {
+    EXPECT_EQ(laterWorks[i]->status(), TorchWork::WorkStatus::COMPLETED)
+        << "stream " << i << " not observed terminal";
+    EXPECT_EQ(laterEndCounts[i], 1) << "stream " << i << " hook not run";
+    EXPECT_EQ(laterWorks[i].use_count(), 1) << "stream " << i << " starved";
+  }
+}
+
+// A retained entry pins its work object's tensors and stream.
+TEST_F(TorchWorkMCCLQueueTest, RepeatedFailuresDoNotRetainWork) {
+  mccl::Result errorResult{.code = commInternalError, .message = "test error"};
+
+  std::vector<c10::intrusive_ptr<TorchWorkMCCL>> works;
+  for (int cycle = 0; cycle < 5; ++cycle) {
+    auto mockHandle = createMockWorkHandle();
+    EXPECT_CALL(*mockHandle, getResult())
+        .WillOnce(::testing::Return(errorResult));
+
+    works.push_back(createWork(std::move(mockHandle)));
+    queue_->enqueueWork(works.back(), kTestStream1);
+
+    EXPECT_EQ(queue_->garbageCollect(), TorchWork::WorkStatus::ERROR);
+  }
+
+  for (size_t i = 0; i < works.size(); ++i) {
+    EXPECT_EQ(works[i].use_count(), 1) << "cycle " << i << " work retained";
+  }
 }
 
 // Test: Multiple completed works are all removed
@@ -195,14 +309,10 @@ TEST_F(TorchWorkMCCLQueueTest, WorksOnDifferentStreamsProcessedIndependently) {
   queue_->enqueueWork(createWork(std::move(mockHandle1)), kTestStream1);
   queue_->enqueueWork(createWork(std::move(mockHandle2)), testStream2);
 
-  // First garbageCollect: stream2's work completes, stream1's is in progress
-  // The last status seen will be INPROGRESS (from stream1)
+  // One pending stream makes the aggregate pending regardless of unordered-map
+  // traversal order, even if another stream drains completely.
   auto status = queue_->garbageCollect();
-  // Status depends on iteration order, but should not be ERROR
-  EXPECT_NE(status, TorchWork::WorkStatus::ERROR);
-  EXPECT_TRUE(
-      status == TorchWork::WorkStatus::INPROGRESS ||
-      status == TorchWork::WorkStatus::COMPLETED);
+  EXPECT_EQ(status, TorchWork::WorkStatus::INPROGRESS);
 
   // Second garbageCollect: stream1's work now completes
   status = queue_->garbageCollect();
@@ -222,6 +332,28 @@ TEST_F(TorchWorkMCCLQueueTest, FinalizeReturnsErrorOnFailedWork) {
   // finalize should detect the error and return ERROR status
   auto status = queue_->finalize();
   EXPECT_EQ(status, TorchWork::WorkStatus::ERROR);
+}
+
+TEST_F(TorchWorkMCCLQueueTest, FinalizeClosesWorkBehindFailure) {
+  mccl::Result errorResult{.code = commInternalError, .message = "test error"};
+
+  auto failingHandle = createMockWorkHandle();
+  EXPECT_CALL(*failingHandle, getResult())
+      .WillOnce(::testing::Return(errorResult));
+  queue_->enqueueWork(createWork(std::move(failingHandle)), kTestStream1);
+
+  auto pendingHandle = createMockWorkHandle();
+  EXPECT_CALL(*pendingHandle, getResult())
+      .WillOnce(::testing::Return(std::nullopt));
+  auto pending = createWork(std::move(pendingHandle));
+  int pendingEndCount = 0;
+  pending->registerWorkEndHook([&pendingEndCount] { ++pendingEndCount; });
+  queue_->enqueueWork(pending, kTestStream1);
+
+  EXPECT_EQ(queue_->finalize(), TorchWork::WorkStatus::ERROR);
+  EXPECT_EQ(pending->status(), TorchWork::WorkStatus::TIMEDOUT);
+  EXPECT_EQ(pendingEndCount, 1);
+  EXPECT_EQ(pending.use_count(), 2);
 }
 
 // Test: finalize processes work until completion or error
@@ -260,8 +392,7 @@ TEST_F(
   auto status = queue_->garbageCollect();
   EXPECT_EQ(status, TorchWork::WorkStatus::ERROR);
 
-  // Now call finalize - it should still return ERROR
-  // The failed work remains in queue and finalize should detect it
+  // The latched failure remains visible after its work entry is retired.
   status = queue_->finalize();
   EXPECT_EQ(status, TorchWork::WorkStatus::ERROR);
 }

@@ -37,6 +37,8 @@ class TorchWorkMCCLTest : public ::testing::Test {
   TorchWorkMCCL testCheckStatusReturnsInProgressWhenNotReady(
       TorchWorkCreationMode mode);
   TorchWorkMCCL testCheckStatusSetsErrorOnFailure(TorchWorkCreationMode mode);
+  TorchWorkMCCL testCheckStatusSetsTimedOutOnTimeout(
+      TorchWorkCreationMode mode);
 
   void testMoveCtorTransfersCompletedStatus(TorchWorkCreationMode mode);
   void testMoveCtorTransfersErrorStatus(TorchWorkCreationMode mode);
@@ -162,6 +164,23 @@ TorchWorkMCCL TorchWorkMCCLTest::testCheckStatusSetsErrorOnFailure(
   return work;
 }
 
+TorchWorkMCCL TorchWorkMCCLTest::testCheckStatusSetsTimedOutOnTimeout(
+    TorchWorkCreationMode mode) {
+  auto mockWorkHandle = createMockWorkHandle();
+
+  mccl::Result timeoutResult{
+      .code = commTimeout, .message = "operation timed out"};
+  EXPECT_CALL(*mockWorkHandle, getResult())
+      .WillOnce(::testing::Return(timeoutResult));
+
+  TorchWorkMCCL work = createWork(mode, std::move(mockWorkHandle));
+
+  EXPECT_EQ(work.checkStatus(), TorchWork::WorkStatus::TIMEDOUT);
+  EXPECT_FALSE(work.isCompleted());
+
+  return work;
+}
+
 TorchWorkMCCL TorchWorkMCCLTest::testCheckStatusReturnsInProgressWhenNotReady(
     TorchWorkCreationMode mode) {
   auto mockWorkHandle = createMockWorkHandle();
@@ -212,6 +231,11 @@ TEST_P(TorchWorkMCCLStateTransitionTest, CheckStatusSetsCompletedOnSuccess) {
 TEST_P(TorchWorkMCCLStateTransitionTest, CheckStatusSetsErrorOnFailure) {
   auto mode = GetParam();
   this->testCheckStatusSetsErrorOnFailure(mode);
+}
+
+TEST_P(TorchWorkMCCLStateTransitionTest, CheckStatusSetsTimedOutOnTimeout) {
+  auto mode = GetParam();
+  this->testCheckStatusSetsTimedOutOnTimeout(mode);
 }
 
 TEST_P(

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <unordered_map>
 
@@ -141,6 +142,8 @@ class TorchWorkMCCLQueue {
   TorchWorkMCCLQueue(TorchWorkMCCLQueue&&) = delete;
   TorchWorkMCCLQueue& operator=(TorchWorkMCCLQueue&&) = delete;
 
+  /* Retires terminal work and returns the first latched failure, the oldest
+   * unfinished status, or COMPLETED when no work remains. */
   TorchWorkMCCL::WorkStatus garbageCollect();
 
   // Finalize function can only be called from the main thread
@@ -153,9 +156,20 @@ class TorchWorkMCCLQueue {
 
  private:
   TorchWorkMCCL::WorkStatus garbageCollectLocked();
+  void releaseCompletedTimedOutLocked();
+  // Marks in-flight work terminal so its end hook runs, retains its resources,
+  // and clears the active queues without changing latched_failure_.
+  void dropAllLocked();
+
   std::
       unordered_map<cudaStream_t, std::queue<c10::intrusive_ptr<TorchWorkMCCL>>>
           stream_work_queues_;
+  // A wrapper timeout does not imply backend completion, so retain timed-out
+  // work until its resources can no longer be accessed by the GPU.
+  std::vector<c10::intrusive_ptr<TorchWorkMCCL>> timed_out_work_;
+  /* Latch the first failure independently of its work entry so later work
+   * remains visible to the watchdog. */
+  std::optional<TorchWorkMCCL::WorkStatus> latched_failure_;
   std::mutex work_queues_mutex_;
 };
 

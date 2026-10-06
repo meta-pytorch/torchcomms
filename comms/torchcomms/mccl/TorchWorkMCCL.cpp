@@ -80,6 +80,9 @@ TorchWorkMCCL::WorkStatus TorchWorkMCCL::checkStatus() {
   if (workResult != std::nullopt) {
     if (workResult.value().code == commSuccess) {
       setStatus(WorkStatus::COMPLETED);
+    } else if (workResult.value().code == commTimeout) {
+      TC_LOG(WARNING) << "Work timed out: " << workResult.value().message;
+      setStatus(WorkStatus::TIMEDOUT);
     } else {
       TC_LOG(WARNING) << "Work failed with error code: "
                       << workResult.value().code << ", "

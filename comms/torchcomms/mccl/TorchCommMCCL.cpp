@@ -306,6 +306,9 @@ void TorchCommMCCL::finalize() {
     throw std::runtime_error(
         "WorkQ finalize returned in progress or not started state");
   }
+  if (work_status == TorchWorkMCCL::WorkStatus::ERROR) {
+    throw std::runtime_error("WorkQ finalize returned error state");
+  }
 
   if (commState_ != CommState::NORMAL) {
     throw std::runtime_error(

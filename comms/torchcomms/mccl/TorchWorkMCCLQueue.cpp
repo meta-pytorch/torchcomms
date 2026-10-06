@@ -4,31 +4,39 @@
 
 namespace torch::comms {
 
-TorchWorkMCCLQueue::~TorchWorkMCCLQueue() {
-  // Close out any work still in flight at teardown (e.g. PAFT fault recovery
-  // destroys the comm directly with a wedged collective still pending).
-  // Otherwise the work is destroyed without ever reaching a terminal status,
-  // its end hook never fires, and the clog shows a bare "Q"/"S" with no
-  // matching "E". Marking it TIMEDOUT here -- while the queue still holds a
-  // strong ref, so the hooks are intact -- fires the end hook before
-  // destruction.
-  //
-  // After a clean finalize() the queues are already cleared, so this is a no-op
-  // on the normal shutdown path. The owning TorchCommMCCL joins the timeout
-  // watchdog before destroying this member, so no other thread touches the
-  // queues here.
+void TorchWorkMCCLQueue::dropAllLocked() {
+  // Mark in-flight work timed out so its end hook fires before its resources
+  // are released.
   for (auto& [stream, work_queue] : stream_work_queues_) {
     while (!work_queue.empty()) {
       work_queue.front()->closeIncompleteOnTeardown();
+      timed_out_work_.push_back(std::move(work_queue.front()));
       work_queue.pop();
     }
   }
+  stream_work_queues_.clear();
+}
+
+TorchWorkMCCLQueue::~TorchWorkMCCLQueue() {
+  // The owner joins the watchdog before destroying the queue, so no lock is
+  // needed during teardown.
+  dropAllLocked();
+}
+
+void TorchWorkMCCLQueue::releaseCompletedTimedOutLocked() {
+  std::erase_if(timed_out_work_, [](const auto& work) {
+    return work->getResult().has_value();
+  });
 }
 
 TorchWorkMCCL::WorkStatus TorchWorkMCCLQueue::garbageCollectLocked() {
-  TorchWorkMCCL::WorkStatus last_status = TorchWorkMCCL::WorkStatus::COMPLETED;
+  releaseCompletedTimedOutLocked();
 
-  // Keep popping completed elements until we hit an in-progress element
+  // A pending item must not mask a failure or allow a fully drained stream to
+  // make the overall result appear completed.
+  std::optional<TorchWorkMCCL::WorkStatus> pending;
+
+  // Keep popping terminal elements until we hit an in-progress element
   // or the queue is empty
   // Use an iterator to safely remove empty queues while iterating
   auto it = stream_work_queues_.begin();
@@ -36,25 +44,30 @@ TorchWorkMCCL::WorkStatus TorchWorkMCCLQueue::garbageCollectLocked() {
     auto& work_queue = it->second;
 
     while (!work_queue.empty()) {
-      // Get the first work object in the queue
-      auto work = work_queue.front();
-
       // Use the checkStatus function to determine the work status
-      TorchWorkMCCL::WorkStatus status = work->checkStatus();
-      last_status = status;
+      const TorchWorkMCCL::WorkStatus status =
+          work_queue.front()->checkStatus();
 
-      if (status == TorchWorkMCCL::WorkStatus::COMPLETED) {
-        // Work is completed, remove it from the work queue
-        work_queue.pop();
-      } else if (
-          status == TorchWorkMCCL::WorkStatus::TIMEDOUT ||
+      if (status == TorchWorkMCCL::WorkStatus::TIMEDOUT ||
           status == TorchWorkMCCL::WorkStatus::ERROR) {
-        // Return the error status immediately
-        return status;
-      } else {
-        // NOT_STARTED or INPROGRESS - stop processing this queue
+        // Preserve the first failure without hiding later work on this or
+        // another stream from the watchdog.
+        if (!latched_failure_.has_value()) {
+          latched_failure_ = status;
+        }
+        if (status == TorchWorkMCCL::WorkStatus::TIMEDOUT) {
+          timed_out_work_.push_back(work_queue.front());
+        }
+      } else if (status != TorchWorkMCCL::WorkStatus::COMPLETED) {
+        // NOT_STARTED or INPROGRESS. The stream is ordered, so nothing behind
+        // this can have finished; move on to the next stream.
+        if (!pending.has_value()) {
+          pending = status;
+        }
         break;
       }
+
+      work_queue.pop();
     }
 
     // If the queue is now empty, remove it from the map
@@ -65,7 +78,10 @@ TorchWorkMCCL::WorkStatus TorchWorkMCCLQueue::garbageCollectLocked() {
     }
   }
 
-  return last_status;
+  if (latched_failure_.has_value()) {
+    return *latched_failure_;
+  }
+  return pending.value_or(TorchWorkMCCL::WorkStatus::COMPLETED);
 }
 
 // Thread-safety: This method is called from the timeout watchdog thread while
@@ -85,20 +101,15 @@ TorchWorkMCCL::WorkStatus TorchWorkMCCLQueue::finalize() {
   // (uncontended locks are typically just an atomic operation).
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
 
-  // Initialize the status to COMPLETED to cover the case where the queue is
-  // empty
-  TorchWorkMCCL::WorkStatus status = TorchWorkMCCL::WorkStatus::COMPLETED;
-  while (!stream_work_queues_.empty()) {
+  // A latched failure remains reportable after its work entry is retired.
+  TorchWorkMCCL::WorkStatus status = garbageCollectLocked();
+  while (status == TorchWorkMCCL::WorkStatus::NOT_STARTED ||
+         status == TorchWorkMCCL::WorkStatus::INPROGRESS) {
     status = garbageCollectLocked();
-    if (status == TorchWorkMCCL::WorkStatus::ERROR ||
-        status == TorchWorkMCCL::WorkStatus::TIMEDOUT ||
-        status == TorchWorkMCCL::WorkStatus::COMPLETED) {
-      break;
-    }
   }
 
-  // Clear all work queues
-  stream_work_queues_.clear();
+  // A latched failure may leave later work in flight.
+  dropAllLocked();
 
   return status;
 }
