@@ -45,7 +45,7 @@ RCCL_PARAM(LL128ForceEnable, "LL128_FORCE_ENABLE", 0);
 NCCL_PARAM(GraphDumpFileRank, "GRAPH_DUMP_FILE_RANK", 0);
 NCCL_PARAM(CollNetNodeThreshold, "COLLNET_NODE_THRESHOLD", 2);
 NCCL_PARAM(NvbPreconnect, "NVB_PRECONNECT", 0);
-NCCL_PARAM(AllocP2pNetLLBuffers, "ALLOC_P2P_NET_LL_BUFFERS", 0);
+NCCL_PARAM(AllocP2pNetLLBuffers, "ALLOC_P2P_NET_LL_BUFFERS", 1);
 
 thread_local int ncclDebugNoWarn = 0;
 // Flag to suppress verbose rank/host output (used by test suite)
