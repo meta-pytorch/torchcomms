@@ -93,6 +93,8 @@ _uniflow_resolve_feature_option(
   ${_UNIFLOW_ENABLE_NVLINK_DEFAULT})
 unset(_UNIFLOW_ENABLE_NVLINK_DEFAULT)
 
+set(UNIFLOW_RDMA_TEST_NICS "" CACHE STRING
+  "Comma-separated compatible RDMA NIC pair for single-host tests")
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   set(_UNIFLOW_ENABLE_TCP_DEFAULT ON)
 else()
