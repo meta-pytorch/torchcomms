@@ -320,7 +320,9 @@ class FakeRegistration {
  public:
   FakeRegistration() {
     TorchCommFactory::get().register_backend(
-        "fake", []() { return std::make_shared<TorchCommFake>(); });
+        "fake",
+        []() { return std::make_shared<TorchCommFake>(); },
+        TORCHCOMM_BACKEND_ABI_VERSION);
   }
 };
 

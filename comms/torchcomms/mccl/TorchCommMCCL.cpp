@@ -1542,7 +1542,9 @@ class MCCLRegistration {
  public:
   MCCLRegistration() {
     TorchCommFactory::get().register_backend(
-        "mccl", []() { return std::make_shared<TorchCommMCCL>(); });
+        "mccl",
+        []() { return std::make_shared<TorchCommMCCL>(); },
+        TORCHCOMM_BACKEND_ABI_VERSION);
 
     // Register a VMM-backed CUDA allocator factory for the "mccl" backend so
     // torchcomms.get_mem_allocator("mccl") returns an allocator whose memory

@@ -12,6 +12,8 @@ namespace torch::comms {
 
 namespace {
 
+constexpr std::string_view kLegacyDirectRegistrationAbiVersion = "1.4";
+
 // BackendLib manages the lifecycle of dynamically loaded backend libraries.
 // The library is loaded in the constructor via dlopen() and kept loaded for
 // the lifetime of the process. We intentionally do not call dlclose() --
@@ -168,7 +170,12 @@ std::shared_ptr<TorchCommBackend> TorchCommFactory::create_backend(
     }
 
     if (auto it = backends_.find(backend); it != backends_.end()) {
-      impl = it->second();
+      if (it->second.abiVersion != TORCHCOMM_BACKEND_ABI_VERSION) {
+        throw std::runtime_error(
+            "Backend " + backend + " ABI version mismatch: " +
+            it->second.abiVersion + " != " + TORCHCOMM_BACKEND_ABI_VERSION);
+      }
+      impl = it->second.factory();
     }
   }
 
@@ -219,8 +226,18 @@ std::shared_ptr<TorchCommBackend> TorchCommFactory::create_generic_backend(
 void TorchCommFactory::register_backend(
     const std::string& backend,
     const std::function<std::shared_ptr<TorchCommBackend>()>& loader_fn) {
+  register_backend(backend, loader_fn, kLegacyDirectRegistrationAbiVersion);
+}
+
+void TorchCommFactory::register_backend(
+    const std::string& backend,
+    const std::function<std::shared_ptr<TorchCommBackend>()>& loader_fn,
+    std::string_view backendAbiVersion) {
   std::lock_guard<std::mutex> guard(mutex_);
-  backends_.emplace(backend, loader_fn);
+  backends_.emplace(
+      backend,
+      BackendRegistration{
+          .factory = loader_fn, .abiVersion = std::string(backendAbiVersion)});
 }
 
 // Allocator factory methods implementation
