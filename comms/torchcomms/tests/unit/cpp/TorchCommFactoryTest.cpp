@@ -2,9 +2,11 @@
 
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
+#include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdlib>
+#include <memory>
 
 namespace torch::comms {
 
@@ -12,6 +14,12 @@ namespace {
 // Backend name must match the exported symbol in the fake backend library
 constexpr const char* kBackendName = "fake_test";
 constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
+constexpr const char* kLegacyBackendName = "legacy_direct_registration_test";
+constexpr const char* kLegacyBackendPathEnvKey =
+    "LEGACY_DIRECT_REGISTRATION_BACKEND_LIB_PATH";
+constexpr const char* kMismatchedDynamicBackendName = "abi_mismatch_test";
+constexpr const char* kMismatchedDynamicBackendEnvKey =
+    "TORCHCOMMS_BACKEND_LIB_PATH_ABI_MISMATCH_TEST";
 } // namespace
 
 class TorchCommBackendFactoryTest : public ::testing::Test {
@@ -24,6 +32,7 @@ class TorchCommBackendFactoryTest : public ::testing::Test {
 
   void TearDown() override {
     unsetenv(kBackendEnvKey);
+    unsetenv(kMismatchedDynamicBackendEnvKey);
   }
 
   // Helper to get a unique backend name for error tests (avoids cache)
@@ -48,6 +57,99 @@ TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
   EXPECT_EQ(backend->getSize(), 1);
   EXPECT_EQ(backend->getDevice().type(), at::kCPU);
   EXPECT_EQ(backend->getBackendName(), "fake");
+}
+
+TEST_F(TorchCommBackendFactoryTest, CurrentExplicitAbiRegistrationSucceeds) {
+  const auto backend_name = getUniqueBackendName();
+
+  EXPECT_NO_THROW(
+      TorchCommFactory::get().register_backend(
+          backend_name,
+          []() { return std::shared_ptr<TorchCommBackend>(); },
+          TORCHCOMM_BACKEND_ABI_VERSION));
+  EXPECT_TRUE(TorchCommFactory::get().is_backend_registered(backend_name));
+}
+
+TEST_F(
+    TorchCommBackendFactoryTest,
+    ExplicitAbiMismatchRejectedBeforeFactoryCall) {
+  const auto backend_name = getUniqueBackendName();
+  const auto factory_called = std::make_shared<bool>(false);
+  TorchCommFactory::get().register_backend(
+      backend_name,
+      [factory_called]() {
+        *factory_called = true;
+        return std::shared_ptr<TorchCommBackend>();
+      },
+      "incompatible-test-version");
+
+  try {
+    TorchCommFactory::get().create_backend(
+        backend_name, at::Device(at::kCPU), "my_comm", CommOptions{});
+    FAIL() << "Expected an ABI mismatch";
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    EXPECT_NE(message.find(backend_name), std::string::npos);
+    EXPECT_NE(message.find("incompatible-test-version"), std::string::npos);
+    EXPECT_NE(message.find(TORCHCOMM_BACKEND_ABI_VERSION), std::string::npos);
+  }
+  EXPECT_FALSE(*factory_called);
+}
+
+TEST_F(
+    TorchCommBackendFactoryTest,
+    LegacyDirectRegistrationRejectedBeforeFactoryCall) {
+  const char* const lib_path = std::getenv(kLegacyBackendPathEnvKey);
+  ASSERT_NE(lib_path, nullptr) << kLegacyBackendPathEnvKey << " not set";
+
+  void* const handle = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+  ASSERT_NE(handle, nullptr) << dlerror();
+
+  using FactoryCalledFn = bool (*)();
+  auto* const factory_called = reinterpret_cast<FactoryCalledFn>(
+      dlsym(handle, "legacy_direct_registration_factory_called"));
+  ASSERT_NE(factory_called, nullptr) << dlerror();
+  EXPECT_FALSE(factory_called());
+
+  try {
+    TorchCommFactory::get().create_backend(
+        kLegacyBackendName, at::Device(at::kCPU), "my_comm", CommOptions{});
+    FAIL() << "Expected a legacy ABI mismatch";
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    EXPECT_NE(message.find(kLegacyBackendName), std::string::npos);
+    EXPECT_NE(message.find("1.4"), std::string::npos);
+    EXPECT_NE(message.find(TORCHCOMM_BACKEND_ABI_VERSION), std::string::npos);
+  }
+  EXPECT_FALSE(factory_called());
+}
+
+TEST_F(TorchCommBackendFactoryTest, GenericLoaderRejectsMismatchedAbi) {
+  const char* const lib_path = std::getenv(kLegacyBackendPathEnvKey);
+  ASSERT_NE(lib_path, nullptr) << kLegacyBackendPathEnvKey << " not set";
+  ASSERT_EQ(setenv(kMismatchedDynamicBackendEnvKey, lib_path, 1), 0);
+
+  void* const handle = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+  ASSERT_NE(handle, nullptr) << dlerror();
+  using NewCommCalledFn = bool (*)();
+  auto* const new_comm_called = reinterpret_cast<NewCommCalledFn>(
+      dlsym(handle, "mismatched_dynamic_new_comm_called"));
+  ASSERT_NE(new_comm_called, nullptr) << dlerror();
+  EXPECT_FALSE(new_comm_called());
+
+  try {
+    TorchCommFactory::get().create_backend(
+        kMismatchedDynamicBackendName,
+        at::Device(at::kCPU),
+        "my_comm",
+        CommOptions{});
+    FAIL() << "Expected a dynamic-loader ABI mismatch";
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    EXPECT_NE(message.find("incompatible-test-version"), std::string::npos);
+    EXPECT_NE(message.find(TORCHCOMM_BACKEND_ABI_VERSION), std::string::npos);
+  }
+  EXPECT_FALSE(new_comm_called());
 }
 
 TEST_F(TorchCommBackendFactoryTest, GenericBackendFunctionality) {

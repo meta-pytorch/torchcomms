@@ -122,7 +122,9 @@ class NCCLLazyRegistration {
  public:
   NCCLLazyRegistration() {
     TorchCommFactory::get().register_backend(
-        "nccl-lazy", []() { return std::make_shared<TorchCommNCCLLazy>(); });
+        "nccl-lazy",
+        []() { return std::make_shared<TorchCommNCCLLazy>(); },
+        TORCHCOMM_BACKEND_ABI_VERSION);
   }
 };
 

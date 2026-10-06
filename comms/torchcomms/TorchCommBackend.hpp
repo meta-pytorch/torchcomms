@@ -18,7 +18,9 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.4";
+// TorchWork's synchronized lifecycle state and terminal-status-producer
+// metadata are part of the cross-DSO backend ABI.
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.5";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
