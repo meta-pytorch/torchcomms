@@ -36,6 +36,25 @@
 #include "gin/gin_host_win_stub.h"
 #endif
 
+// [META] NCCLX state on ncclComm and its dependencies.
+#include <optional>
+
+#include <fmt/core.h>
+
+#include "comms/ctran/CtranComm.h"
+#include "comms/utils/colltrace/AlgoStats.h"
+#include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/utils/commSpecs.h"
+
+// Forward declarations of ncclx classes to avoid circular dependencies
+class ICtran;
+namespace ncclx {
+class CommStateX;
+} // namespace ncclx
+namespace ncclx::transport {
+class TransportProxy;
+} // namespace ncclx::transport
+
 #if CUDART_VERSION < 9000
 struct cudaLaunchParams {
   void* func;
@@ -869,6 +888,27 @@ struct ncclComm {
   struct ncclDevrState devrState; // The symmetric runtime state
   struct ncclSymkState symkState; // The symmetric kernels state (built on previous)
 
+  /**
+   * NCCLX specific state
+   *
+   * ncclComm is allocated with ncclCalloc and released with free(), so no
+   * constructor or destructor runs: the default member initializers below
+   * never apply (every comm starts zero-filled), and a non-trivial member is
+   * released only if commFree resets it explicitly. Any member that comes to
+   * own a resource must be reset in commFree.
+   */
+  struct CommLogData logMetaData;
+  std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
+  std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
+  std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
+
+  // This is the only bridge between ctran and baseline code
+  bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
+  std::unique_ptr<CtranComm> ctranComm_;
+
+  // Disable local transports (P2P and SHM); forces NET for all connections
+  bool noLocal_{false};
+
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> resumeTaskQueue;
@@ -884,9 +924,13 @@ inline bool ncclNvlsSymmetricMultimemEnabled(const struct ncclComm* comm) {
   return comm->nvlsSupport && !(comm->config.nvlsHostMode & ncclNvlsHostModeDisableSymmetricMultimem);
 }
 
-static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
-static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t),
-              "endMagic must be the last field of ncclComm");
+// [META] ncclComm now holds std::shared_ptr / std::unique_ptr / std::optional
+// members, so it is no longer standard-layout and offsetof() on it is not
+// portable. The invariant still holds by construction: startMagic is the first
+// declared field and endMagic the last.
+// static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
+// static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t),
+//               "endMagic must be the last field of ncclComm");
 
 enum ncclLaunchMode {
   ncclLaunchModeInvalid = 0,
@@ -995,6 +1039,20 @@ static inline ncclRedOp_t ncclUserRedOpMangle(ncclComm* comm, ncclRedOp_t op) {
 
 ncclResult_t ncclCommEnsureReady(ncclComm_t comm);
 ncclResult_t ncclCommSetAsyncError(ncclComm_t comm, ncclResult_t nextState);
+
+// [META] record how many interNode/intraNode connections are made in one
+// ncclTransportP2pConnect call
+struct connectionSummary {
+  int intraSend = 0;
+  int intraRecv = 0;
+  int interSend = 0;
+  int interRecv = 0;
+
+  std::string toString() const {
+    return fmt::format(
+        "intraSends: {} intraRecvs: {} interSends: {} interRecvs: {}", intraSend, intraRecv, interSend, interRecv);
+  }
+};
 
 // Process-wide NCCL_CTA_POLICY env override, or NCCL_CONFIG_UNDEF_INT when unset/invalid.
 int ncclGetEnvCtaPolicy();
