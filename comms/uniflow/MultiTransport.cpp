@@ -753,7 +753,7 @@ Result<std::unique_ptr<MultiTransport>> MultiTransportFactory::createTransport(
     } else {
       UNIFLOW_LOG_WARN(
           "Transport {} cannot be created: {}",
-          factories_[j]->transportType(),
+          toStringView(factories_[j]->transportType()),
           transport.error().message());
     }
     ++i;
