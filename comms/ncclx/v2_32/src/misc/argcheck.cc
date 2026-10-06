@@ -17,6 +17,12 @@ ncclResult_t CudaPtrCheck(const void* pointer, struct ncclComm* comm, const char
     return ncclInvalidArgument;
   }
 #if CUDART_VERSION >= 10000
+  // [META] Reject unregistered host memory: on ATS/HMM it can report a non-NULL devicePointer and pass the check above.
+  if (attr.type == cudaMemoryTypeUnregistered) {
+    ERR(ncclInvalidArgument, "%s : %s %p is unregistered host memory, not a valid device pointer", opname, ptrname,
+        pointer);
+    return ncclInvalidArgument;
+  }
   if (attr.type == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
 #else
   if (attr.memoryType == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
