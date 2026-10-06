@@ -16,7 +16,12 @@ GCP GB300 hosts have alphanumeric `DEVICE_RACK_SERIAL` values (e.g. `C1507842765
 
 ## Versions Affected
 
-v2_27, v2_29, v2_30
+v2_27, v2_29, v2_30, and v2_32.
+
+v2_32 never had the integer field: it was ported directly with the string-based `rackSerial[]` and the shared `meta/DeviceRackSerial.{h,cc}`. Two conflicts with upstream 2.32:
+
+- `ncclPeerInfo`: 2.32 appended CFT and git-version fields; `rackSerial` is appended after them.
+- `fillInfo()` MNNVL block: 2.32 added degraded-bandwidth reporting; the rack-serial load follows it, still inside the MNNVL branch.
 
 ## Baseline Files Modified
 
@@ -79,13 +84,13 @@ if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
 
 ## Build Integration
 
-Each version's `def_build.bzl` and `src/Makefile` include `meta/DeviceRackSerial.cc` in the source list for both buck and conda builds.
+Each version's `def_build.bzl` includes `meta/DeviceRackSerial.cc` in the source list. v2_27/v2_29/v2_30 also add it to `src/Makefile` for conda builds; v2_32's `src/Makefile` does not build any `meta/` source yet, so the OSS `make` build has to be wired before it can carry this.
 
 ## Revert Checklist
 
 To remove rack serial support from the baseline:
 
-1. `src/include/transport.h`: Revert `rackSerial` from `char[]` to `int`; remove `kMaxRackSerialLen`
+1. `src/include/transport.h`: Revert `rackSerial` from `char[]` to `int`; remove `kMaxRackSerialLen` (v2_32: remove the `rackSerial[]` field outright, since there was never an `int` field)
 2. `src/init.cc`: Remove `meta/DeviceRackSerial.h` include; remove `loadRackSerial()` call block; restore original `ncclxGetDeviceRackSerial()` if integer-only serials are acceptable
 3. `src/graph/paths.cc`: Remove `meta/DeviceRackSerial.h` include; revert to integer comparison (`==`); revert format specifiers from `%s` to `%d`; remove `[META]` tag
-4. `def_build.bzl` / `src/Makefile`: Remove `meta/DeviceRackSerial.cc` from source lists
+4. `def_build.bzl` / `src/Makefile`: Remove `meta/DeviceRackSerial.cc` from source lists (v2_32: `def_build.bzl` only)
