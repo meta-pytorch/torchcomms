@@ -53,6 +53,9 @@ extern "C" {
 
 #include <limits.h>
 #include <stdint.h>
+// [NCCLX] ncclConfig_t carries commDesc and splitGroupRanks.
+#define NCCL_COMM_DESCRIPTION
+#define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
