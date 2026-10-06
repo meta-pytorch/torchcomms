@@ -74,8 +74,6 @@ set_target_properties(uniflow_core_extension PROPERTIES
 
 target_compile_features(uniflow_core_extension PRIVATE cxx_std_20)
 
-target_include_directories(uniflow_core_extension PRIVATE ${ROOT})
-
 target_link_libraries(uniflow_core_extension PRIVATE uniflow)
 
 # __init__.py names every symbol it re-exports, so a stale copy fails the import

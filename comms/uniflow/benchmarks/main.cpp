@@ -13,24 +13,36 @@
 #include "comms/uniflow/benchmarks/Bootstrap.h"
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/benchmarks/Reporter.h"
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
+#endif
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_TCP_TRANSPORT)
 #include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
+#endif
 #include "comms/uniflow/logging/Logger.h"
 
 // ConnectionSetup/NVLink/NcclSendRecv benchmarks are NVIDIA-only (they depend
 // on the NVLink transport or NCCL) and are compiled out on AMD. The SendRecv
 // bandwidth benchmark is hipified and built on both platforms.
-#ifndef __HIP_PLATFORM_AMD__
+#if defined(UNIFLOW_ENABLE_XGMI_BENCHMARK) || \
+    (!defined(UNIFLOW_CMAKE_BUILD) && defined(__HIP_PLATFORM_AMD__))
+// AMD intra-node tier (HIP IPC over XGMI). CMake defines the feature macro
+// when its XGMI target exists; non-CMake builds fall back to the platform
+// macro so the include continues to match the target's dependencies.
+#include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
+#elif !defined(UNIFLOW_CMAKE_BUILD)
 #include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
 #else
-// AMD intra-node tier (HIP IPC over XGMI). Its target is only in
-// uniflow_bench's deps under ovr_config//gpu:amd, so the include must be
-// guarded to match -- unguarded it breaks the NVIDIA build with a missing
-// header.
-#include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
+#ifdef UNIFLOW_ENABLE_NVLINK_TRANSPORT
+#include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
+#endif
+#ifdef UNIFLOW_ENABLE_NCCL_BENCHMARK
+#include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
+#endif
 #endif
 
 namespace {
@@ -565,16 +577,24 @@ int main(int argc, char** argv) {
   auto opts = parseArgs(argc, argv);
 
   uniflow::benchmark::BenchmarkRunner runner;
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
+#endif
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_TCP_TRANSPORT)
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
           opts.tcpIface,
           opts.tcpAsyncH2d,
           opts.tcpSocketsPerNic,
           tcpBindDevList(opts)));
-#ifndef __HIP_PLATFORM_AMD__
+#endif
+#if defined(UNIFLOW_ENABLE_XGMI_BENCHMARK) || \
+    (!defined(UNIFLOW_CMAKE_BUILD) && defined(__HIP_PLATFORM_AMD__))
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>());
+#elif !defined(UNIFLOW_CMAKE_BUILD)
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
   runner.registerBenchmark(
@@ -582,12 +602,22 @@ int main(int argc, char** argv) {
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
 #else
+#ifdef UNIFLOW_ENABLE_NVLINK_TRANSPORT
   runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>());
+      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
 #endif
+#ifdef UNIFLOW_ENABLE_NCCL_BENCHMARK
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
+#endif
+#endif
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(
           opts.rdmaDevices));
+#endif
 
   if (opts.benchmark == "__list__") {
     std::cout << "Available benchmarks:\n";

@@ -19,7 +19,7 @@ set(UNIFLOW_GPU_PLATFORM "" CACHE STRING "GPU platform: CUDA, HIP, or empty to a
 set_property(CACHE UNIFLOW_GPU_PLATFORM PROPERTY STRINGS "" CUDA HIP)
 
 if(NOT UNIFLOW_GPU_PLATFORM)
-  find_package(CUDAToolkit QUIET)
+  find_package(CUDAToolkit ${UNIFLOW_MINIMUM_CUDA_VERSION} QUIET)
   find_package(hip QUIET)
   if(CUDAToolkit_FOUND AND hip_FOUND)
     # Guessing here is worse than stopping: the wrong guess produces a library
@@ -47,7 +47,7 @@ endif()
 message(STATUS "UNIFLOW_GPU_PLATFORM = ${UNIFLOW_GPU_PLATFORM}")
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  find_package(CUDAToolkit REQUIRED)
+  find_package(CUDAToolkit ${UNIFLOW_MINIMUM_CUDA_VERSION} REQUIRED)
   set(UNIFLOW_GPU_LIBRARIES CUDA::cudart CUDA::cuda_driver)
 else()
   find_package(hip REQUIRED)
