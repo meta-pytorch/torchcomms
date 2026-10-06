@@ -13,6 +13,8 @@
 #include "xml.h"
 #include <math.h>
 
+#include "comms/utils/cvars/nccl_cvars.h"
+
 NCCL_PARAM(CrossNic, "CROSS_NIC", 2);
 
 // Initialize system->maxBw. This is the per-channel (i.e. per-SM)
@@ -1111,8 +1113,16 @@ float sm90SpeedArrayInter[] = {48.0, 45.0, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0, 1
 float sm100SpeedArrayIntra[] = {90.0, 80.0, 70.0, 60.0, 50.0, 45.0, 40.0, 30.0, 24.0, 20.0, 19.0, 18.0};
 float sm100SpeedArrayInter[] = {96.0, 90.2, 86.0, 80.0, 48.0, 45.1, 42.0, 40.0, 30.0, 24.0, 22.0,
                                 20.0, 17.5, 15.0, 12.0, 6.0,  3.0,  2.4,  1.2,  0.24, 0.12};
+// [META] NCCL_TOPO_BOND_V229 (default on): the NCCL 2.29 SM100 inter-node tier
+// list, as in NCCLX 2.30. Omits upstream's 86.0 (2.30) and 90.2 (2.31) tiers to
+// keep GB200/GB300 multi-node channel counts, and so reduction order, as on 2.30.
+// Carry forward on rebase: removing it changes default numerics. Only the tier
+// list is pinned; the rest of the search is 2.32. Rubin keeps its own table.
+float sm100SpeedArrayInterV229[] = {96.0, 80.0, 48.0, 45.1, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0,
+                                    17.5, 15.0, 12.0, 6.0,  3.0,  2.4,  1.2,  0.24, 0.12};
 #define NSPEEDSINTRA_SM100 (sizeof(sm100SpeedArrayIntra) / sizeof(float))
 #define NSPEEDSINTER_SM100 (sizeof(sm100SpeedArrayInter) / sizeof(float))
+#define NSPEEDSINTER_SM100_V229 (sizeof(sm100SpeedArrayInterV229) / sizeof(float))
 
 // clang-format off
 float rubinSpeedArrayIntra[] = {/*4x*/280.8, /*6x*/187.2, /*8x*/140.4, /*12x*/93.6, /*16x*/70.2,
@@ -1131,6 +1141,10 @@ static void ncclTopoGetSpeedArray(int inter, int ccMin, int* nSpeeds, float** sp
   if (RUBIN_AND_LATER(ccMin)) {
     *nSpeeds = inter ? NSPEEDSINTER_RUBIN : NSPEEDSINTRA_RUBIN;
     *speedArray = inter ? rubinSpeedArrayInter : rubinSpeedArrayIntra;
+  } else if (ccMin >= 100 && inter && NCCL_TOPO_BOND_V229) {
+    // [META] SM100 inter-node tiers are cvar-selectable; see sm100SpeedArrayInterV229.
+    *nSpeeds = NSPEEDSINTER_SM100_V229;
+    *speedArray = sm100SpeedArrayInterV229;
   } else if (ccMin >= 100) {
     *nSpeeds = inter ? NSPEEDSINTER_SM100 : NSPEEDSINTRA_SM100;
     *speedArray = inter ? sm100SpeedArrayInter : sm100SpeedArrayIntra;
