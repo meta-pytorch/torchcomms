@@ -6,13 +6,19 @@
 import os
 from pathlib import Path
 
+from Cython.Build import cythonize
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.errors import PlatformError
-from Cython.Build import cythonize
 
 PACKAGE = "nccl.bindings"
 LIBNAMES = ["nccl"]
+
+_prefix = os.environ.get("PREFIX", "")
+NCCL_INC = os.environ.get(
+    "NCCL_INC", os.path.join(_prefix, "include") if _prefix else ""
+)
+NCCL_LIB = os.environ.get("NCCL_LIB", os.path.join(_prefix, "lib") if _prefix else "")
 
 
 def _cuda_include_dir() -> str:
@@ -71,6 +77,20 @@ ext_modules = [
 ]
 for libname in LIBNAMES:
     ext_modules.extend(libname_extensions(libname))
+
+ncclx_include_dirs = [NCCL_INC] if NCCL_INC else []
+ncclx_library_dirs = [NCCL_LIB] if NCCL_LIB else []
+ext_modules.append(
+    Extension(
+        f"{PACKAGE}.ncclx_internal",
+        sources=[os.path.join(*PACKAGE.split("."), "ncclx_internal.pyx")],
+        include_dirs=ncclx_include_dirs,
+        library_dirs=ncclx_library_dirs,
+        language="c++",
+        extra_compile_args=["-std=c++17"],
+        libraries=["nccl"],
+    )
+)
 
 
 compiler_directives = {
