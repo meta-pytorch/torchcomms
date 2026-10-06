@@ -35,7 +35,7 @@ ncclResult_t ncclNetSocketInitDevices(const char* logPrefix) {
   union ncclSocketAddress addrs[MAX_IFS];
   NCCLCHECKGOTO(ncclFindInterfaces(names, addrs, MAX_IF_NAME_SIZE, MAX_IFS, &ncclNetIfs), ret, fail);
   if (ncclNetIfs <= 0) {
-    WARN("%s : no interface found", logPrefix);
+    ERR(ncclInternalError, "%s : no interface found", logPrefix);
     ret = ncclInternalError;
     goto fail;
   } else {
