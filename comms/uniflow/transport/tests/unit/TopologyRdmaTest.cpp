@@ -1,0 +1,677 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#include "comms/uniflow/transport/Topology.h"
+
+#include "comms/uniflow/drivers/TopologyDiscovery.h"
+#include "comms/uniflow/drivers/cuda/CudaTopologyDiscovery.h"
+#include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
+#include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
+#include "comms/uniflow/drivers/nvml/mock/MockNvmlApi.h"
+#include "comms/uniflow/drivers/sysfs/mock/MockSysfsApi.h"
+
+#include <cstring>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
+using ::testing::_;
+using ::testing::Exactly;
+using ::testing::NiceMock;
+using ::testing::Return;
+
+namespace uniflow {
+
+class TopologyRdmaTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    cuda_ = std::make_shared<NiceMock<MockCudaApi>>();
+    nvml_ = std::make_shared<NiceMock<MockNvmlApi>>();
+    ibv_ = std::make_shared<NiceMock<MockIbvApi>>();
+    sysfs_ = std::make_shared<NiceMock<MockSysfsApi>>();
+
+    // Default sysfs: resolvePath fails (no real sysfs), readFile returns
+    // empty, listDir returns 1 NUMA node.
+    ON_CALL(*sysfs_, resolvePath(_))
+        .WillByDefault(Return(Err(ErrCode::InvalidArgument, "no sysfs")));
+    ON_CALL(*sysfs_, readFile(_)).WillByDefault(Return(std::string()));
+    ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+        .WillByDefault(Return(std::vector<std::string>{"node0"}));
+
+    // Default: no NVLink, no C2C.
+    ON_CALL(*nvml_, nvmlDeviceGetNvLinkCapability(_, _, _, _))
+        .WillByDefault(Return(Err(ErrCode::NotImplemented)));
+    ON_CALL(*nvml_, nvmlDeviceGetFieldValues(_, _, _))
+        .WillByDefault(Return(Err(ErrCode::NotImplemented)));
+
+    // Default: ibverbs init succeeds with no devices.
+    ON_CALL(*ibv_, init()).WillByDefault(Return(Ok()));
+    ON_CALL(*ibv_, getDeviceList(_))
+        .WillByDefault([](int* n) -> Result<ibv_device**> {
+          *n = 0;
+          return static_cast<ibv_device**>(nullptr);
+        });
+    ON_CALL(*ibv_, freeDeviceList(_)).WillByDefault(Return(Ok()));
+
+    // Default: CUDA device save/restore.
+    ON_CALL(*cuda_, getDevice()).WillByDefault(Return(Result<int>(0)));
+    ON_CALL(*cuda_, setDevice(_)).WillByDefault(Return(Ok()));
+  }
+
+  void setupGpus(int count) {
+    ON_CALL(*nvml_, deviceCount()).WillByDefault(Return(Result<int>(count)));
+    ON_CALL(*cuda_, getDeviceCount()).WillByDefault(Return(Result<int>(count)));
+    for (int i = 0; i < count; ++i) {
+      NvmlApi::DeviceInfo info;
+      info.handle =
+          // NOLINTNEXTLINE(performance-no-int-to-ptr)
+          reinterpret_cast<nvmlDevice_t>(static_cast<uintptr_t>(i + 1));
+      info.computeCapabilityMajor = 9;
+      info.computeCapabilityMinor = 0;
+      ON_CALL(*nvml_, deviceInfo(i))
+          .WillByDefault(Return(Result<NvmlApi::DeviceInfo>(info)));
+
+      std::string bdf = "0000:0" + std::to_string(i) + ":00.0";
+      ON_CALL(*cuda_, getDevicePCIBusId(_, _, i))
+          .WillByDefault([bdf](char* buf, int len, int) {
+            strncpy(buf, bdf.c_str(), len);
+            return Ok();
+          });
+
+      // Resolve NVML handle by PCI bus ID (matches discoverGpus logic).
+      ON_CALL(*nvml_, nvmlDeviceGetHandleByPciBusId(_, _))
+          .WillByDefault([](const char*, nvmlDevice_t* dev) {
+            // Return a non-null handle for any valid PCI bus ID.
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            *dev = reinterpret_cast<nvmlDevice_t>(static_cast<uintptr_t>(1));
+            return Ok();
+          });
+
+      ON_CALL(*nvml_, nvmlDeviceGetCudaComputeCapability(_, _, _))
+          .WillByDefault([](nvmlDevice_t, int* major, int* minor) {
+            *major = 9;
+            *minor = 0;
+            return Ok();
+          });
+
+      ON_CALL(*cuda_, deviceCanAccessPeer(i, _))
+          .WillByDefault(Return(Result<bool>(true)));
+    }
+  }
+
+  std::unique_ptr<Topology> createTopology() {
+    auto topo = std::make_unique<Topology>();
+    CudaTopologyDiscovery(cuda_, nvml_, ibv_, sysfs_).discover(*topo);
+    return topo;
+  }
+
+  std::shared_ptr<NiceMock<MockCudaApi>> cuda_;
+  std::shared_ptr<NiceMock<MockNvmlApi>> nvml_;
+  std::shared_ptr<NiceMock<MockIbvApi>> ibv_;
+  std::shared_ptr<NiceMock<MockSysfsApi>> sysfs_;
+};
+
+// --- IbvApi failure is non-fatal ---
+
+TEST_F(TopologyRdmaTest, DiscoverWithZeroGpusUsesIbvLifecycle) {
+  setupGpus(0);
+  EXPECT_CALL(*ibv_, init()).Times(Exactly(1));
+  EXPECT_CALL(*ibv_, getDeviceList(_)).Times(Exactly(1));
+  EXPECT_CALL(*ibv_, freeDeviceList(_)).Times(Exactly(0));
+
+  auto topo = createTopology();
+  EXPECT_TRUE(topo->available());
+  EXPECT_EQ(topo->gpuCount(), 0u);
+  EXPECT_EQ(topo->nicCount(), 0u);
+}
+
+TEST_F(TopologyRdmaTest, IbvInitFailureIsNonFatal) {
+  setupGpus(1);
+  EXPECT_CALL(*ibv_, init()).WillOnce(Return(Err(ErrCode::NotImplemented)));
+  EXPECT_CALL(*ibv_, getDeviceList(_)).Times(Exactly(0));
+  auto topo = createTopology();
+  EXPECT_TRUE(topo->available());
+  EXPECT_EQ(topo->gpuCount(), 1u);
+  EXPECT_EQ(topo->nicCount(), 0u);
+}
+
+// --- Topology with NIC tests ---
+
+// PCI hierarchy for NIC selection tests:
+//   root (pci0000:00)
+//   ├── switch0 (0000:00:01.0)
+//   │   ├── GPU0 (0000:01:00.0)        ← PIX to nic0, nic1
+//   │   ├── nic0/mlx5_0 (0000:02:00.0) ← PIX to GPU0
+//   │   └── nic1/mlx5_1 (0000:03:00.0) ← PIX to GPU0
+//   └── switch1 (0000:00:02.0)
+//       └── nic2/mlx5_2 (0000:04:00.0) ← PXB to GPU0
+class TopologyNicTest : public TopologyRdmaTest {
+ protected:
+  void SetUp() override {
+    TopologyRdmaTest::SetUp();
+    setupGpus(1);
+
+    // PCI sysfs paths.
+    gpu0_ = "/sys/devices/pci0000:00/0000:00:01.0/0000:01:00.0";
+    nic0_ = "/sys/devices/pci0000:00/0000:00:01.0/0000:02:00.0";
+    nic1_ = "/sys/devices/pci0000:00/0000:00:01.0/0000:03:00.0";
+    nic2_ = "/sys/devices/pci0000:00/0000:00:02.0/0000:04:00.0";
+    sw0_ = "/sys/devices/pci0000:00/0000:00:01.0";
+    sw1_ = "/sys/devices/pci0000:00/0000:00:02.0";
+    root_ = "/sys/devices/pci0000:00";
+
+    // GPU0 sysfs resolve.
+    ON_CALL(*sysfs_, resolvePath("/sys/bus/pci/devices/0000:00:00.0"))
+        .WillByDefault(Return(Result<std::string>(gpu0_)));
+
+    // Ancestor chains.
+    for (const auto& dev : {gpu0_, nic0_, nic1_}) {
+      ON_CALL(*sysfs_, resolvePath(dev + "/.."))
+          .WillByDefault(Return(Result<std::string>(sw0_)));
+    }
+    ON_CALL(*sysfs_, resolvePath(nic2_ + "/.."))
+        .WillByDefault(Return(Result<std::string>(sw1_)));
+    ON_CALL(*sysfs_, resolvePath(sw0_ + "/.."))
+        .WillByDefault(Return(Result<std::string>(root_)));
+    ON_CALL(*sysfs_, resolvePath(sw1_ + "/.."))
+        .WillByDefault(Return(Result<std::string>(root_)));
+
+    // Link info for all PCI devices (Gen4 x16).
+    for (const auto& dev : {gpu0_, nic0_, nic1_, nic2_, sw0_, sw1_}) {
+      ON_CALL(*sysfs_, readFile(dev + "/max_link_speed"))
+          .WillByDefault(Return("16 GT/s"));
+      ON_CALL(*sysfs_, readFile(dev + "/max_link_width"))
+          .WillByDefault(Return("16"));
+      ON_CALL(*sysfs_, readFile(dev + "/../max_link_speed"))
+          .WillByDefault(Return("16 GT/s"));
+      ON_CALL(*sysfs_, readFile(dev + "/../max_link_width"))
+          .WillByDefault(Return("16"));
+      ON_CALL(*sysfs_, readFile(dev + "/numa_node")).WillByDefault(Return("0"));
+    }
+  }
+
+  // Entry for a NIC device: name, PCI sysfs path (empty for virtual), virtual.
+  struct NicEntry {
+    std::string name;
+    std::string pciSysfsPath; // empty for virtual devices
+    bool isVirtual = false;
+  };
+
+  void setupNics(const std::vector<std::pair<std::string, std::string>>& nics) {
+    std::vector<NicEntry> entries;
+    entries.reserve(nics.size());
+    for (const auto& [name, path] : nics) {
+      entries.push_back({name, path, /*isVirtual=*/false});
+    }
+    setupNicsImpl(entries);
+  }
+
+  void setupNicsImpl(const std::vector<NicEntry>& nics) {
+    nicDevices_.resize(nics.size());
+    nicDevicePtrs_.resize(nics.size());
+    nicNames_.clear();
+
+    for (size_t i = 0; i < nics.size(); ++i) {
+      std::memset(&nicDevices_[i], 0, sizeof(ibv_device));
+      std::string ibdevPath = "/sys/class/infiniband/" + nics[i].name;
+      std::strncpy(
+          nicDevices_[i].ibdev_path,
+          ibdevPath.c_str(),
+          sizeof(nicDevices_[i].ibdev_path) - 1);
+      nicDevicePtrs_[i] = &nicDevices_[i];
+      nicNames_.push_back(nics[i].name);
+
+      if (nics[i].isVirtual) {
+        // Virtual device: resolvePath(ibdevPath) returns /devices/virtual/...
+        ON_CALL(*sysfs_, resolvePath(ibdevPath))
+            .WillByDefault(Return(
+                Result<std::string>(
+                    "/sys/devices/virtual/infiniband/" + nics[i].name)));
+      } else {
+        // Physical device: resolvePath(ibdevPath/device) → PCI path.
+        ON_CALL(*sysfs_, resolvePath(ibdevPath + "/device"))
+            .WillByDefault(Return(Result<std::string>(nics[i].pciSysfsPath)));
+      }
+    }
+
+    int n = static_cast<int>(nics.size());
+    ON_CALL(*ibv_, getDeviceList(_))
+        .WillByDefault([this, n](int* numDevices) -> Result<ibv_device**> {
+          *numDevices = n;
+          return nicDevicePtrs_.data();
+        });
+
+    ON_CALL(*ibv_, freeDeviceList(_)).WillByDefault(Return(Ok()));
+
+    for (size_t i = 0; i < nics.size(); ++i) {
+      ON_CALL(*ibv_, getDeviceName(&nicDevices_[i]))
+          .WillByDefault([this, i](ibv_device*) -> Result<const char*> {
+            return nicNames_[i].c_str();
+          });
+
+      ON_CALL(*ibv_, openDevice(&nicDevices_[i]))
+          .WillByDefault([i](ibv_device*) -> Result<ibv_context*> {
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
+            return reinterpret_cast<ibv_context*>(
+                static_cast<uintptr_t>(0x100 + i));
+          });
+    }
+
+    ON_CALL(*ibv_, queryDevice(_, _))
+        .WillByDefault([](ibv_context*, ibv_device_attr* attr) {
+          attr->phys_port_cnt = 1;
+          return Ok();
+        });
+
+    ON_CALL(*ibv_, queryPort(_, _, _))
+        .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+          attr->state = IBV_PORT_ACTIVE;
+          attr->active_speed = 128; // NDR (bit 7)
+          attr->active_width = 2; // 4x (bit 1)
+          return Ok();
+        });
+
+    ON_CALL(*ibv_, closeDevice(_)).WillByDefault(Return(Ok()));
+  }
+
+  /// Stub the backing netdev name reported for an IB device via
+  /// /sys/class/infiniband/<dev>/device/net.
+  void setNetdev(const std::string& devName, const std::string& netdev) {
+    ON_CALL(
+        *sysfs_, listDir("/sys/class/infiniband/" + devName + "/device/net", _))
+        .WillByDefault(Return(std::vector<std::string>{netdev}));
+  }
+
+  std::string gpu0_, nic0_, nic1_, nic2_, sw0_, sw1_, root_;
+  std::vector<ibv_device> nicDevices_;
+  std::vector<ibv_device*> nicDevicePtrs_;
+  std::vector<std::string> nicNames_;
+};
+
+TEST_F(TopologyNicTest, NicNodesAreDiscovered) {
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  EXPECT_EQ(topo->nicCount(), 2u);
+  EXPECT_EQ(topo->getNicNode(0).name, "mlx5_0");
+  EXPECT_EQ(topo->getNicNode(1).name, "mlx5_1");
+}
+
+TEST_F(TopologyNicTest, ZeroNicsIsValid) {
+  // Default mock: no IB devices. GPU-only topology should work.
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  EXPECT_EQ(topo->gpuCount(), 1u);
+  EXPECT_EQ(topo->nicCount(), 0u);
+}
+
+TEST_F(TopologyNicTest, SameSwitchNicGetPixPath) {
+  setupNics({{"mlx5_0", nic0_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  int gpuNodeId = topo->getGpuNode(0).id;
+  int nicNodeId = topo->getNicNode(0).id;
+  const auto& path = topo->getPath(gpuNodeId, nicNodeId);
+  EXPECT_EQ(path.type, PathType::PIX);
+  EXPECT_GT(path.bw, 0u);
+}
+
+TEST_F(TopologyNicTest, DifferentSwitchNicGetPhbPath) {
+  // nic2 is under a different PCIe switch that shares no PCI BDF ancestor
+  // with GPU0's switch. Path goes through the CPU node → PHB.
+  setupNics({{"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  int gpuNodeId = topo->getGpuNode(0).id;
+  int nicNodeId = topo->getNicNode(0).id;
+  const auto& path = topo->getPath(gpuNodeId, nicNodeId);
+  EXPECT_EQ(path.type, PathType::PHB);
+}
+
+TEST_F(TopologyNicTest, CloserNicHasBetterPath) {
+  // nic0 under same switch as GPU (PIX), nic2 under different switch (PXB).
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 2u);
+
+  int gpuNodeId = topo->getGpuNode(0).id;
+  const auto& pathToNic0 = topo->getPath(gpuNodeId, topo->getNicNode(0).id);
+  const auto& pathToNic2 = topo->getPath(gpuNodeId, topo->getNicNode(1).id);
+
+  // PIX < PHB — closer NIC has a better (lower) path type.
+  EXPECT_LT(pathToNic0.type, pathToNic2.type);
+  EXPECT_EQ(pathToNic0.type, PathType::PIX);
+  EXPECT_EQ(pathToNic2.type, PathType::PHB);
+}
+
+TEST_F(TopologyNicTest, MultiRailNicsAtSameDistance) {
+  // Two NICs under the same switch as GPU → both PIX, same bandwidth.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 2u);
+
+  int gpuNodeId = topo->getGpuNode(0).id;
+  const auto& path0 = topo->getPath(gpuNodeId, topo->getNicNode(0).id);
+  const auto& path1 = topo->getPath(gpuNodeId, topo->getNicNode(1).id);
+
+  EXPECT_EQ(path0.type, PathType::PIX);
+  EXPECT_EQ(path1.type, PathType::PIX);
+  EXPECT_EQ(path0.bw, path1.bw);
+}
+
+TEST_F(TopologyNicTest, FilterNicByPrefix) {
+  setupNics({{"mlx5_0", nic0_}, {"bnxt_re0", nic1_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 2u);
+
+  NicFilter mlxOnly("mlx5");
+  EXPECT_TRUE(topo->filterNic(0, mlxOnly));
+  EXPECT_FALSE(topo->filterNic(1, mlxOnly));
+
+  NicFilter excludeMlx("^mlx5");
+  EXPECT_FALSE(topo->filterNic(0, excludeMlx));
+  EXPECT_TRUE(topo->filterNic(1, excludeMlx));
+}
+
+TEST_F(TopologyNicTest, NodeNamesAreSet) {
+  setupNics({{"mlx5_0", nic0_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_EQ(topo->getGpuNode(0).name, "cuda:0");
+  EXPECT_EQ(topo->getCpuNode(0).name, "cpu:0");
+  EXPECT_EQ(topo->getNicNode(0).name, "mlx5_0");
+}
+
+TEST_F(TopologyNicTest, NicNumaNodeLookup) {
+  // Override nic2_ to NUMA node 1 so we can verify per-NIC differentiation.
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_EQ(topo->nicNumaNode("mlx5_0"), 0);
+  EXPECT_EQ(topo->nicNumaNode("mlx5_2"), 1);
+  EXPECT_EQ(topo->nicNumaNode("missing_nic"), -1);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsKeepsAllBestPerNicNumaCandidates) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1", "mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNics(), expected);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaPrefersLocalNics) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> numa0Nics{"mlx5_0", "mlx5_1"};
+  const std::vector<std::string> numa1Nics{"mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNicsForNuma(0), numa0Nics);
+  EXPECT_EQ(topo->selectCpuNicsForNuma(1), numa1Nics);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaAppliesCapAfterLocality) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> boundedNuma0Nics{"mlx5_0"};
+  EXPECT_EQ(topo->selectCpuNicsForNuma(0, NicFilter(), 1), boundedNuma0Nics);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaNodesKeepsBoundedPoolPerNuma) {
+  ON_CALL(*sysfs_, listDir("/sys/devices/system/node", "node"))
+      .WillByDefault(Return(std::vector<std::string>{"node0", "node1"}));
+  ON_CALL(*sysfs_, readFile(nic2_ + "/numa_node")).WillByDefault(Return("1"));
+
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}, {"mlx5_2", nic2_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_2"};
+  EXPECT_EQ(topo->selectCpuNicsForNumaNodes(NicFilter(), 1), expected);
+}
+
+TEST_F(TopologyNicTest, SelectCpuNicsForNumaUnknownNodeReturnsEmpty) {
+  setupNics({{"mlx5_0", nic0_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  EXPECT_TRUE(topo->selectCpuNicsForNuma(-1).empty());
+  EXPECT_TRUE(topo->selectCpuNicsForNuma(99).empty());
+}
+
+TEST_F(TopologyNicTest, PortSpeedIsCapturedFromIbverbs) {
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+
+  // mlx5_0 (ctx 0x100): NDR 4x = 400000 Mbps
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  auto* ctx0 = reinterpret_cast<ibv_context*>(static_cast<uintptr_t>(0x100));
+  ON_CALL(*ibv_, queryPort(ctx0, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        attr->active_speed = 128; // NDR (bit 7)
+        attr->active_width = 2; // 4x (bit 1)
+        return Ok();
+      });
+
+  // mlx5_1 (ctx 0x101): HDR 4x = 200000 Mbps
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  auto* ctx1 = reinterpret_cast<ibv_context*>(static_cast<uintptr_t>(0x101));
+  ON_CALL(*ibv_, queryPort(ctx1, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        attr->active_speed = 64; // HDR (bit 6)
+        attr->active_width = 2; // 4x (bit 1)
+        return Ok();
+      });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 2u);
+
+  auto& nic0Data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  auto& nic1Data = std::get<TopoNode::NicData>(topo->getNicNode(1).data);
+
+  EXPECT_EQ(nic0Data.portSpeedMbps, 400000u); // NDR 4x
+  EXPECT_EQ(nic1Data.portSpeedMbps, 200000u); // HDR 4x
+  EXPECT_GT(nic0Data.portSpeedMbps, nic1Data.portSpeedMbps);
+}
+
+// --- Virtual RDMA device (RXE) tests ---
+
+TEST_F(TopologyNicTest, VirtualRdmaDeviceIsDiscovered) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  const auto& nic = topo->getNicNode(0);
+  EXPECT_EQ(nic.name, "rxe0");
+
+  const auto& data = std::get<TopoNode::NicData>(nic.data);
+  EXPECT_EQ(data.bdf, "virtual");
+  EXPECT_EQ(data.numaNode, 0);
+  EXPECT_EQ(data.port, 1);
+  // Uses default queryPort mock (NDR 4x = 400000 Mbps).
+  EXPECT_EQ(data.portSpeedMbps, 400000u);
+}
+
+TEST_F(TopologyNicTest, VirtualRdmaDevicePreservesNonZeroSpeed) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  // Report a non-zero speed — should be preserved, not overridden.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  auto* ctx0 = reinterpret_cast<ibv_context*>(static_cast<uintptr_t>(0x100));
+  ON_CALL(*ibv_, queryPort(ctx0, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        attr->active_speed = 64; // HDR
+        attr->active_width = 2; // 4x
+        return Ok();
+      });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.bdf, "virtual");
+  EXPECT_EQ(data.portSpeedMbps, 200000u); // HDR 4x
+}
+
+TEST_F(TopologyNicTest, VirtualNicBandwidthUsesPortSpeed) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  // Virtual NIC should be connected to CPU node with port speed as bandwidth
+  // (no PCIe bottleneck). NDR 4x = 400000 Mbps → 50000 MB/s.
+  int nicNodeId = topo->getNicNode(0).id;
+  int cpuNodeId = topo->getCpuNode(0).id;
+  const auto& path = topo->getPath(nicNodeId, cpuNodeId);
+  EXPECT_NE(path.type, PathType::DIS);
+  EXPECT_EQ(path.bw, 50000u); // 400000 Mbps / 8
+}
+
+TEST_F(TopologyNicTest, VirtualRdmaDeviceDefaultsSpeedWhenZero) {
+  setupNicsImpl({
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  // Report zero speed — should be overridden to 10 Gbps default.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  auto* ctx0 = reinterpret_cast<ibv_context*>(static_cast<uintptr_t>(0x100));
+  ON_CALL(*ibv_, queryPort(ctx0, _, _))
+      .WillByDefault([](ibv_context*, uint8_t, ibv_port_attr* attr) {
+        attr->state = IBV_PORT_ACTIVE;
+        attr->active_speed = 0;
+        attr->active_width = 0;
+        return Ok();
+      });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 1u);
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.bdf, "virtual");
+  EXPECT_EQ(data.portSpeedMbps, 10000u); // default RXE speed: 10 Gbps
+
+  // Bandwidth to CPU should use the default speed: 10000 Mbps / 8 = 1250 MB/s.
+  int nicNodeId = topo->getNicNode(0).id;
+  int cpuNodeId = topo->getCpuNode(0).id;
+  const auto& path = topo->getPath(nicNodeId, cpuNodeId);
+  EXPECT_NE(path.type, PathType::DIS);
+  EXPECT_EQ(path.bw, 1250u);
+}
+
+TEST_F(TopologyNicTest, MixedPhysicalAndVirtualNics) {
+  setupNicsImpl({
+      {.name = "mlx5_0", .pciSysfsPath = nic0_, .isVirtual = false},
+      {.name = "rxe0", .pciSysfsPath = "", .isVirtual = true},
+  });
+
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+  ASSERT_EQ(topo->nicCount(), 2u);
+
+  const auto& phys = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  const auto& virt = std::get<TopoNode::NicData>(topo->getNicNode(1).data);
+
+  EXPECT_NE(phys.bdf, "virtual");
+  EXPECT_EQ(virt.bdf, "virtual");
+  EXPECT_EQ(virt.numaNode, 0);
+}
+
+// --- Netdev-prefix NIC selection ---
+
+TEST_F(TopologyNicTest, NetdevNameCapturedFromSysfs) {
+  setupNics({{"mlx5_0", nic0_}});
+  setNetdev("mlx5_0", "beth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const auto& data = std::get<TopoNode::NicData>(topo->getNicNode(0).data);
+  EXPECT_EQ(data.netdevName, "beth0");
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixSelectsMatchingNic) {
+  // Two equidistant NICs; only mlx5_0 has a backend-ethernet ("beth") netdev.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "beth0");
+  setNetdev("mlx5_1", "eth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixFallsBackWhenNoMatch) {
+  // Neither NIC has a "beth" netdev → fall back to filter-only selection.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "eth0");
+  setNetdev("mlx5_1", "eth1");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+TEST_F(TopologyNicTest, EmptyNetdevPrefixConsidersAllNics) {
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  setNetdev("mlx5_0", "beth0");
+  setNetdev("mlx5_1", "eth0");
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  // Empty prefix disables the predicate: both equidistant NICs are selected.
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, ""), expected);
+}
+
+TEST_F(TopologyNicTest, NetdevPrefixIgnoredWhenNoNetdevNames) {
+  // No NIC has a netdev name (e.g. a backend that does not populate it). The
+  // prefix predicate is skipped entirely rather than excluding every NIC.
+  setupNics({{"mlx5_0", nic0_}, {"mlx5_1", nic1_}});
+  auto topo = createTopology();
+  ASSERT_TRUE(topo->available());
+
+  const std::vector<std::string> expected{"mlx5_0", "mlx5_1"};
+  EXPECT_EQ(topo->selectCpuNics(NicFilter{}, "beth"), expected);
+}
+
+} // namespace uniflow
