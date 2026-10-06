@@ -34,7 +34,8 @@ target_compile_options(uniflow_rdma_transport PRIVATE -fPIC)
 target_link_libraries(uniflow_rdma_transport PUBLIC
     uniflow_build_config
     uniflow_cuda
-    uniflow_ibv_api
+    uniflow_ibv
+    uniflow_transport
 )
 
 uniflow_target_hipified(uniflow_rdma_transport)

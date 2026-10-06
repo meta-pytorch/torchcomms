@@ -5,15 +5,24 @@
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 
-// RDMA is the GPU transport on AMD as well as NVIDIA. NVLink is NVIDIA-only
-// (NVML-backed topology, fabric/FD IPC) and is compiled out on AMD/HIP.
+#ifndef UNIFLOW_CMAKE_BUILD
+#define UNIFLOW_ENABLE_RDMA_TRANSPORT 1
+#ifdef __HIP_PLATFORM_AMD__
+#define UNIFLOW_ENABLE_P2P_TRANSPORT 1
+#else
+#define UNIFLOW_ENABLE_NVLINK_TRANSPORT 1
+#endif
+#endif
+
+#ifdef UNIFLOW_ENABLE_RDMA_TRANSPORT
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#endif
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
 #include "comms/uniflow/transport/tcp/TcpTransport.h"
 #endif
-#ifndef __HIP_PLATFORM_AMD__
+#if defined(UNIFLOW_ENABLE_NVLINK_TRANSPORT) && !defined(__HIP_PLATFORM_AMD__)
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
-#else
+#elif defined(UNIFLOW_ENABLE_P2P_TRANSPORT)
 #include "comms/uniflow/transport/p2p/P2pTransport.h"
 #endif
 
@@ -177,15 +186,22 @@ std::vector<std::string> MultiTransportFactory::selectNics() {
 Status MultiTransportFactory::supported(TransportType type) {
   switch (type) {
     case TransportType::RDMA:
+#ifdef UNIFLOW_ENABLE_RDMA_TRANSPORT
       return RdmaTransportFactory::supported();
-#ifndef __HIP_PLATFORM_AMD__
+#else
+      return Err(ErrCode::NotImplemented, "rdma transport is not enabled");
+#endif
+#if defined(UNIFLOW_ENABLE_NVLINK_TRANSPORT) && !defined(__HIP_PLATFORM_AMD__)
     case TransportType::NVLink:
       return NVLinkTransportFactory::supported();
-#else
+#elif defined(UNIFLOW_ENABLE_P2P_TRANSPORT)
     case TransportType::NVLink:
       // On AMD the NVLink tier is served by the P2P (XGMI) transport, whose
       // supported() encodes the all-XGMI arch gate.
       return P2pTransportFactory::supported();
+#else
+    case TransportType::NVLink:
+      return Err(ErrCode::NotImplemented, "nvlink transport is not enabled");
 #endif
     case TransportType::TCP:
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
@@ -275,13 +291,13 @@ MultiTransportFactory::MultiTransportFactory(
   // (NVLink on NVIDIA, P2P/XGMI on AMD). This tier and RDMA are both registered
   // when available; selectTransport chooses per transfer (intraNodeTransport
   // can flip the intra-node default -- see selectTransport).
-#ifndef __HIP_PLATFORM_AMD__
+#if defined(UNIFLOW_ENABLE_NVLINK_TRANSPORT) && !defined(__HIP_PLATFORM_AMD__)
   if (deviceId_ >= 0 && isNvlinkAvailable()) {
     auto nvlink = std::make_shared<NVLinkTransportFactory>(
         deviceId, eventBaseThread_->getEventBase());
     factories_.emplace_back(std::move(nvlink));
   }
-#else
+#elif defined(UNIFLOW_ENABLE_P2P_TRANSPORT)
   // AMD: the NVLink tier is served by the P2P (XGMI) transport. Its supported()
   // owns the all-XGMI arch gate (selectTransport is presence-driven; see §5.6).
   if (deviceId_ >= 0) {
@@ -299,6 +315,7 @@ MultiTransportFactory::MultiTransportFactory(
   }
 #endif
 
+#ifdef UNIFLOW_ENABLE_RDMA_TRANSPORT
   auto nics = selectNics();
   if (!nics.empty()) {
     RdmaTransportConfig config;
@@ -309,6 +326,7 @@ MultiTransportFactory::MultiTransportFactory(
         std::move(nics), eventBaseThread_->getEventBase(), config);
     factories_.emplace_back(std::move(rdma));
   }
+#endif
 
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
   // TCP joins the transport pool automatically whenever a routable bind address

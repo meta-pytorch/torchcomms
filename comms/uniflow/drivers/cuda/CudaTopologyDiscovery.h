@@ -7,12 +7,13 @@
 #include "comms/uniflow/Result.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
-#include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/drivers/nvml/NvmlApi.h"
 #include "comms/uniflow/drivers/sysfs/SysfsApi.h"
 #include "comms/uniflow/transport/Topology.h"
 
 namespace uniflow {
+
+class IbvApi;
 
 /// CUDA/NVIDIA topology discovery backend.
 ///
