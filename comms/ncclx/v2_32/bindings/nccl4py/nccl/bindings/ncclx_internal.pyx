@@ -60,16 +60,17 @@ cpdef intptr_t win_shared_query(
 cpdef int win_get_attributes(int rank, intptr_t win) except? -1:
     cdef ncclWinAttr* attr_ptr = NULL
     cdef int status
-    cdef int access_type
     with nogil:
         status = _ncclWinGetAttributes(rank, <ncclWindow_t>win, &attr_ptr)
-    check_status(status)
-    if attr_ptr == NULL:
-        raise RuntimeError("ncclWinGetAttributes returned a null attribute")
-    access_type = <int>attr_ptr.accessType
-    with nogil:
-        _nccl4pyDeleteWinAttr(attr_ptr)
-    return access_type
+    try:
+        check_status(status)
+        if attr_ptr == NULL:
+            raise RuntimeError("ncclWinGetAttributes returned a null attribute")
+        return <int>attr_ptr.accessType
+    finally:
+        if attr_ptr != NULL:
+            with nogil:
+                _nccl4pyDeleteWinAttr(attr_ptr)
 
 
 cdef class NcclxHints:
