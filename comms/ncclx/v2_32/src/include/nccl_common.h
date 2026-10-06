@@ -27,13 +27,18 @@ typedef SSIZE_T ssize_t;
 typedef enum {
   NCCL_LOG_NONE = 0,
   NCCL_LOG_VERSION = 1,
-  NCCL_LOG_WARN = 2,
-  NCCL_LOG_INFO = 3,
-  NCCL_LOG_ABORT = 4,
-  NCCL_LOG_TRACE = 5,
+  NCCL_LOG_ERROR = 2, // [META] root-cause errors; WARN and above renumbered
+  NCCL_LOG_WARN = 3,
+  NCCL_LOG_INFO = 4,
+  NCCL_LOG_ABORT = 5,
+  NCCL_LOG_TRACE = 6,
   // Appended for ABI compatibility; logically between WARN and INFO.
-  NCCL_LOG_ATTN = 6
+  // [META] 7 rather than upstream's 6, which NCCL_LOG_TRACE takes after the
+  // ERROR insertion.
+  NCCL_LOG_ATTN = 7
 } ncclDebugLogLevel;
+// [META] Lets shared code handle NCCL_LOG_ATTN, which older versions lack.
+#define NCCL_LOG_HAS_ATTN 1
 
 typedef enum {
   NCCL_INIT = 0x1,

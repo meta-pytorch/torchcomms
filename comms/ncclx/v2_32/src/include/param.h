@@ -30,4 +30,7 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
     return cache; \
   }
 
+void initNcclLogger(bool configureCommsLogger = true) noexcept;
+bool ncclLoggerInitialized() noexcept;
+
 #endif

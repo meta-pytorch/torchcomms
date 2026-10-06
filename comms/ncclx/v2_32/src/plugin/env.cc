@@ -101,6 +101,7 @@ ncclResult_t ncclEnvPluginInit(void) {
   NCCLCHECK(ncclEnvPlugin->init(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH, NCCL_SUFFIX, ncclDebugLog));
   atexit(ncclEnvPluginFinalize);
   COMPILER_ATOMIC_STORE(&initialized, true, std::memory_order_release);
+  ncclRefreshDebugInitInternal();
   return ncclSuccess;
 }
 
