@@ -10,10 +10,12 @@ collect_unit_test_dirs () {
         ! -path '*/tests/integration/*' \
         ! -path '*/rccl/*' \
         ! -path '*/rcclx/*' \
+        ! -path '*/mccl/*' \
         ! -path '*/fb/*'
     find "$TORCHCOMMS_ROOT" -path '*/tests/unit/py' -type d \
         ! -path '*/rccl/*' \
         ! -path '*/rcclx/*' \
+        ! -path '*/mccl/*' \
         ! -path '*/fb/*'
 }
 
