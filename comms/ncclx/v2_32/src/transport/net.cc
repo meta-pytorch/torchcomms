@@ -492,7 +492,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
       if (err == cudaErrorPeerAccessAlreadyEnabled) {
         cudaGetLastError();
       } else if (err != cudaSuccess) {
-        WARN("failed to peer with device %d: %d %s", map->cudaDev, err, cudaGetErrorString(err));
+        ERR(ncclInternalError, "failed to peer with device %d: %d %s", map->cudaDev, err, cudaGetErrorString(err));
         return ncclInternalError;
       }
     }
@@ -667,7 +667,7 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
                                          int sameProcess, int nChannels, char** gpuPtr, char** cpuPtr, ssize_t* size,
                                          ncclIpcDesc* ipcDesc) {
   if (cuda == 0 && sameProcess == 0) {
-    WARN("PXN should not use host buffers for data");
+    ERR(ncclInternalError, "PXN should not use host buffers for data");
     return ncclInternalError;
   }
   struct ncclProxyProgressState* progressState = &proxyState->progressState;
