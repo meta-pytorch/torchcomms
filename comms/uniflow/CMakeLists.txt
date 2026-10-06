@@ -457,12 +457,59 @@ set(UNIFLOW_SOURCES
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
-add_library(uniflow ${UNIFLOW_LIB_TYPE}
+add_library(uniflow_objects OBJECT
     ${UNIFLOW_SOURCES}
     ${UNIFLOW_PUBLIC_HEADERS}
     ${UNIFLOW_CORE_HEADERS}
     ${UNIFLOW_CORE_SOURCES}
 )
+target_link_libraries(uniflow_objects PRIVATE uniflow_build_config)
+if(UNIFLOW_ENABLE_CUDA)
+  target_link_libraries(uniflow_objects PRIVATE ${UNIFLOW_GPU_LIBRARIES})
+  uniflow_target_hipified(uniflow_objects)
+endif()
+
+add_library(uniflow_implementation INTERFACE)
+target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_objects>
+    $<TARGET_OBJECTS:uniflow_controller>
+    $<TARGET_OBJECTS:uniflow_logging>
+    $<TARGET_OBJECTS:uniflow_transport>
+)
+target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_build_config
+    uniflow_controller
+    uniflow_drivers
+    uniflow_executor
+    uniflow_logging
+    uniflow_transport
+)
+
+if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_nvlink_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_nvlink_transport)
+elseif(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_p2p_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_p2p_transport)
+endif()
+if(UNIFLOW_ENABLE_RDMA)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_rdma_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_rdma_transport)
+endif()
+if(UNIFLOW_ENABLE_TCP)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_tcp_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE
+    uniflow_tcp_transport)
+endif()
+
+add_library(uniflow ${UNIFLOW_LIB_TYPE})
 add_library(uniflow::uniflow ALIAS uniflow)
 
 if(TARGET uniflow_spdlog_compatibility_check)
@@ -483,41 +530,13 @@ target_link_libraries(uniflow PUBLIC
     $<INSTALL_INTERFACE:fmt::fmt>
     $<INSTALL_INTERFACE:spdlog::spdlog>
 )
-
 target_link_libraries(uniflow PRIVATE
-    $<BUILD_INTERFACE:uniflow_build_config>
-    $<BUILD_INTERFACE:uniflow_controller>
-    $<BUILD_INTERFACE:uniflow_drivers>
-    $<BUILD_INTERFACE:uniflow_executor>
-    $<BUILD_INTERFACE:uniflow_logging>
-    $<BUILD_INTERFACE:uniflow_topology_discovery>
-    $<BUILD_INTERFACE:uniflow_transport>
-)
+    $<BUILD_INTERFACE:uniflow_implementation>)
 
 if(UNIFLOW_ENABLE_CUDA)
-  target_link_libraries(uniflow PRIVATE
-    $<BUILD_INTERFACE:uniflow_cuda>
-    $<BUILD_INTERFACE:uniflow_nvml>
-    $<BUILD_INTERFACE:uniflow_sysfs>
-  )
   target_link_libraries(uniflow PUBLIC ${UNIFLOW_GPU_LIBRARIES})
   uniflow_target_hipified(uniflow)
-endif()
-if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  target_link_libraries(uniflow PRIVATE
-    $<BUILD_INTERFACE:uniflow_nvlink_transport>)
-elseif(UNIFLOW_ENABLE_CUDA AND UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  target_link_libraries(uniflow PRIVATE
-    $<BUILD_INTERFACE:uniflow_p2p_transport>)
-endif()
-if(UNIFLOW_ENABLE_RDMA)
-  target_link_libraries(uniflow PRIVATE
-    $<BUILD_INTERFACE:uniflow_ibv>
-    $<BUILD_INTERFACE:uniflow_rdma_transport>)
-endif()
-if(UNIFLOW_ENABLE_TCP)
-  target_link_libraries(uniflow PRIVATE
-    $<BUILD_INTERFACE:uniflow_tcp_transport>)
+  uniflow_finalize_hipify()
 endif()
 
 target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
