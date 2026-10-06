@@ -47,11 +47,9 @@ if(NOT _uniflow_spdlog_mode_matches_result)
 endif()
 unset(_uniflow_spdlog_mode_matches_result)
 
-if("@UNIFLOW_ENABLE_CUDA@" AND
-   "@UNIFLOW_GPU_PLATFORM@" STREQUAL "CUDA")
+if("@UNIFLOW_GPU_PLATFORM@" STREQUAL "CUDA")
   find_dependency(CUDAToolkit @UNIFLOW_MINIMUM_CUDA_VERSION@)
-elseif("@UNIFLOW_ENABLE_CUDA@" AND
-       "@UNIFLOW_GPU_PLATFORM@" STREQUAL "HIP")
+elseif("@UNIFLOW_GPU_PLATFORM@" STREQUAL "HIP")
   find_dependency(hip)
 endif()
 
