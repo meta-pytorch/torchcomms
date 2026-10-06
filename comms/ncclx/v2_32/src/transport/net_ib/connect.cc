@@ -234,7 +234,7 @@ static ncclResult_t ncclIbRoceGetVersionNum(const char* deviceName, int portNum,
 
   int fd = open(roceTypePath, O_RDONLY);
   if (fd == -1) {
-    WARN("NET/IB: open failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
+    ERR(ncclSystemError, "NET/IB: open failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
     return ncclSystemError;
   }
   int ret = read(fd, gidRoceVerStr, 15);
@@ -244,7 +244,7 @@ static ncclResult_t ncclIbRoceGetVersionNum(const char* deviceName, int portNum,
     // In containerized environments, read could return EINVAL if the GID index is not mapped to the
     // container sysfs. In this case return ncclSuccess and let the caller move to next GID index.
     if (errno == EINVAL) return ncclSuccess;
-    WARN("NET/IB: read failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
+    ERR(ncclSystemError, "NET/IB: read failed in ncclIbRoceGetVersionNum: %s", strerror(errno));
     return ncclSystemError;
   }
 
@@ -850,7 +850,7 @@ ncclResult_t ncclIbConnectImpl(void* ctx, int dev, void* opaqueHandle, void** se
   if (stage->state == ncclIbCommStateConnecting) goto ib_connect;
   if (stage->state == ncclIbCommStateConnected) goto ib_send_ready;
   if (stage->state != ncclIbCommStateStart) {
-    WARN("Error: trying to connect already connected sendComm");
+    ERR(ncclInternalError, "Error: trying to connect already connected sendComm");
     return ncclInternalError;
   }
   stage->buffer = NULL;
@@ -872,7 +872,7 @@ ib_connect_check:
   // IB Setup
   struct ncclIbMergedDev* mergedDev;
   if (dev >= ncclNMergedIbDevs) {
-    WARN("NET/IB : Trying to use non-existent virtual device %d", dev);
+    ERR(ncclInternalError, "NET/IB : Trying to use non-existent virtual device %d", dev);
     return ncclInternalError;
   }
 
@@ -1013,7 +1013,7 @@ ib_recv_dev_list:
     if (link_layer == IBV_LINK_LAYER_UNSPECIFIED) link_layer = devInfo->link_layer;
     if (link_layer != devInfo->link_layer) {
       int ibDev0 = comm->devs[0].base.ibDevN;
-      WARN("NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of "
+      ERR(ncclInternalError, "NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of "
            "only one link type using NCCL_IB_HCA",
            commDev->base.ibDevN, ibDev->devName, ibDev->portNum, NCCL_IB_LLSTR(ibDev->portAttr.link_layer), ibDev0,
            ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum, NCCL_IB_LLSTR(link_layer));
@@ -1068,7 +1068,7 @@ ib_connect:
     link_layer = ncclIbDevs[ibDev0].portAttr.link_layer;
     for (int i = 0; i < remMeta.ndevs; i++) {
       if (remMeta.devs[i].link_layer != link_layer) {
-        WARN("NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one "
+        ERR(ncclInternalError, "NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one "
              "link type using NCCL_IB_HCA",
              NCCL_IB_LLSTR(remMeta.devs[i].link_layer), ibDev0, ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum,
              NCCL_IB_LLSTR(link_layer));
@@ -1435,7 +1435,7 @@ ncclResult_t ncclIbAcceptImpl(void* listenComm, void** recvComm, ncclNetDeviceHa
   if (stage->state == ncclIbCommStateSend) goto ib_send;
   if (stage->state == ncclIbCommStatePendingReady) goto ib_recv_ready;
   if (stage->state != ncclIbCommStateStart) {
-    WARN("Listencomm in unknown state %d", stage->state);
+    ERR(ncclInternalError, "Listencomm in unknown state %d", stage->state);
     return ncclInternalError;
   }
 
@@ -1468,7 +1468,7 @@ ib_recv_dev_list:
   ncclNetVDeviceProps_t remoteVProps;
   memcpy(&remoteVProps, stage->buffer, sizeof(ncclNetVDeviceProps_t));
   if (lComm->dev >= ncclNMergedIbDevs) {
-    WARN("NET/IB : Trying to use non-existent virtual device %d", lComm->dev);
+    ERR(ncclInternalError, "NET/IB : Trying to use non-existent virtual device %d", lComm->dev);
     return ncclInternalError;
   }
 
@@ -1576,7 +1576,7 @@ ib_recv:
     if (link_layer == IBV_LINK_LAYER_UNSPECIFIED) link_layer = ibDev->portAttr.link_layer;
     if (link_layer != ibDev->portAttr.link_layer) {
       int ibDev0 = rComm->devs[0].base.ibDevN;
-      WARN("NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of "
+      ERR(ncclInternalError, "NET/IB : Attempted to connect incompatible devices: [%d]%s:%d/%s and [%d]%s:%d/%s. Try selecting NICs of "
            "only one link type using NCCL_IB_HCA",
            ibDevN, ibDev->devName, ibDev->portNum, NCCL_IB_LLSTR(ibDev->portAttr.link_layer), ibDev0,
            ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum, NCCL_IB_LLSTR(link_layer));
@@ -1589,7 +1589,7 @@ ib_recv:
   for (int i = 0; i < remMeta.ndevs; i++) {
     if (remMeta.devs[i].link_layer != link_layer) {
       int ibDev0 = rComm->devs[0].base.ibDevN;
-      WARN("NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one link "
+      ERR(ncclInternalError, "NET/IB : Remote %s device is incompatible with the local [%d]%s:%d/%s. Try selecting NICs of only one link "
            "type using NCCL_IB_HCA",
            NCCL_IB_LLSTR(remMeta.devs[i].link_layer), ibDev0, ncclIbDevs[ibDev0].devName, ncclIbDevs[ibDev0].portNum,
            NCCL_IB_LLSTR(link_layer));

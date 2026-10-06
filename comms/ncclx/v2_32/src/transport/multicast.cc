@@ -215,7 +215,7 @@ ncclResult_t ncclMcPartitionBindMem(const struct ncclMcPartition* partition, siz
   if (err != CUDA_SUCCESS) {
     const char* errStr;
     (void)pfn_cuGetErrorString(err, &errStr);
-    WARN("Failed to bind NVLink SHARP (NVLS) Multicast memory of size %zu at MC group %llx offset %zu : CUDA error %d "
+    ERR(ncclUnhandledCudaError, "Failed to bind NVLink SHARP (NVLS) Multicast memory of size %zu at MC group %llx offset %zu : CUDA error %d "
          "'%s'.\nThis is usually caused by a system or configuration error in the Fabric Manager or NVSwitches.\n"
          "Disable NVLS (NCCL_NVLS_ENABLE=0) if you wish to avoid this error in the future.",
          bindSize, partition->mcHandle, mcOffset, err, errStr);
