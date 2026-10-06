@@ -1,0 +1,125 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+if("@UNIFLOW_ALLOW_DEPENDENCY_OVERWRITE@" STREQUAL "ON")
+  return()
+endif()
+
+function(_uniflow_absolute_install_path output directory relative)
+  if(IS_ABSOLUTE "${directory}")
+    set(_uniflow_install_path
+      "$ENV{DESTDIR}${directory}/${relative}")
+  else()
+    set(_uniflow_install_path
+      "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${directory}/${relative}")
+  endif()
+  set(${output} "${_uniflow_install_path}" PARENT_SCOPE)
+endfunction()
+
+_uniflow_absolute_install_path(_uniflow_dependency_marker
+  "@CMAKE_INSTALL_DATADIR@" "uniflow/uniflowBundledDependencies.cmake")
+set(_uniflow_dependency_collisions)
+set(_uniflow_dependency_directories)
+set(_uniflow_dependency_files)
+set(_uniflow_dependency_glob_directories)
+set(_uniflow_dependency_glob_patterns)
+if("@UNIFLOW_FETCHED_FMT@" STREQUAL "ON")
+  list(APPEND _uniflow_dependency_directories
+    "@CMAKE_INSTALL_INCLUDEDIR@"
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_DATADIR@")
+  list(APPEND _uniflow_dependency_files
+    "fmt"
+    "cmake/fmt"
+    "pkgconfig/fmt.pc"
+    "licenses/fmt")
+  list(APPEND _uniflow_dependency_glob_directories
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_BINDIR@")
+  list(APPEND _uniflow_dependency_glob_patterns
+    "@CMAKE_SHARED_LIBRARY_PREFIX@fmt*@CMAKE_SHARED_LIBRARY_SUFFIX@*"
+    "@CMAKE_STATIC_LIBRARY_PREFIX@fmt*@CMAKE_STATIC_LIBRARY_SUFFIX@"
+    "@CMAKE_SHARED_LIBRARY_PREFIX@fmt*@CMAKE_SHARED_LIBRARY_SUFFIX@*")
+endif()
+if("@UNIFLOW_FETCHED_SPDLOG@" STREQUAL "ON")
+  list(APPEND _uniflow_dependency_directories
+    "@CMAKE_INSTALL_INCLUDEDIR@"
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_DATADIR@")
+  list(APPEND _uniflow_dependency_files
+    "spdlog"
+    "cmake/spdlog"
+    "pkgconfig/spdlog.pc"
+    "licenses/spdlog")
+  list(APPEND _uniflow_dependency_glob_directories
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_LIBDIR@"
+    "@CMAKE_INSTALL_BINDIR@")
+  list(APPEND _uniflow_dependency_glob_patterns
+    "@CMAKE_SHARED_LIBRARY_PREFIX@spdlog*@CMAKE_SHARED_LIBRARY_SUFFIX@*"
+    "@CMAKE_STATIC_LIBRARY_PREFIX@spdlog*@CMAKE_STATIC_LIBRARY_SUFFIX@"
+    "@CMAKE_SHARED_LIBRARY_PREFIX@spdlog*@CMAKE_SHARED_LIBRARY_SUFFIX@*")
+endif()
+foreach(_uniflow_dependency_directory _uniflow_dependency_file
+    IN ZIP_LISTS
+      _uniflow_dependency_directories
+      _uniflow_dependency_files)
+  _uniflow_absolute_install_path(_uniflow_dependency_path
+    "${_uniflow_dependency_directory}" "${_uniflow_dependency_file}")
+  if(EXISTS "${_uniflow_dependency_path}")
+    list(APPEND _uniflow_dependency_collisions
+      "${_uniflow_dependency_path}")
+  endif()
+endforeach()
+foreach(_uniflow_dependency_directory _uniflow_dependency_pattern
+    IN ZIP_LISTS
+      _uniflow_dependency_glob_directories
+      _uniflow_dependency_glob_patterns)
+  _uniflow_absolute_install_path(_uniflow_dependency_pattern_path
+    "${_uniflow_dependency_directory}" "${_uniflow_dependency_pattern}")
+  file(GLOB _uniflow_dependency_matches
+    LIST_DIRECTORIES TRUE "${_uniflow_dependency_pattern_path}")
+  list(APPEND _uniflow_dependency_collisions
+    ${_uniflow_dependency_matches})
+endforeach()
+list(REMOVE_DUPLICATES _uniflow_dependency_collisions)
+
+if(_uniflow_dependency_collisions)
+  if(NOT EXISTS "${_uniflow_dependency_marker}")
+    list(JOIN _uniflow_dependency_collisions ", "
+      _uniflow_dependency_collision_list)
+    message(FATAL_ERROR
+      "Installing UniFlow would overwrite existing fmt or spdlog paths: "
+      "${_uniflow_dependency_collision_list}. Use a clean install prefix or "
+      "configure with -DUNIFLOW_ALLOW_DEPENDENCY_OVERWRITE=ON to replace them.")
+  endif()
+
+  include("${_uniflow_dependency_marker}")
+  set(_uniflow_dependency_configuration_mismatch OFF)
+  if("@UNIFLOW_FETCHED_FMT@" STREQUAL "ON" AND
+     (NOT UNIFLOW_BUNDLED_FMT OR
+      NOT UNIFLOW_BUNDLED_FMT_VERSION STREQUAL
+        "@UNIFLOW_FMT_PACKAGE_VERSION@" OR
+      NOT UNIFLOW_BUNDLED_SHARED_LIBS STREQUAL
+        "@UNIFLOW_BUILD_SHARED_LIBS@"))
+    set(_uniflow_dependency_configuration_mismatch ON)
+  endif()
+  if("@UNIFLOW_FETCHED_SPDLOG@" STREQUAL "ON" AND
+     (NOT UNIFLOW_BUNDLED_SPDLOG OR
+      NOT UNIFLOW_BUNDLED_SPDLOG_VERSION STREQUAL
+        "@UNIFLOW_SPDLOG_PACKAGE_VERSION@" OR
+      NOT UNIFLOW_BUNDLED_SPDLOG_FORMAT_MODE STREQUAL
+        "@UNIFLOW_SPDLOG_FORMAT_MODE@" OR
+      NOT UNIFLOW_BUNDLED_SHARED_LIBS STREQUAL
+        "@UNIFLOW_BUILD_SHARED_LIBS@"))
+    set(_uniflow_dependency_configuration_mismatch ON)
+  endif()
+  if(_uniflow_dependency_configuration_mismatch)
+    message(FATAL_ERROR
+      "The install prefix contains fmt or spdlog from a different UniFlow "
+      "configuration. Use a clean prefix or configure with "
+      "-DUNIFLOW_ALLOW_DEPENDENCY_OVERWRITE=ON to replace them.")
+  endif()
+endif()

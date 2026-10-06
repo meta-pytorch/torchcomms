@@ -1,0 +1,62 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+find_dependency(fmt @UNIFLOW_FMT_PACKAGE_VERSION@ EXACT CONFIG)
+find_dependency(spdlog @UNIFLOW_SPDLOG_PACKAGE_VERSION@ EXACT CONFIG)
+
+include(CheckCXXSourceCompiles)
+set(_uniflow_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+set(_uniflow_saved_required_definitions "${CMAKE_REQUIRED_DEFINITIONS}")
+set(CMAKE_REQUIRED_LIBRARIES spdlog::spdlog)
+set(CMAKE_REQUIRED_DEFINITIONS
+  -DUNIFLOW_EXPECT_SPDLOG_@UNIFLOW_SPDLOG_FORMAT_MODE@=1)
+unset(_uniflow_spdlog_mode_matches CACHE)
+check_cxx_source_compiles([=[
+  #include <spdlog/tweakme.h>
+  #include <spdlog/version.h>
+  #if SPDLOG_VERSION < 11502
+  #error spdlog 1.15.2 or newer is required
+  #endif
+  #if defined(UNIFLOW_EXPECT_SPDLOG_EXTERNAL_FMT)
+  #if !defined(SPDLOG_FMT_EXTERNAL) || defined(SPDLOG_USE_STD_FORMAT)
+  #error spdlog must use external fmt only
+  #endif
+  #elif defined(UNIFLOW_EXPECT_SPDLOG_STD_FORMAT)
+  #if !defined(SPDLOG_USE_STD_FORMAT) || defined(SPDLOG_FMT_EXTERNAL)
+  #error spdlog must use std::format only
+  #endif
+  #endif
+  int main() { return 0; }
+]=] _uniflow_spdlog_mode_matches)
+set(_uniflow_spdlog_mode_matches_result
+  "${_uniflow_spdlog_mode_matches}")
+unset(_uniflow_spdlog_mode_matches CACHE)
+set(CMAKE_REQUIRED_LIBRARIES "${_uniflow_saved_required_libraries}")
+set(CMAKE_REQUIRED_DEFINITIONS "${_uniflow_saved_required_definitions}")
+unset(_uniflow_saved_required_libraries)
+unset(_uniflow_saved_required_definitions)
+if(NOT _uniflow_spdlog_mode_matches_result)
+  unset(_uniflow_spdlog_mode_matches_result)
+  set(uniflow_FOUND FALSE)
+  set(uniflow_NOT_FOUND_MESSAGE
+    "UniFlow requires spdlog @UNIFLOW_SPDLOG_PACKAGE_VERSION@ built with @UNIFLOW_SPDLOG_FORMAT_MODE@.")
+  return()
+endif()
+unset(_uniflow_spdlog_mode_matches_result)
+
+if("@UNIFLOW_ENABLE_CUDA@" AND
+   "@UNIFLOW_GPU_PLATFORM@" STREQUAL "CUDA")
+  find_dependency(CUDAToolkit @UNIFLOW_MINIMUM_CUDA_VERSION@)
+elseif("@UNIFLOW_ENABLE_CUDA@" AND
+       "@UNIFLOW_GPU_PLATFORM@" STREQUAL "HIP")
+  find_dependency(hip)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/uniflowTargets.cmake")
+
+set(uniflow_PUBLIC_HEADERS "@UNIFLOW_INSTALLED_PUBLIC_HEADERS@")
+
+check_required_components(uniflow)
