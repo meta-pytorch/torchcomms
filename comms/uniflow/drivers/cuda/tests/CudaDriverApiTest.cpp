@@ -2,12 +2,30 @@
 
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 
+#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
 namespace uniflow {
 
 class CudaDriverApiTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    int deviceCount = 0;
+    const auto cudaStatus = cudaGetDeviceCount(&deviceCount);
+    if (cudaStatus == cudaErrorNoDevice ||
+        cudaStatus == cudaErrorInsufficientDriver ||
+        cudaStatus == cudaErrorStubLibrary) {
+      GTEST_SKIP() << "No CUDA device is available";
+    }
+    ASSERT_EQ(cudaStatus, cudaSuccess) << cudaGetErrorString(cudaStatus);
+    if (deviceCount == 0) {
+      GTEST_SKIP() << "No CUDA device is available";
+    }
+
+    const auto status = api.init();
+    ASSERT_FALSE(status.hasError()) << status.error().message();
+  }
+
   CudaDriverApi api;
 };
 

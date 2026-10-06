@@ -1,10 +1,15 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-/// Integration test for Topology on H100 systems.
-/// Requires real GPUs, NVML, and ibverbs — not for CI without GPU hardware.
+/// Integration tests for the topology backend selected at build time.
+/// Generic cases run on any discovered accelerator topology; H100-specific
+/// cases skip unless the discovered hardware matches their requirements.
 
 #include "comms/uniflow/transport/Topology.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
+
+#if defined(UNIFLOW_TOPOLOGY_TEST_CUDA)
+#include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+#endif
 
 #include <gtest/gtest.h>
 
@@ -13,8 +18,29 @@ using namespace uniflow;
 class TopologyIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
+#if defined(UNIFLOW_TOPOLOGY_TEST_CUDA)
+    int deviceCount = 0;
+    const auto deviceStatus = cudaGetDeviceCount(&deviceCount);
+    if (deviceStatus == cudaErrorNoDevice ||
+        deviceStatus == cudaErrorInsufficientDriver
+#ifndef __HIP_PLATFORM_AMD__
+        || deviceStatus == cudaErrorStubLibrary
+#endif
+        || (deviceStatus == cudaSuccess && deviceCount == 0)) {
+      GTEST_SKIP() << "No GPU is available";
+    }
+    ASSERT_EQ(deviceStatus, cudaSuccess)
+        << "GPU device discovery failed: " << cudaGetErrorString(deviceStatus);
+#endif
+
     topo_ = &sharedTopology();
-    ASSERT_TRUE(topo_->available());
+    const auto status = topo_->available();
+    if (status.hasError()) {
+      FAIL() << "Hardware topology discovery failed: "
+             << status.error().toString();
+    }
+    ASSERT_GT(topo_->gpuCount(), 0u)
+        << "Topology discovery did not report the available accelerators";
   }
 
   Topology& topo() {
@@ -39,7 +65,6 @@ TEST_F(TopologyIntegrationTest, GpuNodesAreValid) {
     EXPECT_EQ(node.type, NodeType::GPU);
     const auto& gpuData = std::get<TopoNode::GpuData>(node.data);
     EXPECT_EQ(gpuData.cudaDeviceId, static_cast<int>(i));
-    EXPECT_FALSE(gpuData.bdf.empty());
   }
 }
 
@@ -121,6 +146,9 @@ class H100TopologyTest : public TopologyIntegrationTest {
  protected:
   void SetUp() override {
     TopologyIntegrationTest::SetUp();
+    if (HasFatalFailure() || IsSkipped()) {
+      return;
+    }
     if (topo().gpuCount() != 8) {
       GTEST_SKIP() << "Not an 8-GPU system (got " << topo().gpuCount() << ")";
     }

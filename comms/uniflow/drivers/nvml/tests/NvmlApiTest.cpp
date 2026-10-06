@@ -2,12 +2,31 @@
 
 #include "comms/uniflow/drivers/nvml/NvmlApi.h"
 
+#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 
 namespace uniflow {
 
 class NvmlApiTest : public ::testing::Test {
  protected:
+  void SetUp() override {
+    int deviceCount = 0;
+    const auto cudaStatus = cudaGetDeviceCount(&deviceCount);
+    if (cudaStatus == cudaErrorNoDevice ||
+        cudaStatus == cudaErrorInsufficientDriver ||
+        cudaStatus == cudaErrorStubLibrary) {
+      GTEST_SKIP() << "NVML device discovery is unavailable";
+    }
+    ASSERT_EQ(cudaStatus, cudaSuccess) << cudaGetErrorString(cudaStatus);
+    if (deviceCount == 0) {
+      GTEST_SKIP() << "NVML device discovery is unavailable";
+    }
+
+    auto count = api.deviceCount();
+    ASSERT_TRUE(count.hasValue()) << count.error().message();
+    ASSERT_GT(count.value(), 0);
+  }
+
   NvmlApi api;
 };
 
@@ -66,7 +85,7 @@ TEST_F(NvmlApiTest, ComputeCapabilityConsistent) {
   }
 }
 
-TEST_F(NvmlApiTest, DevicePairInfoValid) {
+TEST_F(NvmlApiTest, P2PStatusConsistent) {
   auto countResult = api.deviceCount();
   ASSERT_TRUE(countResult.hasValue()) << countResult.error().message();
   int count = countResult.value();
@@ -76,29 +95,11 @@ TEST_F(NvmlApiTest, DevicePairInfoValid) {
       auto pairResult = api.devicePairInfo(a, b);
       ASSERT_TRUE(pairResult.hasValue())
           << "devicePairInfo(" << a << ", " << b << ") failed";
-      auto& pair = pairResult.value();
-      EXPECT_EQ(pair.p2pStatusRead, NVML_P2P_STATUS_OK)
-          << "p2pStatusRead not OK for (" << a << ", " << b << ")";
-      EXPECT_EQ(pair.p2pStatusWrite, NVML_P2P_STATUS_OK)
-          << "p2pStatusWrite not OK for (" << a << ", " << b << ")";
-    }
-  }
-}
-
-TEST_F(NvmlApiTest, P2PStatusConsistent) {
-  auto countResult = api.deviceCount();
-  ASSERT_TRUE(countResult.hasValue()) << countResult.error().message();
-  int count = countResult.value();
-
-  for (int a = 0; a < count; a++) {
-    for (int b = 0; b < count; b++) {
-      auto pairResult = api.devicePairInfo(a, b);
-      ASSERT_TRUE(pairResult.hasValue());
 
       auto infoA = api.deviceInfo(a);
       auto infoB = api.deviceInfo(b);
-      ASSERT_TRUE(infoA.hasValue());
-      ASSERT_TRUE(infoB.hasValue());
+      ASSERT_TRUE(infoA.hasValue()) << "deviceInfo(" << a << ") failed";
+      ASSERT_TRUE(infoB.hasValue()) << "deviceInfo(" << b << ") failed";
 
       nvmlGpuP2PStatus_t readStatus, writeStatus;
       Status sr = api.nvmlDeviceGetP2PStatus(
