@@ -79,6 +79,16 @@ rules the detail exists to serve.
     group-uniform abort gates, entry guards, or slot bookkeeping to a
     collective: if a collective needs one, the transport is leaving state behind
     and that is where the fix belongs.
+15. **Publish abort origin before `contextReady`, never after.** `originSite`
+    and `originPeer` must be stored before the winning writer releases
+    `contextReady`. That flag is the only thing a reader waits on, so origin
+    written after it is readable while still holding its constructor default,
+    and the reader gets a confidently wrong rank rather than a missing one.
+    This holds on both sides: `Abort::trySetAbort` on the host and
+    `detail::deviceRecordOriginAndLog` on the device. It is not covered by a
+    test -- exercising it needs a writer that wins the CAS and then stalls
+    before publishing -- so the ordering is held by those two callsites and
+    this rule.
 
 ## Host `Abort`
 
@@ -110,6 +120,22 @@ the stored object. `Abort::getAbortInfo()` may materialize an expired host
 timeout before returning. A device-originated abort, or a host read that races
 the winning host writer before context publication, returns the winning reason
 with an empty context.
+
+`AbortInfo` also carries the abort's origin: `site` (an `AbortSite` naming which
+writer won the reason CAS) and `originPeer` (the global rank that writer was
+blocked on, or `kNoAbortPeer`). Both are written by the winner under the same
+CAS, ordered ahead of the `contextReady` publication that readers gate on.
+
+These are the origin a device abort carries. A device writer's `context` is a
+`const char*` consumed at the winning callsite and never persisted in mapped
+state, so without them a device-originated abort reaches the host as a reason
+and nothing else. `AbortSite` is append-only: a wait that wants to name itself
+more precisely than `DEVICE` adds a value and passes it to `setAbort`.
+
+A wait that knows which rank it is blocked on should pass it. `kNoAbortPeer` is
+the right answer only for an aggregate wait that genuinely has no single peer --
+a barrier, an LL decode, a signal wait polling a bare counter -- not for a wait
+that has the rank in scope and did not thread it through.
 
 ## Device `AbortDevice`
 

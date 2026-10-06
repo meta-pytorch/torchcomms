@@ -19,9 +19,9 @@
  * The winner of the reason CAS logs once and every later observer stays silent,
  * so exactly one of these lines exists per communicator and it names whatever
  * declared the abort. Defined here rather than spelled out at the emitting
- * sites (`Abort::trySetAbort` on the host, `detail::deviceLogFirstWriter` on
- * the device) so host and device cannot drift apart and stop answering to the
- * same grep.
+ * sites (`Abort::trySetAbort` on the host, `detail::deviceRecordOriginAndLog`
+ * on the device) so host and device cannot drift apart and stop answering to
+ * the same grep.
  *
  * Host and device print different fields after the tag -- the host has a
  * `std::string` context it can persist, the device only what the winning
@@ -89,6 +89,24 @@ struct AbortState {
   int contextReady;
 
   /**
+   * Encoded `AbortSite`: which writer won the reason CAS.
+   *
+   * Written by that winner before it publishes `contextReady`, so a reader
+   * that gates on `contextReady` never observes this uninitialized.
+   */
+  int originSite;
+
+  /**
+   * Global rank the winning writer was blocked on, or `kNoAbortPeer`.
+   *
+   * This is the only structured origin a device abort can carry: device
+   * context is a `const char*` consumed at the callsite and never persisted
+   * here. Aggregate waits with no single peer record `kNoAbortPeer` rather
+   * than a misleading rank.
+   */
+  int originPeer;
+
+  /**
    * Shared default timeout duration in milliseconds.
    *
    * `-1` means unset. Host code may update this value, and device handles read
@@ -101,6 +119,8 @@ struct AbortState {
 // performance choice, not a correctness requirement for this shared state.
 static_assert(offsetof(AbortState, abort) % alignof(int) == 0);
 static_assert(offsetof(AbortState, contextReady) % alignof(int) == 0);
+static_assert(offsetof(AbortState, originSite) % alignof(int) == 0);
+static_assert(offsetof(AbortState, originPeer) % alignof(int) == 0);
 static_assert(offsetof(AbortState, timeoutMs) % alignof(int64_t) == 0);
 
 struct AbortDevice;
@@ -189,11 +209,18 @@ class Abort final {
    * marked ready. `getAbortInfo()` waits for that publication to complete.
    * Device-originated aborts publish readiness without a host context.
    *
+   * `site` and `originPeer` record where the abort came from. They are written
+   * with the context, under the same CAS win, and become visible to
+   * `getAbortInfo()` once `contextReady` is published. A caller with no
+   * specific peer leaves `originPeer` at `kNoAbortPeer`.
+   *
    * Returns whether this call performed the `NONE` to terminal transition.
    */
   bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
-      std::string_view context = {});
+      std::string_view context = {},
+      AbortSite site = AbortSite::HOST,
+      int originPeer = kNoAbortPeer);
 
   /**
    * Returns an immutable snapshot of the winning abort reason and context, or
@@ -202,12 +229,15 @@ class Abort final {
    * Like `isAborted()`, this materializes an expired host timeout before
    * reading the snapshot. Once a terminal reason is visible, this waits up to
    * 300ms for the winning host or device writer to complete AbortInfo
-   * publication. Device-originated aborts have an empty context. If the winner
-   * does not publish in time, this prints a warning and returns the reason with
-   * an empty context rather than waiting indefinitely. This fallback is best
-   * effort: publication may complete later and a subsequent call may return
-   * the context. Previously returned AbortInfo snapshots are values and are not
-   * updated, so a caller that caches the fallback retains its empty context.
+   * publication. Device-originated aborts have an empty context; their origin
+   * is carried by `site` and `originPeer` instead. If the winner does not
+   * publish in time, this prints a warning and returns the reason with an
+   * empty context and no origin -- `AbortSite::UNKNOWN` and `kNoAbortPeer` --
+   * rather than waiting indefinitely. This fallback is best effort:
+   * publication may complete later and a subsequent call may return the
+   * context and origin. Previously returned AbortInfo snapshots are values and
+   * are not updated, so a caller that caches the fallback retains both the
+   * empty context and the absent origin.
    */
   std::optional<AbortInfo> getAbortInfo();
 
@@ -306,7 +336,13 @@ class Abort final {
 
   int loadAbortReason() const;
   bool isContextReady() const;
-  bool trySetAbort(AbortReason newReason, std::string context);
+  int loadOriginSite() const;
+  int loadOriginPeer() const;
+  bool trySetAbort(
+      AbortReason newReason,
+      std::string context,
+      AbortSite site,
+      int originPeer);
 
   AbortState* state_{nullptr};
   bool stateMapped_{false};

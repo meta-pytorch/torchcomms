@@ -53,6 +53,8 @@ Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
 #endif
   state_->abort = encode(AbortReason::NONE);
   state_->contextReady = 0;
+  state_->originSite = static_cast<int>(AbortSite::UNKNOWN);
+  state_->originPeer = kNoAbortPeer;
   state_->timeoutMs = -1;
 }
 
@@ -83,7 +85,11 @@ Abort::~Abort() {
 #endif
 }
 
-bool Abort::setAbort(AbortReason newReason, std::string_view context) {
+bool Abort::setAbort(
+    AbortReason newReason,
+    std::string_view context,
+    AbortSite site,
+    int originPeer) {
   if (!isTerminalAbortReason(newReason)) {
     throw std::invalid_argument("Invalid terminal abort reason");
   }
@@ -93,7 +99,8 @@ bool Abort::setAbort(AbortReason newReason, std::string_view context) {
 
   // Own the caller's context before publishing the reason. This keeps the
   // post-CAS path allocation-free and makes a transient caller buffer safe.
-  return trySetAbort(newReason, std::string{context.data(), context.size()});
+  return trySetAbort(
+      newReason, std::string{context.data(), context.size()}, site, originPeer);
 }
 
 std::optional<AbortInfo> Abort::getAbortInfo() {
@@ -121,13 +128,18 @@ std::optional<AbortInfo> Abort::getAbortInfo() {
     std::fprintf(
         stderr,
         "WARNING: AbortInfo publication did not complete within %lldms for "
-        "abort reason %.*s; returning empty context\n",
+        "abort reason %.*s; returning empty context and no origin\n",
         static_cast<long long>(kAbortInfoPublicationTimeout.count()),
         static_cast<int>(reasonString.size()),
         reasonString.data());
     return AbortInfo{.reason = reason, .context = {}};
   }
-  return AbortInfo{.reason = reason, .context = context_};
+  return AbortInfo{
+      .reason = reason,
+      .context = context_,
+      .site = static_cast<AbortSite>(loadOriginSite()),
+      .originPeer = loadOriginPeer(),
+  };
 }
 
 bool Abort::isAborted() {
@@ -172,7 +184,11 @@ bool Abort::isTimedOut() {
 
   auto now = std::chrono::steady_clock::now();
   if (now >= deadline_.load(std::memory_order_acquire)) {
-    trySetAbort(AbortReason::TIMED_OUT, "timeout expired");
+    trySetAbort(
+        AbortReason::TIMED_OUT,
+        "timeout expired",
+        AbortSite::HOST_DEADLINE,
+        kNoAbortPeer);
     return loadAbortReason() == encode(AbortReason::TIMED_OUT);
   }
 
@@ -246,7 +262,24 @@ bool Abort::isContextReady() const {
              std::memory_order_acquire) != 0;
 }
 
-bool Abort::trySetAbort(AbortReason newReason, std::string context) {
+// Relaxed is sufficient for both: the acquire load of `contextReady` in
+// `isContextReady()` synchronizes with the writer's release store, so any
+// reader past that gate already sees these.
+int Abort::loadOriginSite() const {
+  return std::atomic_ref<int>{state_->originSite}.load(
+      std::memory_order_relaxed);
+}
+
+int Abort::loadOriginPeer() const {
+  return std::atomic_ref<int>{state_->originPeer}.load(
+      std::memory_order_relaxed);
+}
+
+bool Abort::trySetAbort(
+    AbortReason newReason,
+    std::string context,
+    AbortSite site,
+    int originPeer) {
   int expected = encode(AbortReason::NONE);
   const bool won = std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
       expected,
@@ -261,15 +294,31 @@ bool Abort::trySetAbort(AbortReason newReason, std::string context) {
   // readiness only after the swap so getAbortInfo() cannot return a terminal
   // reason with a transiently incomplete host context.
   context_.swap(context);
+  // Origin lands before contextReady for the same reason the context does:
+  // that release store is the only thing a reader waits on, so origin written
+  // after it would be readable while still holding its constructor default,
+  // and the reader gets a confidently wrong rank rather than a missing one.
+  std::atomic_ref<int>{state_->originSite}.store(
+      static_cast<int>(site), std::memory_order_relaxed);
+  std::atomic_ref<int>{state_->originPeer}.store(
+      originPeer, std::memory_order_relaxed);
   std::atomic_ref<int>{state_->contextReady}.store(
       1, std::memory_order_release);
   const auto reasonString = abortReasonToString(newReason);
+  const auto siteString = abortSiteToString(site);
+  // `context` stays last: it is free-form and may contain spaces, so anything
+  // after it is unparseable.
   std::fprintf(
       stderr,
-      FT_ABORT_FIRST_WRITER_HOST_ "reason=%d(%.*s) context=%s\n",
+      FT_ABORT_FIRST_WRITER_HOST_
+      "reason=%d(%.*s) site=%d(%.*s) peer=%d context=%s\n",
       static_cast<int>(newReason),
       static_cast<int>(reasonString.size()),
       reasonString.data(),
+      static_cast<int>(site),
+      static_cast<int>(siteString.size()),
+      siteString.data(),
+      originPeer,
       context_.c_str());
   return true;
 }
