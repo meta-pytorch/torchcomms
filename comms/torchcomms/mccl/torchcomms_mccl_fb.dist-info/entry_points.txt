@@ -1,0 +1,2 @@
+[torch.distributed.backends]
+mccl = torchcomms.mccl:_register_c10d_backend
