@@ -11,6 +11,7 @@ MAKEFLAGS += -r
 .SECONDARY:
 
 NCCLDIR := ../..
+SHAREDDIR := $(abspath $(NCCLDIR)/..)
 include $(NCCLDIR)/makefiles/common.mk
 include $(NCCLDIR)/makefiles/version.mk
 
@@ -21,10 +22,14 @@ MANIFEST := $(OBJDIR)/manifest
 DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include -I../include/plugin
+INCFLAGS += -I../../
+INCFLAGS += -I${SHAREDDIR}/
+INCFLAGS += -I$(BASE_DIR)
+INCFLAGS += -I$(CONDA_INCLUDE_DIR)
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
-CXXFLAGS  += $(INCFLAGS)
+CXXFLAGS  := $(INCFLAGS) $(CXXFLAGS)
 
-NVCUFLAGS_SYM += -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrregcount=128 -Xfatbin -compress-all
+NVCUFLAGS_SYM += -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda --expt-relaxed-constexpr -Xptxas -maxrregcount=128 -Xfatbin -compress-all
 NVCUFLAGS_SYM += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 # So that nccl_device.h includes gin__funcs.h and common.cu / symmetric GIN kernels get ncclGin_BackendMask<12> definition
 ifeq ($(NCCL_OS_LINUX), 1)
@@ -32,6 +37,11 @@ NVCUFLAGS += -DNCCL_OS_LINUX
 NVCUFLAGS_SYM += -DNCCL_OS_LINUX -DDOCA_GPUNETIO_USE_CUDA_WRAPPER -DDOCA_VERBS_USE_NET_WRAPPER
 endif
 #NVCUFLAGS_SYM += --ptx
+
+ifneq ($(ENABLE_TCPDM),1)
+NVCUFLAGS += --compiler-options "-DCTRAN_DISABLE_TCPDM"
+NVCUFLAGS_SYM += --compiler-options "-DCTRAN_DISABLE_TCPDM"
+endif
 
 SAY = @bash -c 'path="$$2"; [[ "$$(realpath "$$2")" =~ ^$(subst .,\.,$(abspath $(NCCLDIR)))/(.*)$$ ]] && path="$${BASH_REMATCH[1]}"; printf "%-15s %s\n" "$$1" "$$path"' SAY
 
@@ -71,19 +81,28 @@ define DEPENDS
  [[ $$mk =~ ^[^:]*:(.*)$$ ]];\
  files=$${BASH_REMATCH[1]};\
  files=$$(for x in $$files; do case "$$x" in '\'|$$'\t') ;; *) echo "$$x"; esac; done);\
- files=$$(for x in $$files; do [[ "$$(realpath "$$x")" == "$$(realpath "$(NCCLDIR)")"* ]] && echo "$$x"; done);\
+ files=$$(for x in $$files; do \
+   file=$$(realpath "$$x"); \
+   nccl_root=$$(realpath "$(NCCLDIR)"); \
+   base_root=$$(realpath "$(BASE_DIR)"); \
+   [[ "$$file" == "$$nccl_root"* || "$$file" == "$$base_root"* ]] && echo "$$x"; \
+ done);\
  echo "$(patsubst %.d,%.o,$1) $1: " $$files > $1
 endef
 
 all: $(MANIFEST)
 
-$(OBJDIR)/gensrc: generate.py
+CTRAN_GENERATOR := ${BASE_DIR}/comms/ctran/algos/genctran.py
+
+$(OBJDIR)/gensrc: generate.py $(CTRAN_GENERATOR)
 	@mkdir -p $@
 	(which python3 >/dev/null || \
 	  (bar='!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'; \
 	   printf "\n$${bar}\nERROR: Building NCCL requires a Python 3 installation invokable as 'python3'.\n$${bar}\n\n" 1>&2; \
 	   exit 1)) \
-	&& NCCL_EXACT_KERNEL_NAMES="$(NCCL_EXACT_KERNEL_NAMES)" ./generate.py $@ "$(ONLY_FUNCS)"
+	&& NCCL_EXACT_KERNEL_NAMES="$(NCCL_EXACT_KERNEL_NAMES)" ./generate.py $@ "$(ONLY_FUNCS)" \
+	&& $(CTRAN_GENERATOR) $@/ctran \
+	&& mv $@/ctran/* $@
 
 $(OBJDIR)/gensrc/symmetric: $(OBJDIR)/gensrc symmetric/generate.py
 	@mkdir -p $@
@@ -102,6 +121,24 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 # "gensrc/symmetric/rules.mk" populates $(LIB_OBJS_SYM_GEN)
 
 SRCS = common.cu onerank.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherBrucksFF.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/StreamedRd/Impl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
+# Defines placeHolderKernelFlag, which the selected kernels reference during the standalone device link.
+SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Get.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
+SRCS += all_reduce_sparse_block.cu
+
+-include $(OBJDIR)/gensrc/ctran_rules.mk
+SRCS += $(CTRAN_GEN_SRCS)
 
 # GIN symbol flow (how ncclGin_BackendMask<...> reaches the test):
 #   - common.cu uses ncclGin and is built with the default rule below (no -G).
@@ -137,7 +174,7 @@ $(DEVGLUE_OBJ): $(LIB_OBJS)
 $(MANIFEST): $(LIB_OBJS) $(DEVGLUE_OBJ)
 	@echo $^ > $@
 
--include $(wildcard $(OBJDIR)/*.d)
+-include $(wildcard $(LIB_OBJS:%.o=%.d))
 -include $(wildcard $(OBJDIR)/genobj/*.d)
 -include $(wildcard $(OBJDIR)/genobj/symmetric/*.d)
 
