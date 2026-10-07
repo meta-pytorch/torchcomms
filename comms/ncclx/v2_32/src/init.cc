@@ -1382,11 +1382,6 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   // AllGather1 - end
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
-  // Check for lazy channel setup support.
-  // [META] Lazy setup hooks the legacy enqueue path only; NCCL_ENQUEUE_REARCH_ENABLE connects P2P during task
-  // preparation, before channels would be set up.
-  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS && !ncclParamEnqueueRearchEnable();
-
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
   if ((nNodes > 1 && ncclParamMNNVLEnable() != 0 && p2pLevel != 0) || ncclParamMNNVLEnable() == 1) {
@@ -1451,6 +1446,13 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     comm->intraBarrierCounter = 0;
     comm->intraBarrierGate = 0;
   } while (0);
+
+  // Check for lazy channel setup support.
+  // [META] Lazy setup hooks the legacy enqueue path only; NCCL_ENQUEUE_REARCH_ENABLE connects P2P during task
+  // preparation, before channels would be set up. A process that drives several ranks keeps eager setup: lazy
+  // setupChannels() barriers across all local ranks, which a P2P group on only some of them never completes.
+  comm->lazySetupChannels =
+      comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS && !ncclParamEnqueueRearchEnable() && comm->intraRanks == 1;
 
   timers[TIMER_INIT_TOPO] = clockNano();
 
