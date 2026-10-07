@@ -306,7 +306,7 @@ class GTestXMLOutputUnitTest(gtest_xml_test_utils.GTestXMLTestCase):
         [gtest_prog_path, '%s=xml' % GTEST_OUTPUT_FLAG],
         working_dir=gtest_test_utils.GetTempDir())
     self.assert_(p.exited)
-    self.assertEquals(0, p.exit_code)
+    self.assertEqual(0, p.exit_code)
     self.assert_(os.path.isfile(output_file))
 
   def testSuppressedXmlOutput(self):
@@ -331,7 +331,7 @@ class GTestXMLOutputUnitTest(gtest_xml_test_utils.GTestXMLTestCase):
           '%s was killed by signal %d' % (GTEST_PROGRAM_NAME, p.signal))
     else:
       self.assert_(p.exited)
-      self.assertEquals(1, p.exit_code,
+      self.assertEqual(1, p.exit_code,
                         "'%s' exited with code %s, which doesn't match "
                         'the expected exit code %s.'
                         % (command, p.exit_code, 1))
@@ -384,7 +384,7 @@ class GTestXMLOutputUnitTest(gtest_xml_test_utils.GTestXMLTestCase):
                    '%s was killed by signal %d' % (gtest_prog_name, p.signal))
     else:
       self.assert_(p.exited)
-      self.assertEquals(expected_exit_code, p.exit_code,
+      self.assertEqual(expected_exit_code, p.exit_code,
                         "'%s' exited with code %s, which doesn't match "
                         'the expected exit code %s.'
                         % (command, p.exit_code, expected_exit_code))
