@@ -77,6 +77,7 @@
 #include "meta/lpcoll/low_precision_buffer_pool.h"
 #include "meta/relay/sharded_relay_oneshot.h"
 #include "meta/relay/relay_control.h"
+#include "meta/relay/registered_allreduce.h"
 #include "meta/relay/sharded_relay_lp_arena.h"
 // [/RCCL]
 
@@ -4032,6 +4033,14 @@ ncclResult_t ncclCommDestroy_impl(ncclComm_t comm) {
     return ncclSuccess;
   }
   INFO(NCCL_INIT, "Memory used = %ld", allocTracker[comm->cudaDev].totalAllocSize);
+  if (rcclx::relay::registeredAllReduceCommHasLiveRequests(comm)) {
+    WARN(
+        "comm %p rank %d still owns registered all-reduce requests; finalize them before ncclCommDestroy",
+        comm,
+        comm->rank);
+    return ncclInvalidUsage;
+  }
+  rcclx::relay::registeredAllReduceReleaseComm(comm);
 
 #ifdef ENABLE_ROCSHMEM
   if (comm->enableRocshmem) {
@@ -4249,8 +4258,9 @@ ncclResult_t ncclCommAbort_impl(ncclComm_t comm) {
 #endif
 
   NCCLCHECK(ncclGroupStartInternal());
-  // Ask anything that might still be running on the device to quit
+  // Ask anything that might still be running on the device to quit.
   NCCLCHECK(setCommAbortFlags(comm, 1));
+  rcclx::relay::registeredAllReduceAbandonComm(comm);
   comm->destroyFlag = 1;
   /* init thread must be joined before we destroy the comm,
    * and we should ignore the init error here. */

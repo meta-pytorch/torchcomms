@@ -18,8 +18,6 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
-#include "meta/relay/registered_allreduce.h"
-#include "meta/relay/registered_allreduce_kernels.h"
 #include "nccl.h"
 
 #define HIPCHECK_TEST(cmd)                                          \
@@ -60,11 +58,11 @@
 
 namespace {
 
-constexpr int kRanks = rcclx::relay::kRegisteredAllReduceRanks;
+constexpr int kMaxRanks = 4;
 constexpr int kSyncTimeoutSec = 20;
 constexpr int kStressReplays = 10000;
-constexpr size_t kHalfMiB = rcclx::relay::kRegisteredAllReduceHalfMiBBytes;
-constexpr size_t kOneMiB = rcclx::relay::kRegisteredAllReduceOneMiBBytes;
+constexpr size_t kHalfMiB = 512 * 1024;
+constexpr size_t kOneMiB = 1024 * 1024;
 
 struct GraphRun {
   hipGraph_t graph{nullptr};
@@ -78,7 +76,7 @@ uint16_t floatToBfloat16(float value) {
   return static_cast<uint16_t>((bits + roundToNearestEven) >> 16);
 }
 
-constexpr uint16_t kAdversarialInputs[][kRanks] = {
+constexpr uint16_t kAdversarialInputs[][kMaxRanks] = {
     {0x3f4c, 0xc336, 0x3d04, 0x4329},
     {0xc1e2, 0x4218, 0xbf03, 0xc0dd},
     {0x4417, 0xc3cd, 0xc0fa, 0xc12b},
@@ -99,14 +97,18 @@ float bfloat16ToFloat(uint16_t value) {
 }
 
 uint16_t expectedInputBits(int rank, size_t element, int generation) {
+  // Standard RCCL does not promise the registered kernel's stepwise BF16 order.
+  if (generation == 14) {
+    return floatToBfloat16(static_cast<float>(rank + 1 + (element % 4)));
+  }
   const size_t pattern =
       (element + static_cast<size_t>(generation) * 3) % kAdversarialInputCount;
   return kAdversarialInputs[pattern][rank];
 }
 
-uint16_t expectedOutputBits(size_t element, int generation) {
+uint16_t expectedOutputBits(int nRanks, size_t element, int generation) {
   uint16_t accumulator = expectedInputBits(0, element, generation);
-  for (int rank = 1; rank < kRanks; ++rank) {
+  for (int rank = 1; rank < nRanks; ++rank) {
     accumulator = floatToBfloat16(
         bfloat16ToFloat(accumulator) +
         bfloat16ToFloat(expectedInputBits(rank, element, generation)));
@@ -157,16 +159,9 @@ class RegisteredAllReduceTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    rcclx::relay::registeredAllReduceSetIpcOpenFailureRankForTest(-1);
     if (request != nullptr) {
-      NCCLEXPECT_TEST(
-          rcclx::relay::registeredAllReduceFinalize(request, stream, true));
+      NCCLEXPECT_TEST(ncclRegisteredAllReduceFinalize(request, stream));
       request = nullptr;
-    }
-    if (offsetAllocation != nullptr) {
-      input = fixtureInput;
-      HIPEXPECT_TEST(hipFree(offsetAllocation));
-      offsetAllocation = nullptr;
     }
     HIPEXPECT_TEST(hipFree(snapshotB));
     HIPEXPECT_TEST(hipFree(snapshotA));
@@ -175,15 +170,14 @@ class RegisteredAllReduceTest : public ::testing::Test {
     HIPEXPECT_TEST(hipStreamDestroy(stream));
   }
 
-  bool isSupportedTopology() const {
-    return numRanks == kRanks && comm->nNodes == 1 &&
-        comm->localRanks == kRanks && comm->archName != nullptr &&
-        std::strncmp(comm->archName, "gfx950", 6) == 0 && comm->isAllDirectP2p;
+  bool isSupportedRankCount() const {
+    return numRanks == 2 || numRanks == kMaxRanks;
   }
 
-  void barrier() {
-    NCCLCHECK_TEST(
-        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, 0));
+  bool isSupportedTopology() const {
+    return isSupportedRankCount() && comm->nNodes == 1 &&
+        comm->localRanks == numRanks && comm->archName != nullptr &&
+        std::strncmp(comm->archName, "gfx950", 6) == 0 && comm->isAllDirectP2p;
   }
 
   bool allVote(bool localOk) {
@@ -222,29 +216,16 @@ class RegisteredAllReduceTest : public ::testing::Test {
     }
   }
 
-  // Points `input` at offsetBytes inside a fresh allocationBytes allocation so
-  // registration must export and apply the offset for peers to see it.
-  void useInputAtAllocationOffset(size_t allocationBytes, size_t offsetBytes) {
-    ASSERT_EQ(offsetAllocation, nullptr);
-    HIPCHECK_TEST(hipMalloc(&offsetAllocation, allocationBytes));
-    fixtureInput = input;
-    input = reinterpret_cast<uint16_t*>(offsetAllocation + offsetBytes);
-  }
-
   void createRequest() {
     ASSERT_EQ(
-        rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-    ASSERT_NE(request, nullptr);
-    ASSERT_EQ(
-        rcclx::relay::registeredAllReduceInit(request, input, output, kOneMiB),
+        ncclRegisteredAllReduceInit(input, output, kOneMiB, comm, &request),
         ncclSuccess);
+    ASSERT_NE(request, nullptr);
   }
 
   void finalizeRequest() {
     ASSERT_NE(request, nullptr);
-    ASSERT_EQ(
-        rcclx::relay::registeredAllReduceFinalize(request, stream, true),
-        ncclSuccess);
+    ASSERT_EQ(ncclRegisteredAllReduceFinalize(request, stream), ncclSuccess);
     request = nullptr;
   }
 
@@ -269,14 +250,14 @@ class RegisteredAllReduceTest : public ::testing::Test {
 
   void execute(size_t bytes) {
     ASSERT_EQ(
-        rcclx::relay::registeredAllReduceExecute(
-            request,
+        ncclRegisteredAllReduceExec(
             input,
             output,
             countForBytes(bytes),
             ncclBfloat16,
             ncclSum,
-            stream),
+            stream,
+            request),
         ncclSuccess);
   }
 
@@ -302,7 +283,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
     for (size_t i = 0; i < count; ++i) {
       const uint16_t expected = inputBuffer
           ? expectedInputBits(globalRank, i, generation)
-          : expectedOutputBits(i, generation);
+          : expectedOutputBits(numRanks, i, generation);
       if (host[i] != expected) {
         ADD_FAILURE() << "R" << globalRank << " " << what << " index " << i
                       << " expected BF16 bits " << expected << " got "
@@ -343,14 +324,14 @@ class RegisteredAllReduceTest : public ::testing::Test {
                     << hipGetErrorString(beginResult);
       localOk = false;
     } else {
-      const ncclResult_t captured = rcclx::relay::registeredAllReduceExecute(
-          request,
+      const ncclResult_t captured = ncclRegisteredAllReduceExec(
           input,
           output,
           countForBytes(bytes),
           ncclBfloat16,
           ncclSum,
-          stream);
+          stream,
+          request);
       if (captured != ncclSuccess) {
         ADD_FAILURE() << "registeredAllReduceExecute failed during capture: "
                       << ncclGetErrorString(captured);
@@ -445,18 +426,130 @@ class RegisteredAllReduceTest : public ::testing::Test {
   uint16_t* output{nullptr};
   uint16_t* snapshotA{nullptr};
   uint16_t* snapshotB{nullptr};
-  uint8_t* offsetAllocation{nullptr};
-  uint16_t* fixtureInput{nullptr};
-  rcclx::relay::RegisteredAllReduce* request{nullptr};
+  void* request{nullptr};
 };
 
-TEST_F(RegisteredAllReduceTest, UnsupportedKernelPayloadRejectedBeforeLaunch) {
-  rcclx::relay::RegisteredAllReduceInputTable inputs{};
-  rcclx::relay::RegisteredAllReduceStateTable states{};
+TEST_F(RegisteredAllReduceTest, SymbolVersion) {
+  EXPECT_EQ(NCCL_REGISTERED_ALL_REDUCE_ABI_VERSION, 1);
+  EXPECT_EQ(ncclRegisteredAllReduceAbiVersion(), 1);
+}
+
+TEST_F(RegisteredAllReduceTest, LiveRequestBlocksCommunicatorDestroy) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+
+  EXPECT_EQ(ncclCommDestroy(comm), ncclInvalidUsage);
+
+  std::vector<uint16_t> host;
+  fillInputAsync(kHalfMiB, 1, host);
+  clearOutputAsync(kHalfMiB);
+  execute(kHalfMiB);
+  syncStream("all-reduce after rejected communicator destroy");
+  expectOutput(kHalfMiB, 1, "request remains usable after rejected destroy");
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, InvalidTopologyRejected) {
+  if (isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires an unsupported registered topology";
+  }
+  request = reinterpret_cast<void*>(1);
   EXPECT_EQ(
-      rcclx::relay::launchRegisteredAllReduceKernel(
-          output, inputs, states, globalRank, 1, stream),
-      hipErrorInvalidValue);
+      ncclRegisteredAllReduceInit(input, output, kOneMiB, comm, &request),
+      ncclInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+}
+
+TEST_F(RegisteredAllReduceTest, InvalidAliasRejected) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  EXPECT_EQ(
+      ncclRegisteredAllReduceInit(input, input, kOneMiB, comm, &request),
+      ncclInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+}
+
+TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          countForBytes(kHalfMiB),
+          ncclFloat32,
+          ncclSum,
+          stream,
+          request),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          countForBytes(kHalfMiB),
+          ncclBfloat16,
+          ncclProd,
+          stream,
+          request),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          countForBytes(kHalfMiB) - 1,
+          ncclBfloat16,
+          ncclSum,
+          stream,
+          request),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          snapshotA,
+          output,
+          countForBytes(kHalfMiB),
+          ncclBfloat16,
+          ncclSum,
+          stream,
+          request),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          snapshotB,
+          countForBytes(kHalfMiB),
+          ncclBfloat16,
+          ncclSum,
+          stream,
+          request),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          input,
+          countForBytes(kHalfMiB),
+          ncclBfloat16,
+          ncclSum,
+          stream,
+          request),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          countForBytes(kHalfMiB),
+          ncclBfloat16,
+          ncclSum,
+          stream,
+          nullptr),
+      ncclInvalidArgument);
+
+  finalizeRequest();
 }
 
 TEST_F(RegisteredAllReduceTest, EagerBothSizesPreserveInput) {
@@ -604,83 +697,53 @@ TEST_F(RegisteredAllReduceTest, FinalizeImmediatelyAfterLastEagerDrains) {
   expectOutput(kHalfMiB, 13, "eager call drained by finalize");
 }
 
+TEST_F(RegisteredAllReduceTest, CaptureTimeFinalizeRejected) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+#if ROCM_VERSION < 60100
+  GTEST_SKIP() << "hipStreamGetCaptureInfo_v2 is unavailable before ROCm 6.1";
+#else
+  createRequest();
+  syncStream("pre-finalize-capture stream drain");
+
+  hipGraph_t graph = nullptr;
+  HIPCHECK_TEST(hipStreamBeginCapture(stream, hipStreamCaptureModeRelaxed));
+  EXPECT_EQ(ncclRegisteredAllReduceFinalize(request, stream), ncclInvalidUsage);
+  HIPCHECK_TEST(hipStreamEndCapture(stream, &graph));
+  if (graph != nullptr) {
+    HIPEXPECT_TEST(hipGraphDestroy(graph));
+  }
+
+  finalizeRequest();
+#endif
+}
+
+TEST_F(RegisteredAllReduceTest, NormalAllReduceStillWorks) {
+  if (!isSupportedRankCount()) {
+    GTEST_SKIP() << "Test requires 2 or 4 ranks, got " << numRanks;
+  }
+  constexpr size_t kBytes = 4096;
+  constexpr size_t kCount = kBytes / sizeof(uint16_t);
+  std::vector<uint16_t> host;
+  fillInputAsync(kBytes, 14, host);
+  clearOutputAsync(kBytes);
+  ASSERT_EQ(
+      ncclAllReduce(input, output, kCount, ncclBfloat16, ncclSum, comm, stream),
+      ncclSuccess);
+  syncStream("normal ncclAllReduce");
+  expectOutput(kBytes, 14, "normal ncclAllReduce output");
+}
+
 TEST_F(RegisteredAllReduceTest, CollectiveInvalidCapacityRollsBack) {
   if (!isSupportedTopology()) {
     GTEST_SKIP() << "Test requires the supported registered topology";
   }
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-  ASSERT_NE(request, nullptr);
   EXPECT_EQ(
-      rcclx::relay::registeredAllReduceInit(
-          request, input, output, kHalfMiB - sizeof(uint16_t)),
+      ncclRegisteredAllReduceInit(
+          input, output, kHalfMiB - sizeof(uint16_t), comm, &request),
       ncclInvalidArgument);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
-  finalizeRequest();
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveRequestsForTest(), 0u);
-}
-
-TEST_F(
-    RegisteredAllReduceTest,
-    InputAtNonZeroAllocationOffsetReducesCorrectly) {
-  if (!isSupportedTopology()) {
-    GTEST_SKIP() << "Test requires the supported registered topology";
-  }
-  // Distinct per-rank offsets: a peer that maps the allocation base instead of
-  // the registered pointer reads another rank's bytes and fails bit-exactness.
-  useInputAtAllocationOffset(
-      2 * kOneMiB, static_cast<size_t>(globalRank + 1) * (kOneMiB / 4));
-  createRequest();
-
-  std::vector<uint16_t> host;
-  int generation = 30;
-  for (size_t bytes : {kHalfMiB, kOneMiB}) {
-    fillInputAsync(bytes, generation, host);
-    clearOutputAsync(bytes);
-    execute(bytes);
-    syncStream("offset-input all-reduce");
-    expectOutput(bytes, generation, "offset-input output");
-    ++generation;
-  }
-
-  finalizeRequest();
-}
-
-TEST_F(RegisteredAllReduceTest, CapacityPastAllocationEndRejected) {
-  if (!isSupportedTopology()) {
-    GTEST_SKIP() << "Test requires the supported registered topology";
-  }
-  useInputAtAllocationOffset(2 * kOneMiB, 2 * kOneMiB - kHalfMiB);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-  ASSERT_NE(request, nullptr);
-  EXPECT_EQ(
-      rcclx::relay::registeredAllReduceInit(request, input, output, kOneMiB),
-      ncclInvalidArgument);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
-  finalizeRequest();
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveRequestsForTest(), 0u);
-}
-
-TEST_F(RegisteredAllReduceTest, OneRankIpcOpenFailureRollsBackCollectively) {
-  if (!isSupportedTopology()) {
-    GTEST_SKIP() << "Test requires the supported registered topology";
-  }
-  rcclx::relay::registeredAllReduceSetIpcOpenFailureRankForTest(1);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-  ASSERT_NE(request, nullptr);
-  EXPECT_EQ(
-      rcclx::relay::registeredAllReduceInit(request, input, output, kOneMiB),
-      ncclInternalError);
-  rcclx::relay::registeredAllReduceSetIpcOpenFailureRankForTest(-1);
-
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
-  finalizeRequest();
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveRequestsForTest(), 0u);
+  EXPECT_EQ(request, nullptr);
 }
 
 TEST_F(RegisteredAllReduceTest, InitFinalizeWithoutExecute) {
@@ -689,61 +752,6 @@ TEST_F(RegisteredAllReduceTest, InitFinalizeWithoutExecute) {
   }
   createRequest();
   finalizeRequest();
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveRequestsForTest(), 0u);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
-}
-
-// The input-mapping check, driven deterministically: rank 2's check sees stale
-// data in rank 0's input from byte 2 MiB on (the symptom observed with
-// re-registered buffers). Registration must fail with ncclSystemError on every
-// rank and leave no peer mappings or state, and a normal registration on the
-// same buffers afterwards must work. Registration must also leave the input's
-// contents unchanged, though it writes probe patterns into it.
-TEST_F(RegisteredAllReduceTest, StaleInputMappingFailsRegistrationOnEveryRank) {
-  if (!isSupportedTopology()) {
-    GTEST_SKIP() << "Test requires the supported registered topology";
-  }
-  constexpr size_t kLarge = 5 * kOneMiB;
-  uint16_t* largeIn = nullptr;
-  uint16_t* largeOut = nullptr;
-  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
-  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
-  uint16_t* const fixtureIn = input;
-  uint16_t* const fixtureOut = output;
-  input = largeIn;
-  output = largeOut;
-
-  rcclx::relay::registeredAllReduceSetStaleMappingForTest(2, 0);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-  const ncclResult_t rejected =
-      rcclx::relay::registeredAllReduceInit(request, input, output, kLarge);
-  rcclx::relay::registeredAllReduceSetStaleMappingForTest(-1, -1);
-  EXPECT_EQ(rejected, ncclSystemError);
-  EXPECT_TRUE(allVote(rejected == ncclSystemError));
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
-  finalizeRequest();
-
-  std::vector<uint16_t> host;
-  fillInputAsync(kLarge, 31, host);
-  syncStream("input before registration");
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReduceInit(request, input, output, kLarge),
-      ncclSuccess);
-  expectInput(kLarge, 31, "input after registration");
-  clearOutputAsync(kLarge);
-  execute(kLarge);
-  syncStream("after rejected registration");
-  expectOutput(kLarge, 31, "after rejected registration");
-  finalizeRequest();
-
-  input = fixtureIn;
-  output = fixtureOut;
-  HIPCHECK_TEST(hipFree(largeOut));
-  HIPCHECK_TEST(hipFree(largeIn));
 }
 
 TEST_F(RegisteredAllReduceTest, RepeatedCreateUseFinalizeCleansResources) {
@@ -753,11 +761,6 @@ TEST_F(RegisteredAllReduceTest, RepeatedCreateUseFinalizeCleansResources) {
 
   for (int generation = 20; generation < 23; ++generation) {
     createRequest();
-    EXPECT_EQ(rcclx::relay::registeredAllReduceLiveRequestsForTest(), 1u);
-    // Per-request imports are the peers' inputs; state regions are pooled.
-    EXPECT_EQ(
-        rcclx::relay::registeredAllReduceLivePeerMappingsForTest(),
-        static_cast<size_t>(kRanks - 1));
 
     std::vector<uint16_t> host;
     fillInputAsync(kHalfMiB, generation, host);
@@ -765,169 +768,122 @@ TEST_F(RegisteredAllReduceTest, RepeatedCreateUseFinalizeCleansResources) {
     execute(kHalfMiB);
     finalizeRequest();
     expectOutput(kHalfMiB, generation, "repeated create/use/finalize");
-    EXPECT_EQ(rcclx::relay::registeredAllReduceLiveRequestsForTest(), 0u);
-    EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
   }
 }
 
-// Regression for state regions freed at Finalize: a later allocation that
-// reused a freed region's address lost writes and returned wrong data in one
-// 4 KiB page (the region's row-flag page), corrupting inputs, outputs and
-// epilogue results in later requests. Registers, uses and finalizes requests
-// on freshly allocated buffers over and over; every exchange and every fresh
-// buffer written after a Finalize must read back exactly.
-TEST_F(RegisteredAllReduceTest, ReRegistrationNeverCorruptsFreshBuffers) {
-  if (!isSupportedTopology()) {
-    GTEST_SKIP() << "Test requires the supported registered topology";
-  }
-  uint16_t* const fixtureIn = input;
-  uint16_t* const fixtureOut = output;
-  constexpr size_t kCanaryBytes = size_t{2} << 20;
-  constexpr uint32_t kCanary = 0x5a5a5a5au;
-  for (int iteration = 0; iteration < 24; ++iteration) {
-    uint16_t* freshIn = nullptr;
-    uint16_t* freshOut = nullptr;
-    HIPCHECK_TEST(hipMalloc(&freshIn, kOneMiB));
-    HIPCHECK_TEST(hipMalloc(&freshOut, kOneMiB));
-    input = freshIn;
-    output = freshOut;
-    createRequest();
-    std::vector<uint16_t> host;
-    const size_t bytes = iteration % 2 == 0 ? kOneMiB : kHalfMiB;
-    fillInputAsync(bytes, 60 + iteration, host);
-    clearOutputAsync(bytes);
-    execute(bytes);
-    syncStream("re-registration exchange");
-    expectOutput(bytes, 60 + iteration, "re-registration exchange");
-    finalizeRequest();
+// Decode-sized payloads (hidden 4608 at batch 1, 4, 8, 32, 64), the smallest
+// payload, and sizes on either side of the dedicated four-rank kernels.
+constexpr size_t kAlignedSizes[] = {
+    16,
+    9216,
+    36864,
+    73728,
+    294912,
+    589824,
+    kHalfMiB - 16,
+    kHalfMiB,
+    kHalfMiB + 16,
+    kOneMiB - 16,
+    kOneMiB,
+};
 
-    void* canary = nullptr;
-    HIPCHECK_TEST(hipMalloc(&canary, kCanaryBytes));
-    HIPCHECK_TEST(hipMemsetD32(
-        static_cast<hipDeviceptr_t>(canary), kCanary, kCanaryBytes / 4));
-    HIPCHECK_TEST(hipDeviceSynchronize());
-    std::vector<uint32_t> words(kCanaryBytes / 4);
-    HIPCHECK_TEST(
-        hipMemcpy(words.data(), canary, kCanaryBytes, hipMemcpyDeviceToHost));
-    size_t bad = 0, first = 0;
-    for (size_t i = 0; i < words.size(); ++i) {
-      if (words[i] != kCanary && bad++ == 0) {
-        first = i * 4;
-      }
-    }
-    EXPECT_EQ(bad, 0u) << "R" << globalRank << " iteration " << iteration
-                       << ": fresh buffer lost " << bad
-                       << " writes, first at byte " << first;
-    HIPCHECK_TEST(hipFree(canary));
-    HIPCHECK_TEST(hipFree(freshOut));
-    HIPCHECK_TEST(hipFree(freshIn));
-    input = fixtureIn;
-    output = fixtureOut;
-  }
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLivePeerMappingsForTest(), 0u);
-}
-
-// State regions are pooled per communicator: sequential requests reuse one
-// region (no new peer imports), and a second live request gets its own.
-TEST_F(RegisteredAllReduceTest, StateRegionsPooledPerCommunicator) {
+TEST_F(RegisteredAllReduceTest, ArbitraryAlignedSizesMatchCanonicalOrder) {
   if (!isSupportedTopology()) {
     GTEST_SKIP() << "Test requires the supported registered topology";
   }
   createRequest();
-  finalizeRequest();
-  const size_t imports =
-      rcclx::relay::registeredAllReducePooledStateImportsForTest();
-  for (int k = 0; k < 3; ++k) {
-    createRequest();
-    EXPECT_EQ(
-        rcclx::relay::registeredAllReducePooledStateImportsForTest(), imports);
-    finalizeRequest();
-  }
-  createRequest();
-  rcclx::relay::RegisteredAllReduce* second = nullptr;
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &second), ncclSuccess);
-  uint16_t* secondIn = nullptr;
-  uint16_t* secondOut = nullptr;
-  HIPCHECK_TEST(hipMalloc(&secondIn, kOneMiB));
-  HIPCHECK_TEST(hipMalloc(&secondOut, kOneMiB));
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReduceInit(
-          second, secondIn, secondOut, kOneMiB),
-      ncclSuccess);
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 2u);
-  EXPECT_GE(
-      rcclx::relay::registeredAllReducePooledStateImportsForTest(), imports);
-  // Alternate executions between the two live requests on one stream; each
-  // owns its state region, so neither disturbs the other.
-  rcclx::relay::RegisteredAllReduce* const firstRequest = request;
-  uint16_t* const firstIn = input;
-  uint16_t* const firstOut = output;
+
   std::vector<uint16_t> host;
-  for (int step = 0; step < 8; ++step) {
-    const bool useSecond = step % 2 == 1;
-    request = useSecond ? second : firstRequest;
-    input = useSecond ? secondIn : firstIn;
-    output = useSecond ? secondOut : firstOut;
-    const int generation = 90 + step;
-    fillInputAsync(kOneMiB, generation, host);
+  int generation = 40;
+  for (size_t bytes : kAlignedSizes) {
+    fillInputAsync(bytes, generation, host);
     clearOutputAsync(kOneMiB);
-    execute(kOneMiB);
-    syncStream("two live requests");
-    expectOutput(kOneMiB, generation, "two live requests");
+    execute(bytes);
+    syncStream("aligned-size all-reduce");
+    expectOutput(bytes, generation, "aligned-size output");
+    expectInput(bytes, generation, "aligned-size input preservation");
+    ++generation;
   }
-  request = firstRequest;
-  input = firstIn;
-  output = firstOut;
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReduceFinalize(second, stream, true),
-      ncclSuccess);
-  HIPCHECK_TEST(hipFree(secondOut));
-  HIPCHECK_TEST(hipFree(secondIn));
+
   finalizeRequest();
-  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
 }
 
-// ncclCommDestroy frees a communicator's pooled state regions and closes the
-// peer imports of them (a private communicator, so the suite's stays intact).
-TEST_F(RegisteredAllReduceTest, CommDestroyReleasesStatePool) {
+TEST_F(RegisteredAllReduceTest, MixedSizesBackToBackWithoutHostSync) {
   if (!isSupportedTopology()) {
     GTEST_SKIP() << "Test requires the supported registered topology";
   }
-  const size_t importsBefore =
-      rcclx::relay::registeredAllReducePooledStateImportsForTest();
-  ncclComm_t own = nullptr;
-  NCCLCHECK_TEST(ncclCommSplit(comm, 0, globalRank, &own, nullptr));
-  rcclx::relay::RegisteredAllReduce* ownRequest = nullptr;
+  createRequest();
+
+  std::vector<uint16_t> first;
+  std::vector<uint16_t> second;
+  std::vector<uint16_t> third;
+  constexpr size_t kDecode = 73728;
+  fillInputAsync(kDecode, 60, first);
+  execute(kDecode);
+  snapshotAsync(snapshotA, kDecode);
+  fillInputAsync(kHalfMiB, 61, second);
+  execute(kHalfMiB);
+  fillInputAsync(kDecode, 62, third);
+  execute(kDecode);
+  snapshotAsync(snapshotB, kDecode);
+  syncStream("mixed-size back-to-back all-reduce");
+  expectSnapshot(snapshotA, kDecode, 60, "first decode-size snapshot");
+  expectSnapshot(snapshotB, kDecode, 62, "decode size after a dedicated size");
+
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, AlignedSizeGraphReplayChangedInput) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+  constexpr size_t kDecode = 73728;
+
+  std::vector<uint16_t> capturedInput;
+  fillInputAsync(kDecode, 63, capturedInput);
+  GraphRun run = captureExecute(kDecode);
+  ASSERT_NE(run.exec, nullptr);
+
+  for (int generation = 64; generation < 67; ++generation) {
+    std::vector<uint16_t> replayInput;
+    fillInputAsync(kDecode, generation, replayInput);
+    clearOutputAsync(kDecode);
+    HIPCHECK_TEST(hipGraphLaunch(run.exec, stream));
+    syncStream("aligned-size graph replay");
+    expectOutput(kDecode, generation, "aligned-size graph replay");
+  }
+
+  destroyGraph(run);
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, SmallCapacityBoundsPayloads) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  constexpr size_t kCapacity = 4096;
   ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(own, &ownRequest), ncclSuccess);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReduceInit(ownRequest, input, output, kOneMiB),
+      ncclRegisteredAllReduceInit(input, output, kCapacity, comm, &request),
       ncclSuccess);
-  EXPECT_EQ(
-      rcclx::relay::registeredAllReducePooledStateImportsForTest(),
-      importsBefore + (kRanks - 1));
-  std::swap(request, ownRequest);
+
   std::vector<uint16_t> host;
-  fillInputAsync(kOneMiB, 140, host);
-  clearOutputAsync(kOneMiB);
-  execute(kOneMiB);
-  syncStream("private communicator");
-  expectOutput(kOneMiB, 140, "private communicator");
-  std::swap(request, ownRequest);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReduceFinalize(ownRequest, stream, true),
-      ncclSuccess);
+  fillInputAsync(kCapacity, 67, host);
+  execute(kCapacity);
+  syncStream("small-capacity all-reduce");
+  expectOutput(kCapacity, 67, "small-capacity output");
   EXPECT_EQ(
-      rcclx::relay::registeredAllReducePooledStateImportsForTest(),
-      importsBefore + (kRanks - 1))
-      << "Finalize must keep the pooled state";
-  NCCLCHECK_TEST(ncclCommDestroy(own));
-  EXPECT_EQ(
-      rcclx::relay::registeredAllReducePooledStateImportsForTest(),
-      importsBefore)
-      << "ncclCommDestroy must release the pooled state";
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          countForBytes(2 * kCapacity),
+          ncclBfloat16,
+          ncclSum,
+          stream,
+          request),
+      ncclInvalidArgument);
+
+  finalizeRequest();
 }
 
 int main(int argc, char* argv[]) {

@@ -1131,6 +1131,9 @@ ncclResult_t pncclShardedRelayMultiGroupAllGather(
 /*! @brief ABI revision of the four sharded-relay entry points. 2 = they carry lowPrecision. */
 #define NCCL_SHARDED_RELAY_ABI_VERSION 2
 
+/*! @brief ABI revision of the registered all-reduce lifecycle entry points. */
+#define NCCL_REGISTERED_ALL_REDUCE_ABI_VERSION 1
+
 /*! @brief      ABI revision of the sharded-relay entry points, as built into this library.
     @details    Exists for consumers that bind those symbols with NO compiler and NO linker in the
                 chain -- notably the pynccl / sglang path, where `install_rcclx_libs.sh` points a
@@ -1152,6 +1155,75 @@ ncclResult_t pncclShardedRelayMultiGroupAllGather(
 int  ncclShardedRelayAbiVersion(void);
 /*! @cond       include_hidden */
 int pncclShardedRelayAbiVersion(void);
+/*! @endcond */
+
+/*! @brief      ABI revision of the registered all-reduce lifecycle entry points.
+    @details    Exists for consumers that bind these symbols dynamically. PRESENT AND EQUAL to
+                @ref NCCL_REGISTERED_ALL_REDUCE_ABI_VERSION means the caller can use the generic
+                raw-byte registration plus datatype/op execution lifecycle below.
+    @return     The value of @ref NCCL_REGISTERED_ALL_REDUCE_ABI_VERSION this library was built with. */
+int  ncclRegisteredAllReduceAbiVersion(void);
+/*! @cond       include_hidden */
+int pncclRegisteredAllReduceAbiVersion(void);
+/*! @endcond */
+
+/*! @brief      Register fixed buffers for a datatype-generic all-reduce request.
+    @details    Init is collective across comm and every rank must call it in the same order.
+                Registration is byte-oriented; datatype and reduction op are supplied to Exec.
+                sendbuff and recvbuff are fixed for the request lifetime and must be distinct.
+                Requires two or four local MI350/gfx950 ranks on one node with RCCLX direct
+                all-pairs P2P; unsupported topologies return ncclInvalidArgument before peer
+                mappings are created. capacityBytes must be a positive multiple of 16.
+    @param[in]  sendbuff       Fixed input buffer for later Exec calls
+    @param[out] recvbuff       Fixed output buffer for later Exec calls
+    @param[in]  capacityBytes  Byte capacity of both registered buffers
+    @param[in]  comm           Communicator owning the request
+    @param[out] request        Opaque request handle for Exec and Finalize. It is null on ordinary
+                               failure; if rollback itself fails, it remains non-null and must be
+                               passed to Finalize to retry cleanup. */
+ncclResult_t  ncclRegisteredAllReduceInit(
+    const void* sendbuff, void* recvbuff, size_t capacityBytes,
+    ncclComm_t comm, void** request);
+/*! @cond       include_hidden */
+ncclResult_t pncclRegisteredAllReduceInit(
+    const void* sendbuff, void* recvbuff, size_t capacityBytes,
+    ncclComm_t comm, void** request);
+/*! @endcond */
+
+/*! @brief      Execute a registered all-reduce request on stream.
+    @details    sendbuff and recvbuff must exactly match the pointers supplied to Init. Every rank
+                must execute the same count sequence and graph replay count/order, with all calls
+                for a request ordered on one stream. Supports BF16 SUM at any payload that is a
+                positive multiple of 16 bytes within the registered capacity, reduced in rank
+                order; payload sizes may be interleaved on one request. Unsupported combinations
+                fail before launch.
+    @param[in]  sendbuff   Fixed input buffer supplied to Init
+    @param[out] recvbuff   Fixed output buffer supplied to Init
+    @param[in]  count      Element count for datatype
+    @param[in]  datatype   Element datatype
+    @param[in]  op         Reduction operation
+    @param[in]  stream     HIP stream for execution
+    @param[in]  request    Opaque request handle returned by Init */
+ncclResult_t  ncclRegisteredAllReduceExec(
+    const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request);
+/*! @cond       include_hidden */
+ncclResult_t pncclRegisteredAllReduceExec(
+    const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request);
+/*! @endcond */
+
+/*! @brief      Finalize and destroy a registered all-reduce request.
+    @details    Finalize is collective and every rank must call it in the same order. It rejects
+                capture-time use, synchronizes stream, then tears down peer mappings. Any HIP
+                graph or executable that captured Exec must be destroyed before Finalize. Every
+                live request must be finalized before ncclCommDestroy; communicator abort only
+                invalidates remaining handles and does not perform collective request teardown.
+    @param[in]  request  Opaque request handle returned by Init
+    @param[in]  stream   Stream used for the final eager execution or graph replay */
+ncclResult_t  ncclRegisteredAllReduceFinalize(void* request, hipStream_t stream);
+/*! @cond       include_hidden */
+ncclResult_t pncclRegisteredAllReduceFinalize(void* request, hipStream_t stream);
 /*! @endcond */
 
 /*! @brief      Reduce-Scatter
