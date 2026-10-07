@@ -289,6 +289,34 @@ class RcclxMock : public RcclxApi {
       (override));
   MOCK_METHOD(ncclResult_t, pFree, (void* request), (override));
 
+  // Registered AllReduce operations
+  MOCK_METHOD(int, registeredAllReduceAbiVersion, (), (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      registeredAllReduceInit,
+      (const void* sendbuff,
+       void* recvbuff,
+       size_t capacityBytes,
+       ncclComm_t comm,
+       void** request),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      registeredAllReduceExec,
+      (const void* sendbuff,
+       void* recvbuff,
+       size_t count,
+       ncclDataType_t datatype,
+       ncclRedOp_t op,
+       hipStream_t stream,
+       void* request),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      registeredAllReduceFinalize,
+      (void* request, hipStream_t stream),
+      (override));
+
   // Memory allocation
   MOCK_METHOD(ncclResult_t, memAlloc, (void** ptr, size_t size), (override));
   MOCK_METHOD(ncclResult_t, memFree, (void* ptr), (override));

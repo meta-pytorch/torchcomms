@@ -298,6 +298,10 @@ void TorchCommRCCLX::checkAndAbortIfTimedOutOrError() {
     // The old queue will be destroyed when this scope exits
   }
 
+  checkAndAbortIfTimedOutOrErrorNoCleanup();
+}
+
+void TorchCommRCCLX::checkAndAbortIfTimedOutOrErrorNoCleanup() {
   if (comm_state_ == CommState::TIMEOUT) {
     if (options_.enable_reconfigure) {
       revokeRcclxComm();
