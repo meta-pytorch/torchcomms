@@ -1,5 +1,5 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-# pyre-strict
+from pathlib import Path
 
 from uniflow._core import (
     Connection,
@@ -22,6 +22,8 @@ from uniflow._core import (
     UniflowAgentConfig,
     UniflowFuture,
 )
+
+cmake_prefix_path: str = str(Path(__file__).resolve().parent)
 
 __all__ = [
     "Connection",

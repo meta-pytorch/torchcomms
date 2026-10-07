@@ -10,7 +10,7 @@ class ErrCode:
     NotConnected: ErrCode
     TransportError: ErrCode
     ConnectionFailed: ErrCode
-    MemoryRegistrationFailed: ErrCode
+    MemoryRegistrationError: ErrCode
     Timeout: ErrCode
     ResourceExhausted: ErrCode
     @property
@@ -141,6 +141,11 @@ class UniflowAgentConfig:
     listen_address: str
     connect_retries: int
     connect_timeout_ms: int
+    enable_tcp: bool
+    tcp_bind_host: str
+    preferred_transport: Optional[TransportType]
+    intra_node_transport: Optional[TransportType]
+    inter_node_transport: Optional[TransportType]
     def __init__(
         self,
         device_id: int = -1,
@@ -148,6 +153,11 @@ class UniflowAgentConfig:
         listen_address: str = "",
         connect_retries: int = 10,
         connect_timeout_ms: int = 1000,
+        enable_tcp: bool = False,
+        tcp_bind_host: str = "",
+        preferred_transport: Optional[TransportType] = None,
+        intra_node_transport: Optional[TransportType] = None,
+        inter_node_transport: Optional[TransportType] = None,
     ) -> None: ...
 
 class MultiTransport:
@@ -183,11 +193,15 @@ class MultiTransportFactory:
         nic_filter: str = "",
         cpu_nic_selection_policy: CpuNicSelectionPolicy = ...,
         max_cpu_nics: int = ...,
+        enable_tcp: bool = False,
+        tcp_bind_host: str = "",
     ) -> None: ...
     def register_segment(self, segment: Segment) -> Result: ...
     def import_segment(self, export_id: bytes) -> Result: ...
     def create_transport(self, peer_topology: bytes) -> Result: ...
     def get_topology(self) -> bytes: ...
+    @staticmethod
+    def supported(transport_type: TransportType) -> Result: ...
 
 class Connection:
     def shutdown(self) -> None: ...
