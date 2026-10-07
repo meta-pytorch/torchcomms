@@ -85,5 +85,6 @@ struct WaitSignalOptions : OptionsBase<WaitSignalOptions> {};
 
 struct AllGatherPInitOptions : OptionsBase<AllGatherPInitOptions> {};
 struct AllGatherPExecOptions : OptionsBase<AllGatherPExecOptions> {};
+struct RegisteredAllReduceOptions : OptionsBase<RegisteredAllReduceOptions> {};
 
 } // namespace torch::comms

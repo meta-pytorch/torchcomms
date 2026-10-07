@@ -214,6 +214,12 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   void all_gather_p_free(AllGatherPHandle handle);
 
+  std::shared_ptr<RegisteredAllReduce> registered_all_reduce(
+      const at::Tensor& input,
+      const at::Tensor& output,
+      std::optional<size_t> capacity_bytes = std::nullopt,
+      const RegisteredAllReduceOptions& options = {});
+
   // Fault Tolerance API
 
   /**

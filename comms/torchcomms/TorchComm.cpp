@@ -495,6 +495,14 @@ void TorchComm::all_gather_p_free(AllGatherPHandle handle) {
   impl_->all_gather_p_free(handle);
 }
 
+std::shared_ptr<RegisteredAllReduce> TorchComm::registered_all_reduce(
+    const at::Tensor& input,
+    const at::Tensor& output,
+    std::optional<size_t> capacity_bytes,
+    const RegisteredAllReduceOptions& options) {
+  return impl_->registered_all_reduce(input, output, capacity_bytes, options);
+}
+
 // Fault Tolerance API
 InitHandle TorchComm::getInitHandle() const {
   return impl_->getInitHandle();
