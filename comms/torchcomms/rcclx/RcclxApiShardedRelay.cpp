@@ -49,6 +49,38 @@ ncclResult_t DefaultRcclxApi::pFree(void* request) {
   return ncclx::pFree(request);
 }
 
+int DefaultRcclxApi::registeredAllReduceAbiVersion() {
+  return ncclRegisteredAllReduceAbiVersion();
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllReduceInit(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t capacityBytes,
+    ncclComm_t comm,
+    void** request) {
+  return ncclRegisteredAllReduceInit(
+      sendbuff, recvbuff, capacityBytes, comm, request);
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllReduceExec(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    ncclRedOp_t op,
+    hipStream_t stream,
+    void* request) {
+  return ncclRegisteredAllReduceExec(
+      sendbuff, recvbuff, count, datatype, op, stream, request);
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllReduceFinalize(
+    void* request,
+    hipStream_t stream) {
+  return ncclRegisteredAllReduceFinalize(request, stream);
+}
+
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
     const void* const* sendBuffs,
     void* const* recvBuffs,

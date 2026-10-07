@@ -301,6 +301,12 @@ class TorchCommRCCLX : public TorchCommBackend,
 
   void all_gather_p_free(AllGatherPHandle handle) override;
 
+  std::shared_ptr<RegisteredAllReduce> registered_all_reduce(
+      const at::Tensor& input,
+      const at::Tensor& output,
+      std::optional<size_t> capacity_bytes = std::nullopt,
+      const RegisteredAllReduceOptions& options = {}) override;
+
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
   // Communicator Management
@@ -312,6 +318,7 @@ class TorchCommRCCLX : public TorchCommBackend,
   // Friend access for TorchCommRCCLX
   friend class TorchWorkRCCLX;
   friend class RcclxCachingAllocatorHookImpl;
+  friend class TorchCommRCCLXRegisteredAllReduce;
 
   // Getter for CUDA API (for friend classes)
   HipApi* getHipApi() const {
@@ -465,6 +472,7 @@ class TorchCommRCCLX : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
+  void checkAndAbortIfTimedOutOrErrorNoCleanup();
   void garbageCollectWorkQueues();
 
   void enqueueWork(

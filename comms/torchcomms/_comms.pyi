@@ -429,8 +429,32 @@ class AllGatherPExecOptions:
     timeout: timedelta
     hints: Dict[str, str]
 
+class RegisteredAllReduceOptions:
+    def __init__(self) -> None: ...
+    timeout: timedelta
+    hints: Dict[str, str]
+
 # Opaque handle type for persistent AllGather
 AllGatherPHandle = Any
+
+class RegisteredAllReduce:
+    def all_reduce(
+        self,
+        input: Any,
+        op: ReduceOp = ReduceOp.SUM,
+        out: Any | None = None,
+        registered_input: bool = True,
+    ) -> None: ...
+    def close(self) -> None: ...
+    def finalize(self) -> None: ...
+    @property
+    def closed(self) -> bool: ...
+    @property
+    def input(self) -> Any: ...
+    @property
+    def output(self) -> Any: ...
+    @property
+    def capacity_bytes(self) -> int: ...
 
 class WorkStatus(Enum):
     NOT_STARTED = auto()
@@ -712,6 +736,14 @@ class TorchComm:
     ) -> TorchComm: ...
     def batch_op_create(self) -> BatchSendRecv: ...
     def new_window(self, tensor: Any | None = None) -> TorchCommWindow: ...
+    def registered_all_reduce(
+        self,
+        input: Any,
+        output: Any,
+        capacity_bytes: int | None = None,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> RegisteredAllReduce: ...
     def all_gather_p_init(
         self,
         output: Any,

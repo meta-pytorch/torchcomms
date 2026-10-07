@@ -2,11 +2,13 @@
 
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -2653,6 +2655,255 @@ void TorchCommRCCLX::all_gather_p_free(AllGatherPHandle handle) {
 
   RCCLX_CHECK_IGNORE(
       rcclx_api_, rcclx_api_->pFree(handle), "RCCLX pFree failed");
+}
+
+namespace {
+
+size_t tensorNBytes(const at::Tensor& tensor) {
+  TORCH_CHECK(tensor.nbytes() >= 0, "Tensor byte size must be non-negative");
+  return static_cast<size_t>(tensor.nbytes());
+}
+
+bool byteRangesOverlap(
+    const void* first,
+    size_t firstBytes,
+    const void* second,
+    size_t secondBytes) {
+  const auto firstAddress = reinterpret_cast<uintptr_t>(first);
+  const auto secondAddress = reinterpret_cast<uintptr_t>(second);
+  return firstAddress <= secondAddress
+      ? secondAddress - firstAddress < firstBytes
+      : firstAddress - secondAddress < secondBytes;
+}
+
+} // namespace
+
+class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
+ public:
+  TorchCommRCCLXRegisteredAllReduce(
+      std::shared_ptr<TorchCommRCCLX> comm,
+      const at::Tensor& input,
+      const at::Tensor& output,
+      std::optional<size_t> capacityBytes,
+      const RegisteredAllReduceOptions& options)
+      : comm_(std::move(comm)), input_(input), output_(output) {
+    TORCH_CHECK(
+        comm_ != nullptr, "RegisteredAllReduce requires a communicator");
+    comm_->checkInitialized();
+    comm_->checkAndAbortIfTimedOutOrError();
+
+    const int abiVersion = comm_->rcclx_api_->registeredAllReduceAbiVersion();
+    TORCH_CHECK(
+        abiVersion == 1,
+        "RCCLX registered all-reduce ABI version 1 is required, got ",
+        abiVersion);
+
+    std::exception_ptr localValidationError;
+    try {
+      TORCH_CHECK(
+          options.hints.empty(),
+          "RegisteredAllReduce does not support backend hints");
+      TORCH_CHECK(
+          options.timeout == kNoTimeout,
+          "RegisteredAllReduce does not support per-request timeouts");
+      comm_->ensureTensorContiguous(input_);
+      comm_->ensureTensorContiguous(output_);
+      comm_->checkTensorDevice(input_);
+      comm_->checkTensorDevice(output_);
+      TORCH_CHECK(
+          input_.data_ptr() != nullptr,
+          "RegisteredAllReduce input tensor must have storage");
+      TORCH_CHECK(
+          output_.data_ptr() != nullptr,
+          "RegisteredAllReduce output tensor must have storage");
+      TORCH_CHECK(
+          !byteRangesOverlap(
+              input_.data_ptr(),
+              tensorNBytes(input_),
+              output_.data_ptr(),
+              tensorNBytes(output_)),
+          "RegisteredAllReduce input and output storage must not overlap");
+      TORCH_CHECK(
+          input_.scalar_type() == output_.scalar_type(),
+          "RegisteredAllReduce input and output dtypes must match: ",
+          input_.scalar_type(),
+          " != ",
+          output_.scalar_type());
+      TORCH_CHECK(
+          input_.numel() == output_.numel(),
+          "RegisteredAllReduce input and output element counts must match: ",
+          input_.numel(),
+          " != ",
+          output_.numel());
+
+      const size_t inputBytes = tensorNBytes(input_);
+      const size_t outputBytes = tensorNBytes(output_);
+      capacityBytes_ = capacityBytes.value_or(inputBytes);
+      TORCH_CHECK(
+          capacityBytes_ == inputBytes && capacityBytes_ == outputBytes,
+          "RegisteredAllReduce capacity_bytes must exactly match both fixed tensor byte sizes: capacity=",
+          capacityBytes_,
+          ", input=",
+          inputBytes,
+          ", output=",
+          outputBytes);
+    } catch (...) {
+      localValidationError = std::current_exception();
+      capacityBytes_ = 0;
+    }
+
+    const bool locallyValid = localValidationError == nullptr;
+    const ncclResult_t initResult = comm_->rcclx_api_->registeredAllReduceInit(
+        locallyValid ? input_.data_ptr() : nullptr,
+        locallyValid ? output_.data_ptr() : nullptr,
+        capacityBytes_,
+        comm_->nccl_comm_,
+        &request_);
+    if (initResult != ncclSuccess || !locallyValid) {
+      if (request_ != nullptr) {
+        const hipStream_t stream =
+            comm_->hip_api_->getCurrentCUDAStream(comm_->device_.index());
+        constexpr int kCleanupAttempts = 3;
+        ncclResult_t cleanupResult = ncclInternalError;
+        for (int attempt = 0;
+             attempt < kCleanupAttempts && cleanupResult != ncclSuccess;
+             ++attempt) {
+          cleanupResult =
+              comm_->rcclx_api_->registeredAllReduceFinalize(request_, stream);
+        }
+        if (cleanupResult != ncclSuccess) {
+          RCCLXException cleanupError(
+              *comm_->rcclx_api_,
+              "RCCLX registeredAllReduceInit rollback failed",
+              cleanupResult,
+              comm_->nccl_comm_);
+          comm_->abort();
+          request_ = nullptr;
+          throw cleanupError;
+        }
+        request_ = nullptr;
+      }
+      if (localValidationError != nullptr) {
+        std::rethrow_exception(localValidationError);
+      }
+      throw RCCLXException(
+          *comm_->rcclx_api_,
+          "RCCLX registeredAllReduceInit failed",
+          initResult,
+          comm_->nccl_comm_);
+    }
+    TORCH_CHECK(
+        request_ != nullptr,
+        "RCCLX registeredAllReduceInit returned a null request");
+  }
+
+  ~TorchCommRCCLXRegisteredAllReduce() override {
+    if (!closed_) {
+      LOG(ERROR)
+          << "[TC] RegisteredAllReduce was destroyed without close(). "
+          << "Call close() explicitly after destroying captured graphs and "
+          << "before finalizing the communicator.";
+    }
+  }
+
+  void all_reduce(
+      const at::Tensor& input,
+      const ReduceOp& op,
+      const at::Tensor& output) override {
+    TORCH_CHECK(!closed_, "RegisteredAllReduce has already been closed");
+    comm_->checkInitialized();
+    comm_->checkAndAbortIfTimedOutOrErrorNoCleanup();
+    TORCH_CHECK(
+        input.is_same(input_),
+        "RegisteredAllReduce all_reduce requires the registered input tensor");
+    TORCH_CHECK(
+        output.is_same(output_),
+        "RegisteredAllReduce all_reduce requires the registered output tensor");
+    TORCH_CHECK(
+        tensorNBytes(input) <= capacityBytes_,
+        "RegisteredAllReduce count exceeds registered capacity");
+    TORCH_CHECK(
+        op.type() != ReduceOp::RedOpType::PREMUL_SUM,
+        "RegisteredAllReduce does not support PREMUL_SUM");
+
+    const ncclDataType_t datatype = comm_->getNcclDataType(input_);
+    const auto ncclOp = comm_->getNcclReduceOp(op, comm_->nccl_comm_, datatype);
+    const hipStream_t stream =
+        comm_->hip_api_->getCurrentCUDAStream(comm_->device_.index());
+    TORCH_CHECK(
+        !executionStream_.has_value() || *executionStream_ == stream,
+        "RegisteredAllReduce executions and graph replays must use one stream");
+    executionStream_ = stream;
+
+    RCCLX_CHECK(
+        comm_->rcclx_api_,
+        comm_->nccl_comm_,
+        comm_->rcclx_api_->registeredAllReduceExec(
+            input_.data_ptr(),
+            output_.data_ptr(),
+            static_cast<size_t>(input_.numel()),
+            datatype,
+            ncclOp,
+            stream,
+            request_),
+        "RCCLX registeredAllReduceExec failed");
+  }
+
+  void close() override {
+    if (closed_) {
+      return;
+    }
+
+    comm_->checkInitialized();
+    comm_->checkAndAbortIfTimedOutOrError();
+    const hipStream_t stream = executionStream_.has_value()
+        ? *executionStream_
+        : comm_->hip_api_->getCurrentCUDAStream(comm_->device_.index());
+    RCCLX_CHECK(
+        comm_->rcclx_api_,
+        comm_->nccl_comm_,
+        comm_->rcclx_api_->registeredAllReduceFinalize(request_, stream),
+        "RCCLX registeredAllReduceFinalize failed");
+    request_ = nullptr;
+    closed_ = true;
+  }
+
+  bool isClosed() const override {
+    return closed_;
+  }
+
+  const at::Tensor& input() const override {
+    return input_;
+  }
+
+  const at::Tensor& output() const override {
+    return output_;
+  }
+
+  size_t capacityBytes() const override {
+    return capacityBytes_;
+  }
+
+ private:
+  std::shared_ptr<TorchCommRCCLX> comm_;
+  at::Tensor input_;
+  at::Tensor output_;
+  size_t capacityBytes_{0};
+  void* request_{nullptr};
+  std::optional<hipStream_t> executionStream_;
+  bool closed_{false};
+};
+
+std::shared_ptr<RegisteredAllReduce> TorchCommRCCLX::registered_all_reduce(
+    const at::Tensor& input,
+    const at::Tensor& output,
+    std::optional<size_t> capacity_bytes,
+    const RegisteredAllReduceOptions& options) {
+  TORCH_CHECK(
+      !options_.enable_reconfigure,
+      "RegisteredAllReduce does not support reconfigurable communicators");
+  return std::make_shared<TorchCommRCCLXRegisteredAllReduce>(
+      shared_from_this(), input, output, capacity_bytes, options);
 }
 
 std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(

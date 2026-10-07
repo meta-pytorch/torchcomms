@@ -1261,6 +1261,64 @@ or an object with a ``wait()`` method for asynchronous operations.
           )")
       .def(py::init<>());
 
+  py_opaque_class<RegisteredAllReduce, std::shared_ptr<RegisteredAllReduce>>(
+      m, "RegisteredAllReduce")
+      .def(
+          "all_reduce",
+          [](RegisteredAllReduce& self,
+             const at::Tensor& input,
+             const ReduceOp& op,
+             const std::optional<at::Tensor>& out,
+             bool registered_input) {
+            TORCH_CHECK(
+                registered_input,
+                "RegisteredAllReduce only supports registered_input=True");
+            const at::Tensor& output = out.has_value() ? *out : self.output();
+            self.all_reduce(input, op, output);
+          },
+          R"(
+Execute the registered all-reduce on the current stream.
+
+Args:
+    input: The exact input tensor captured at registration.
+    op: Reduction operation. The current RCCLX backend supports SUM.
+    out: The exact output tensor captured at registration. If omitted, the
+        registered output is used.
+    registered_input: Must be True. No unregistered-input fallback, staging copy,
+        or temporary tensor is performed.
+
+Returns:
+    None. The operation is enqueued on the current stream without a TorchWork.
+
+Note:
+    Every execution and graph replay for one request must use the same stream.
+          )",
+          py::arg("input"),
+          py::arg("op") = ReduceOp::SUM,
+          py::arg("out") = std::nullopt,
+          py::arg("registered_input") = true,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "close",
+          &RegisteredAllReduce::close,
+          "Finalize on the request stream after destroying captured graphs.",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "finalize",
+          &RegisteredAllReduce::close,
+          "Alias for close().",
+          py::call_guard<py::gil_scoped_release>())
+      .def_property_readonly(
+          "closed", &RegisteredAllReduce::isClosed, "Whether close() ran.")
+      .def_property_readonly(
+          "input", &RegisteredAllReduce::input, "Registered input tensor.")
+      .def_property_readonly(
+          "output", &RegisteredAllReduce::output, "Registered output tensor.")
+      .def_property_readonly(
+          "capacity_bytes",
+          &RegisteredAllReduce::capacityBytes,
+          "Raw byte capacity registered with the backend.");
+
   // Bind TorchComm class
   py_opaque_class<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
       // NOTE: copy/deepcopy return the same object (not a clone).
@@ -2252,6 +2310,54 @@ Example:
 
       )",
           py::arg("tensor") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+
+      .def(
+          "registered_all_reduce",
+          [](TorchComm& self,
+             const at::Tensor& input,
+             const at::Tensor& output,
+             std::optional<size_t> capacity_bytes,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            RegisteredAllReduceOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.registered_all_reduce(
+                input, output, capacity_bytes, opts);
+          },
+          R"(
+Register fixed input/output buffers for a persistent all-reduce request.
+
+Register tensors that stay allocated for the process lifetime; registration
+verifies every peer mapping of the input and fails on all ranks if one is
+stale. It drains the device and temporarily writes 16 bytes at every 2 MiB of
+the input, restoring them before it returns.
+
+Args:
+    input: Fixed input tensor retained by the request.
+    output: Fixed output tensor retained by the request.
+    capacity_bytes: Raw byte capacity to register. It must exactly match both
+        fixed tensor sizes and defaults to input.nbytes.
+    hints: Reserved for future backend options; currently must be omitted.
+    timeout: Reserved for future timeout support; currently must be omitted.
+
+Returns:
+    RegisteredAllReduce: Request object. Call close() explicitly before
+    destroying the communicator.
+
+Note:
+    Requires an RCCLX backend with registered all-reduce ABI support.
+          )",
+          py::arg("input"),
+          py::arg("output"),
+          py::arg("capacity_bytes") = std::nullopt,
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
 
       // Persistent AllGather operations
