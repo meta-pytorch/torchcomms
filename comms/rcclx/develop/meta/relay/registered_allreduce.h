@@ -98,9 +98,38 @@ ncclResult_t registeredAllReduceFinalize(
     hipStream_t stream,
     bool graphsTeardownComplete);
 
+/**
+ * Public C-ABI adapter for registered all-reduce. The opaque handle returned in
+ * request is owned by the caller until ncclRegisteredAllReduceFinalize().
+ * Normal communicator destruction rejects live requests because their safe
+ * teardown is collective; abort invalidates any remaining handles without
+ * entering a collective cleanup path.
+ */
+ncclResult_t registeredAllReducePublicInit(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t capacityBytes,
+    ncclComm_t comm,
+    void** request);
+
+ncclResult_t registeredAllReducePublicExec(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    ncclRedOp_t op,
+    hipStream_t stream,
+    void* request);
+
+ncclResult_t registeredAllReducePublicFinalize(
+    void* request,
+    hipStream_t stream);
+
+bool registeredAllReduceCommHasLiveRequests(ncclComm_t comm);
 // Frees the communicator's pooled state regions and closes the peer imports
 // of them; called by ncclCommDestroy once no request is live.
 void registeredAllReduceReleaseComm(ncclComm_t comm);
+void registeredAllReduceAbandonComm(ncclComm_t comm);
 
 size_t registeredAllReduceLiveRequestsForTest();
 size_t registeredAllReduceLivePeerMappingsForTest();

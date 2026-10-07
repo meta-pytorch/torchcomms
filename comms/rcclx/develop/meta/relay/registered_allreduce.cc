@@ -9,12 +9,14 @@
 #include "meta/relay/registered_allreduce.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <vector>
 
 #include "archinfo.h"
@@ -174,6 +176,92 @@ StatePool* statePoolFor(ncclComm_t comm) {
   pool->nextId = (static_cast<uint64_t>(comm->rank) << 48) + 1;
   statePools().push_back(std::move(pool));
   return statePools().back().get();
+}
+
+struct RegisteredAllReducePublicRequest {
+  RegisteredAllReduce* request{nullptr};
+  ncclComm_t comm{nullptr};
+  uint64_t commHash{0};
+  bool finalizing{false};
+  RegisteredAllReducePublicRequest* next{nullptr};
+};
+
+std::mutex& publicRegistryMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+RegisteredAllReducePublicRequest*& publicRegistryHead() {
+  static RegisteredAllReducePublicRequest* head = nullptr;
+  return head;
+}
+
+RegisteredAllReducePublicRequest* findPublicRequestLocked(void* handle) {
+  auto* const want = static_cast<RegisteredAllReducePublicRequest*>(handle);
+  for (RegisteredAllReducePublicRequest* cur = publicRegistryHead();
+       cur != nullptr;
+       cur = cur->next) {
+    if (cur == want) {
+      return cur;
+    }
+  }
+  return nullptr;
+}
+
+void registerPublicRequest(RegisteredAllReducePublicRequest* entry) {
+  std::lock_guard<std::mutex> lock(publicRegistryMutex());
+  entry->next = publicRegistryHead();
+  publicRegistryHead() = entry;
+}
+
+bool unregisterPublicRequestLocked(RegisteredAllReducePublicRequest* entry) {
+  for (RegisteredAllReducePublicRequest** cur = &publicRegistryHead();
+       *cur != nullptr;
+       cur = &(*cur)->next) {
+    if (*cur == entry) {
+      *cur = entry->next;
+      entry->next = nullptr;
+      return true;
+    }
+  }
+  return false;
+}
+
+ncclResult_t rejectActiveCapture(hipStream_t stream) {
+#if ROCM_VERSION >= 60100
+  if (stream == nullptr) {
+    return ncclSuccess;
+  }
+  hipStreamCaptureStatus status;
+  unsigned long long graphId = 0;
+  hipGraph_t graph = nullptr;
+  const hipError_t hipResult = hipStreamGetCaptureInfo_v2(
+      stream, &status, &graphId, &graph, nullptr, nullptr);
+  if (hipResult != hipSuccess) {
+    return hipToNccl(hipResult, "hipStreamGetCaptureInfo_v2(finalize)");
+  }
+  if (status == hipStreamCaptureStatusActive) {
+    WARN("Registered all-reduce: finalize is not valid during stream capture");
+    return ncclInvalidUsage;
+  }
+#endif
+  return ncclSuccess;
+}
+
+ncclResult_t collectPublicResult(ncclComm_t comm, ncclResult_t localResult) {
+  std::array<uint32_t, kRegisteredAllReduceRanks> results{};
+  results[comm->rank] = static_cast<uint32_t>(localResult);
+  const ncclResult_t gatherResult =
+      bootstrapAllGather(comm->bootstrap, results.data(), sizeof(uint32_t));
+  if (gatherResult != ncclSuccess) {
+    return gatherResult;
+  }
+  for (uint32_t result : results) {
+    if (result != static_cast<uint32_t>(ncclSuccess)) {
+      return static_cast<ncclResult_t>(result);
+    }
+  }
+  return ncclSuccess;
 }
 
 ncclResult_t firstInitResult(const std::vector<InitRecord>& records) {
@@ -704,7 +792,10 @@ ncclResult_t registeredAllReducePrepare(
   if (request == nullptr || !supportedComm(comm)) {
     return ncclInvalidArgument;
   }
-  *request = new RegisteredAllReduce;
+  *request = new (std::nothrow) RegisteredAllReduce;
+  if (*request == nullptr) {
+    return ncclInternalError;
+  }
   (*request)->comm = comm;
   (*request)->commHash = comm->commHash;
   (*request)->rank = comm->rank;
@@ -857,25 +948,22 @@ ncclResult_t registeredAllReduceFinalize(
     return ncclInvalidUsage;
   }
 
+  ncclResult_t localResult = ncclSuccess;
   if (request->initialized) {
     const ncclResult_t quiesced = verifyGlobalQuiescence(*request, stream);
     if (quiesced != ncclSuccess) {
       return quiesced;
     }
-    const ncclResult_t closed = closeMappingsCollectively(*request);
-    if (closed != ncclSuccess) {
-      return closed;
-    }
+    localResult = closeMappingsCollectively(*request);
   } else if (request->mappingsMayExist) {
-    const ncclResult_t closed = closeMappingsCollectively(*request);
-    if (closed != ncclSuccess) {
-      return closed;
-    }
+    localResult = closeMappingsCollectively(*request);
   } else {
-    const ncclResult_t released = releaseLocalState(*request);
-    if (released != ncclSuccess) {
-      return released;
-    }
+    localResult = releaseLocalState(*request);
+  }
+
+  const ncclResult_t result = collectPublicResult(request->comm, localResult);
+  if (result != ncclSuccess) {
+    return result;
   }
 
   delete request;
@@ -905,6 +993,170 @@ void registeredAllReduceReleaseComm(ncclComm_t comm) {
   }
   for (const StatePool::Slot& slot : pool->slots) {
     (void)hipFree(slot.state);
+  }
+}
+
+ncclResult_t registeredAllReducePublicInit(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t capacityBytes,
+    ncclComm_t comm,
+    void** request) {
+  if (request != nullptr) {
+    *request = nullptr;
+  }
+  if (!supportedComm(comm)) {
+    return ncclInvalidArgument;
+  }
+
+  auto* entry = request == nullptr ? nullptr
+                                   : new (std::nothrow)
+                                         RegisteredAllReducePublicRequest;
+  RegisteredAllReduce* internalRequest = nullptr;
+  ncclResult_t localResult = request == nullptr ? ncclInvalidArgument
+      : entry == nullptr                        ? ncclInternalError
+                         : registeredAllReducePrepare(comm, &internalRequest);
+  ncclResult_t result = collectPublicResult(comm, localResult);
+  if (result != ncclSuccess) {
+    if (internalRequest != nullptr) {
+      delete internalRequest;
+      gLiveRequests.fetch_sub(1, std::memory_order_relaxed);
+    }
+    delete entry;
+    return result;
+  }
+
+  localResult = registeredAllReduceInit(
+      internalRequest, sendbuff, recvbuff, capacityBytes);
+  result = collectPublicResult(comm, localResult);
+  if (result != ncclSuccess) {
+    const ncclResult_t cleanupResult =
+        registeredAllReduceFinalize(internalRequest, nullptr, true);
+    if (cleanupResult == ncclSuccess) {
+      delete entry;
+      return result;
+    }
+    entry->request = internalRequest;
+    entry->comm = comm;
+    entry->commHash = comm->commHash;
+    registerPublicRequest(entry);
+    *request = entry;
+    return cleanupResult;
+  }
+
+  entry->request = internalRequest;
+  entry->comm = comm;
+  entry->commHash = comm->commHash;
+  registerPublicRequest(entry);
+  *request = entry;
+  return ncclSuccess;
+}
+
+ncclResult_t registeredAllReducePublicExec(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    ncclRedOp_t op,
+    hipStream_t stream,
+    void* request) {
+  std::lock_guard<std::mutex> lock(publicRegistryMutex());
+  RegisteredAllReducePublicRequest* entry = findPublicRequestLocked(request);
+  if (entry == nullptr || entry->request == nullptr || entry->comm == nullptr ||
+      entry->finalizing || entry->commHash != entry->comm->commHash) {
+    return ncclInvalidArgument;
+  }
+  return registeredAllReduceExecute(
+      entry->request, sendbuff, recvbuff, count, datatype, op, stream);
+}
+
+ncclResult_t registeredAllReducePublicFinalize(
+    void* request,
+    hipStream_t stream) {
+  RegisteredAllReducePublicRequest* entry = nullptr;
+  RegisteredAllReduce* internalRequest = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(publicRegistryMutex());
+    entry = findPublicRequestLocked(request);
+    if (entry == nullptr || entry->request == nullptr ||
+        entry->comm == nullptr || entry->finalizing ||
+        entry->commHash != entry->comm->commHash) {
+      return ncclInvalidArgument;
+    }
+    entry->finalizing = true;
+    internalRequest = entry->request;
+  }
+
+  ncclResult_t result =
+      collectPublicResult(entry->comm, rejectActiveCapture(stream));
+  if (result == ncclSuccess) {
+    result = registeredAllReduceFinalize(internalRequest, stream, true);
+  }
+  if (result != ncclSuccess) {
+    std::lock_guard<std::mutex> lock(publicRegistryMutex());
+    entry->finalizing = false;
+    return result;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(publicRegistryMutex());
+    if (!unregisterPublicRequestLocked(entry)) {
+      return ncclInvalidUsage;
+    }
+  }
+  delete entry;
+  return ncclSuccess;
+}
+
+bool registeredAllReduceCommHasLiveRequests(ncclComm_t comm) {
+  if (comm == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(publicRegistryMutex());
+  for (RegisteredAllReducePublicRequest* entry = publicRegistryHead();
+       entry != nullptr;
+       entry = entry->next) {
+    if (entry->comm == comm && entry->commHash == comm->commHash) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void registeredAllReduceAbandonComm(ncclComm_t comm) {
+  if (comm == nullptr) {
+    return;
+  }
+
+  {
+    // Device work may still reference the pool's regions; leak them.
+    std::lock_guard<std::mutex> poolLock(statePoolMutex());
+    auto& pools = statePools();
+    for (auto it = pools.begin(); it != pools.end(); ++it) {
+      if ((*it)->comm == comm && (*it)->commHash == comm->commHash) {
+        (void)it->release();
+        pools.erase(it);
+        break;
+      }
+    }
+  }
+  size_t abandoned = 0;
+  std::lock_guard<std::mutex> lock(publicRegistryMutex());
+  for (RegisteredAllReducePublicRequest** cur = &publicRegistryHead();
+       *cur != nullptr;) {
+    RegisteredAllReducePublicRequest* entry = *cur;
+    if (entry->comm == comm && entry->commHash == comm->commHash) {
+      *cur = entry->next;
+      entry->next = nullptr;
+      ++abandoned;
+      continue;
+    }
+    cur = &entry->next;
+  }
+  if (abandoned != 0) {
+    WARN(
+        "Registered all-reduce: abandoning %zu live request(s) during communicator abort; device resources remain allocated until process exit",
+        abandoned);
   }
 }
 
