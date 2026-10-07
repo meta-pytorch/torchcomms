@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 /// Integration test for RDMA transport.
-/// Requires at least 2 RDMA NICs. GPU tests require CUDA devices.
-/// Uses two transport instances on different NICs within the same process.
+/// Requires at least 1 RDMA NIC. Cross-NIC tests require 2 compatible NICs,
+/// and GPU tests require CUDA devices.
 
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
@@ -13,6 +13,8 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <stdexcept>
@@ -58,14 +60,56 @@ class SingleHostTest : public ::testing::Test {
     ASSERT_TRUE(devResult.hasValue())
         << "RDMA device discovery failed: " << devResult.error().message();
     deviceList_ = devResult.value();
-    if (numDevices_ < 2) {
-      GTEST_SKIP() << "Need at least 2 RDMA devices, found " << numDevices_;
+    if (numDevices_ < 1) {
+      GTEST_SKIP() << "Need at least 1 RDMA device, found " << numDevices_;
     }
 
     for (int i = 0; i < numDevices_; ++i) {
       auto nameResult = ibvApi_->getDeviceName(deviceList_[i]);
       ASSERT_TRUE(nameResult.hasValue());
-      deviceNames_.emplace_back(nameResult.value());
+      availableDeviceNames_.emplace_back(nameResult.value());
+    }
+
+    const char* configuredNics = std::getenv("UNIFLOW_RDMA_TEST_NICS");
+    if (configuredNics == nullptr) {
+      deviceNames_.push_back(availableDeviceNames_[0]);
+      if (numDevices_ > 1) {
+        deviceNames_.push_back(availableDeviceNames_[1]);
+      }
+    } else if (*configuredNics == '\0') {
+      deviceNames_.push_back(availableDeviceNames_[0]);
+    } else {
+      const std::string nicPair{configuredNics};
+      const auto separator = nicPair.find(',');
+      ASSERT_TRUE(
+          separator != std::string::npos && separator > 0 &&
+          separator + 1 < nicPair.size() &&
+          nicPair.find(',', separator + 1) == std::string::npos)
+          << "UNIFLOW_RDMA_TEST_NICS must contain exactly two comma-separated "
+             "device names";
+
+      deviceNames_ = {
+          nicPair.substr(0, separator), nicPair.substr(separator + 1)};
+      ASSERT_NE(deviceNames_[0], deviceNames_[1])
+          << "UNIFLOW_RDMA_TEST_NICS must name two distinct devices";
+      for (const auto& deviceName : deviceNames_) {
+        ASSERT_NE(
+            std::find(
+                availableDeviceNames_.begin(),
+                availableDeviceNames_.end(),
+                deviceName),
+            availableDeviceNames_.end())
+            << "Configured RDMA device not found: " << deviceName;
+      }
+    }
+
+    for (const auto& deviceName : deviceNames_) {
+      const auto deviceIt = std::find(
+          availableDeviceNames_.begin(),
+          availableDeviceNames_.end(),
+          deviceName);
+      selectedDevices_.push_back(
+          deviceList_[std::distance(availableDeviceNames_.begin(), deviceIt)]);
     }
 
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
@@ -103,9 +147,8 @@ class SingleHostTest : public ::testing::Test {
   /// Create two factories on different NICs, create transports, connect them.
   /// Returns the two connected transports and their factories.
   ///
-  /// When a NIC list is empty (the default), the first two enumerated devices
-  /// are used. This keeps the data-path tests vendor-agnostic so they run on
-  /// any RDMA host (mlx5, bnxt_re/Thor2, etc.) without hardcoded device names.
+  /// When a NIC list is empty (the default), the configured compatible device
+  /// pair is used. Non-CMake builds retain the first-two-device fallback.
   struct ConnectedPair {
     std::unique_ptr<RdmaTransportFactory> factory0;
     std::unique_ptr<RdmaTransportFactory> factory1;
@@ -156,8 +199,27 @@ class SingleHostTest : public ::testing::Test {
   std::shared_ptr<CudaDriverApi> cudaDriverApi_;
   ibv_device** deviceList_{nullptr};
   int numDevices_{0};
+  std::vector<std::string> availableDeviceNames_;
   std::vector<std::string> deviceNames_;
+  std::vector<ibv_device*> selectedDevices_;
   std::unique_ptr<ScopedEventBaseThread> evbThread_;
+};
+
+class CrossNicSingleHostTest : public SingleHostTest {
+ protected:
+  void SetUp() override {
+    SingleHostTest::SetUp();
+    if (HasFatalFailure() || IsSkipped()) {
+      return;
+    }
+    if (deviceNames_.size() < 2) {
+      GTEST_SKIP()
+          << "Cross-NIC RDMA tests require a compatible device pair. "
+             "Configure with -DUNIFLOW_RDMA_TEST_NICS=<device0>,<device1>. "
+             "Detected devices: "
+          << ::testing::PrintToString(availableDeviceNames_);
+    }
+  }
 };
 
 // --- Registration integration tests ---
@@ -187,7 +249,7 @@ TEST_F(SingleHostTest, DramRegisterSerializeImportRoundTrip) {
   EXPECT_EQ(remote->domainId(), local->domainId());
 }
 
-TEST_F(SingleHostTest, MultiNicDramRegistration) {
+TEST_F(CrossNicSingleHostTest, MultiNicDramRegistration) {
   RdmaTransportFactory factory(
       {deviceNames_[0], deviceNames_[1]},
       evbThread_->getEventBase(),
@@ -263,7 +325,7 @@ TEST_F(SingleHostTest, VramRegistrationWithCudaMalloc) {
   (void)cudaFree(devPtr);
 }
 
-TEST_F(SingleHostTest, VramRegistrationWithMultiNics) {
+TEST_F(CrossNicSingleHostTest, VramRegistrationWithMultiNics) {
   if (!hasCudaDevice()) {
     GTEST_SKIP() << "Requires a GPU device";
   }
@@ -348,7 +410,7 @@ TEST_F(SingleHostTest, VramRegistrationWithUnalignedAddress) {
 // RdmaTransport::bind() uses cudaHostAlloc for its control buffer, including
 // when the payload buffers below are in DRAM.
 
-TEST_F(SingleHostTest, TwoTransportsConnectOnDifferentNICs) {
+TEST_F(CrossNicSingleHostTest, TwoTransportsConnectOnDifferentNICs) {
   if (!hasCudaDevice()) {
     GTEST_SKIP() << "Requires a GPU device";
   }
@@ -363,7 +425,7 @@ TEST_F(SingleHostTest, TwoTransportsConnectOnDifferentNICs) {
   EXPECT_EQ(pair.transport1->state(), TransportState::Disconnected);
 }
 
-TEST_F(SingleHostTest, MultiNicTransportConnects) {
+TEST_F(CrossNicSingleHostTest, MultiNicTransportConnects) {
   if (!hasCudaDevice()) {
     GTEST_SKIP() << "Requires a GPU device";
   }
@@ -392,7 +454,7 @@ std::string transferParamName(
   return info.param.name;
 }
 
-class DramTransferTest : public SingleHostTest,
+class DramTransferTest : public CrossNicSingleHostTest,
                          public ::testing::WithParamInterface<TransferParam> {};
 
 TEST_P(DramTransferTest, Put) {
@@ -551,7 +613,7 @@ struct CudaBuffer {
   CudaBuffer& operator=(const CudaBuffer&) = delete;
 };
 
-class GpuTransferTest : public SingleHostTest,
+class GpuTransferTest : public CrossNicSingleHostTest,
                         public ::testing::WithParamInterface<TransferParam> {};
 
 TEST_P(GpuTransferTest, Put) {
@@ -742,7 +804,7 @@ std::string sendRecvParamName(
   return info.param.name;
 }
 
-class DramSendRecvTest : public SingleHostTest,
+class DramSendRecvTest : public CrossNicSingleHostTest,
                          public ::testing::WithParamInterface<SendRecvParam> {
  protected:
   struct SendRecvPair {
@@ -762,14 +824,13 @@ class DramSendRecvTest : public SingleHostTest,
     auto cudaApi = std::make_shared<CudaApi>();
     auto cudaDriverApi = std::make_shared<CudaDriverApi>();
 
-    int nic1Idx = numDevices_ > 3 ? 3 : numDevices_ - 1;
     auto nics0 = std::make_shared<std::vector<NicResources>>();
     nics0->reserve(1);
-    nics0->emplace_back(deviceList_[0], ibv);
+    nics0->emplace_back(selectedDevices_[0], ibv);
 
     auto nics1 = std::make_shared<std::vector<NicResources>>();
     nics1->reserve(1);
-    nics1->emplace_back(deviceList_[nic1Idx], ibv);
+    nics1->emplace_back(selectedDevices_[1], ibv);
 
     RdmaSlabPoolConfig poolConfig{.slabNum = 8, .slabSize = 512 * 1024};
     pair.slabPool0 =
