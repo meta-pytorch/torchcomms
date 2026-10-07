@@ -5,6 +5,7 @@
 #include <hip/hip_runtime.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -114,6 +115,129 @@ uint16_t expectedOutputBits(size_t element, int generation) {
   return accumulator;
 }
 
+constexpr int kNormRows = rcclx::relay::kRegisteredAllReduceRows;
+constexpr int kNormHidden = rcclx::relay::kRegisteredAllReduceNormHidden;
+constexpr size_t kNormCount = static_cast<size_t>(kNormRows) * kNormHidden;
+constexpr int kNormLanesPerWave = 64;
+constexpr int kNormWaves =
+    rcclx::relay::kRegisteredAllReduceNormThreads / kNormLanesPerWave;
+constexpr int kNormElementsPerLane = 8;
+constexpr float kPostNormEpsilon = 1e-8f;
+constexpr float kPreNormEpsilon = 1e-5f;
+
+// Deterministic, well-mixed pseudo-random value in [-1, 1).
+float mixedUnit(uint32_t seed, size_t index) {
+  uint64_t x = (static_cast<uint64_t>(seed) << 32) ^ index;
+  x ^= x >> 33;
+  x *= 0xff51afd7ed558ccdull;
+  x ^= x >> 33;
+  x *= 0xc4ceb9fe1a85ec53ull;
+  x ^= x >> 33;
+  return static_cast<float>(x % 2000001ull) / 1000000.0f - 1.0f;
+}
+
+__device__ float referenceBf16Round(float value) {
+  return static_cast<float>(static_cast<__bf16>(value));
+}
+
+__device__ float referenceLaneSquareSum(const float* values) {
+#pragma clang fp contract(off)
+  float sum = values[1] * values[1];
+  sum = __builtin_fmaf(values[0], values[0], sum);
+  for (int element = 2; element < kNormElementsPerLane; ++element) {
+    sum = __builtin_fmaf(values[element], values[element], sum);
+  }
+  return sum;
+}
+
+// Sequential emulation of the specified row-sum order: per-lane partials, the
+// DPP wave tree (row_shr 8/4/2/1, row_bcast 15 into rows 1 and 3, row_bcast 31
+// into rows 2 and 3, total in lane 63), then the 16-wave butterfly.
+__device__ float referenceRowSquareSum(const float* row) {
+#pragma clang fp contract(off)
+  float waves[kNormWaves];
+  for (int wave = 0; wave < kNormWaves; ++wave) {
+    float lanes[kNormLanesPerWave];
+    float next[kNormLanesPerWave];
+    for (int lane = 0; lane < kNormLanesPerWave; ++lane) {
+      lanes[lane] = referenceLaneSquareSum(
+          row + (wave * kNormLanesPerWave + lane) * kNormElementsPerLane);
+    }
+    for (int shift = 8; shift >= 1; shift /= 2) {
+      for (int lane = 0; lane < kNormLanesPerWave; ++lane) {
+        next[lane] =
+            lanes[lane] + (lane % 16 >= shift ? lanes[lane - shift] : 0.0f);
+      }
+      for (int lane = 0; lane < kNormLanesPerWave; ++lane) {
+        lanes[lane] = next[lane];
+      }
+    }
+    for (int lane = 0; lane < kNormLanesPerWave; ++lane) {
+      const int rowOfLane = lane / 16;
+      const bool receives = rowOfLane == 1 || rowOfLane == 3;
+      next[lane] =
+          (receives ? lanes[rowOfLane * 16 - 1] : lanes[lane]) + lanes[lane];
+    }
+    for (int lane = 0; lane < kNormLanesPerWave; ++lane) {
+      lanes[lane] = next[lane];
+    }
+    waves[wave] = lanes[kNormLanesPerWave - 1] + lanes[31];
+  }
+  for (int step = kNormWaves / 2; step >= 1; step /= 2) {
+    for (int wave = 0; wave < step; ++wave) {
+      waves[wave] = waves[wave] + waves[wave + step];
+    }
+  }
+  return waves[0];
+}
+
+__device__ float referenceNormScale(float sum, float epsilon) {
+  return __builtin_amdgcn_rsqf(
+      __builtin_fmaf(sum, 1.0f / kNormHidden, epsilon));
+}
+
+// One thread per row; the specified epilogue applied to an already reduced row.
+__global__ void referenceGatedResidualNormKernel(
+    const __bf16* reduced,
+    const float* residualIn,
+    const __bf16* postNormWeight,
+    const __bf16* preNormWeight,
+    const float* gateAlpha,
+    const float* gateBeta,
+    float* scratch,
+    __bf16* expectedOutput,
+    float* expectedResidual,
+    float* expectedRouter) {
+#pragma clang fp contract(off)
+  const size_t rowOffset = static_cast<size_t>(blockIdx.x) * kNormHidden;
+  float* values = scratch + rowOffset;
+  for (int channel = 0; channel < kNormHidden; ++channel) {
+    values[channel] = static_cast<float>(reduced[rowOffset + channel]);
+  }
+  const float postScale =
+      referenceNormScale(referenceRowSquareSum(values), kPostNormEpsilon);
+  for (int channel = 0; channel < kNormHidden; ++channel) {
+    const float normedBranch = referenceBf16Round(
+        values[channel] * postScale *
+        static_cast<float>(postNormWeight[channel]));
+    const float residual = __builtin_fmaf(
+        gateBeta[channel],
+        normedBranch,
+        gateAlpha[channel] * residualIn[rowOffset + channel]);
+    expectedResidual[rowOffset + channel] = residual;
+    values[channel] = referenceBf16Round(residual);
+  }
+  const float preScale =
+      referenceNormScale(referenceRowSquareSum(values), kPreNormEpsilon);
+  for (int channel = 0; channel < kNormHidden; ++channel) {
+    const float normed = referenceBf16Round(
+        values[channel] * preScale *
+        static_cast<float>(preNormWeight[channel]));
+    expectedOutput[rowOffset + channel] = static_cast<__bf16>(normed);
+    expectedRouter[rowOffset + channel] = normed;
+  }
+}
+
 } // namespace
 
 class RegisteredAllReduceTest : public ::testing::Test {
@@ -168,6 +292,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
       HIPEXPECT_TEST(hipFree(offsetAllocation));
       offsetAllocation = nullptr;
     }
+    freeNormBuffers();
     HIPEXPECT_TEST(hipFree(snapshotB));
     HIPEXPECT_TEST(hipFree(snapshotA));
     HIPEXPECT_TEST(hipFree(output));
@@ -267,7 +392,9 @@ class RegisteredAllReduceTest : public ::testing::Test {
     HIPCHECK_TEST(hipMemsetAsync(output, 0, bytes, stream));
   }
 
-  void execute(size_t bytes) {
+  void execute(
+      size_t bytes,
+      const ncclRegisteredAllReduceGatedResidualNorm* norm = nullptr) {
     ASSERT_EQ(
         rcclx::relay::registeredAllReduceExecute(
             request,
@@ -276,8 +403,212 @@ class RegisteredAllReduceTest : public ::testing::Test {
             countForBytes(bytes),
             ncclBfloat16,
             ncclSum,
+            norm,
             stream),
         ncclSuccess);
+  }
+
+  ncclResult_t executeNormResult(
+      const ncclRegisteredAllReduceGatedResidualNorm& norm,
+      size_t bytes = kOneMiB) {
+    return rcclx::relay::registeredAllReduceExecute(
+        request,
+        input,
+        output,
+        countForBytes(bytes),
+        ncclBfloat16,
+        ncclSum,
+        &norm,
+        stream);
+  }
+
+  void allocateNormBuffers() {
+    const size_t floatBytes = kNormCount * sizeof(float);
+    HIPCHECK_TEST(hipMalloc(&norm.residualIn, floatBytes));
+    HIPCHECK_TEST(hipMalloc(&norm.residualOut, floatBytes));
+    HIPCHECK_TEST(hipMalloc(&norm.routerOut, floatBytes));
+    HIPCHECK_TEST(
+        hipMalloc(&norm.postNormWeight, kNormHidden * sizeof(uint16_t)));
+    HIPCHECK_TEST(
+        hipMalloc(&norm.preNormWeight, kNormHidden * sizeof(uint16_t)));
+    HIPCHECK_TEST(hipMalloc(&norm.gateAlpha, kNormHidden * sizeof(float)));
+    HIPCHECK_TEST(hipMalloc(&norm.gateBeta, kNormHidden * sizeof(float)));
+    HIPCHECK_TEST(hipMalloc(&norm.reduced, kOneMiB));
+    HIPCHECK_TEST(hipMalloc(&norm.scratch, floatBytes));
+    HIPCHECK_TEST(hipMalloc(&norm.expectedOutput, kOneMiB));
+    HIPCHECK_TEST(hipMalloc(&norm.expectedResidual, floatBytes));
+    HIPCHECK_TEST(hipMalloc(&norm.expectedRouter, floatBytes));
+  }
+
+  void freeNormBuffers() {
+    for (void* buffer :
+         {static_cast<void*>(norm.residualIn),
+          static_cast<void*>(norm.residualOut),
+          static_cast<void*>(norm.routerOut),
+          static_cast<void*>(norm.postNormWeight),
+          static_cast<void*>(norm.preNormWeight),
+          static_cast<void*>(norm.gateAlpha),
+          static_cast<void*>(norm.gateBeta),
+          static_cast<void*>(norm.reduced),
+          static_cast<void*>(norm.scratch),
+          static_cast<void*>(norm.expectedOutput),
+          static_cast<void*>(norm.expectedResidual),
+          static_cast<void*>(norm.expectedRouter)}) {
+      if (buffer != nullptr) {
+        HIPEXPECT_TEST(hipFree(buffer));
+      }
+    }
+    norm = {};
+  }
+
+  ncclRegisteredAllReduceGatedResidualNorm normDescriptor(
+      bool withRouter = true) const {
+    ncclRegisteredAllReduceGatedResidualNorm descriptor{};
+    descriptor.residualIn = norm.residualIn;
+    descriptor.residualOut = norm.residualOut;
+    descriptor.routerOut = withRouter ? norm.routerOut : nullptr;
+    descriptor.postNormWeight = norm.postNormWeight;
+    descriptor.preNormWeight = norm.preNormWeight;
+    descriptor.gateAlpha = norm.gateAlpha;
+    descriptor.gateBeta = norm.gateBeta;
+    descriptor.hiddenSize = kNormHidden;
+    descriptor.postNormEpsilon = kPostNormEpsilon;
+    descriptor.preNormEpsilon = kPreNormEpsilon;
+    return descriptor;
+  }
+
+  // Rank-local epilogue operands: a residual stream spanning several orders of
+  // magnitude, weights around one, and norm-preserving channel-wise gates.
+  void fillNormOperandsAsync(uint32_t seed) {
+    std::vector<float> residual(kNormCount);
+    for (size_t i = 0; i < kNormCount; ++i) {
+      const float scale = (i / kNormHidden) % 3 == 0 ? 50.0f : 1.0f;
+      residual[i] = scale * mixedUnit(seed * 4 + globalRank, i);
+    }
+    normHost.postWeight.resize(kNormHidden);
+    normHost.preWeight.resize(kNormHidden);
+    normHost.alpha.resize(kNormHidden);
+    normHost.beta.resize(kNormHidden);
+    for (int channel = 0; channel < kNormHidden; ++channel) {
+      normHost.postWeight[channel] =
+          floatToBfloat16(1.0f + 0.2f * mixedUnit(seed + 101, channel));
+      normHost.preWeight[channel] =
+          floatToBfloat16(1.0f + 0.2f * mixedUnit(seed + 202, channel));
+      const float gate = 3.0f * mixedUnit(seed + 303, channel);
+      const float beta = 1.0f / (1.0f + std::exp(-gate));
+      normHost.beta[channel] = beta;
+      normHost.alpha[channel] = std::sqrt(
+          std::fmax((1.0f / (1.0f + std::exp(gate))) * (1.0f + beta), 1e-3f));
+    }
+    normHost.residual = std::move(residual);
+    HIPCHECK_TEST(hipMemcpyAsync(
+        norm.residualIn,
+        normHost.residual.data(),
+        kNormCount * sizeof(float),
+        hipMemcpyHostToDevice,
+        stream));
+    HIPCHECK_TEST(hipMemcpyAsync(
+        norm.postNormWeight,
+        normHost.postWeight.data(),
+        kNormHidden * sizeof(uint16_t),
+        hipMemcpyHostToDevice,
+        stream));
+    HIPCHECK_TEST(hipMemcpyAsync(
+        norm.preNormWeight,
+        normHost.preWeight.data(),
+        kNormHidden * sizeof(uint16_t),
+        hipMemcpyHostToDevice,
+        stream));
+    HIPCHECK_TEST(hipMemcpyAsync(
+        norm.gateAlpha,
+        normHost.alpha.data(),
+        kNormHidden * sizeof(float),
+        hipMemcpyHostToDevice,
+        stream));
+    HIPCHECK_TEST(hipMemcpyAsync(
+        norm.gateBeta,
+        normHost.beta.data(),
+        kNormHidden * sizeof(float),
+        hipMemcpyHostToDevice,
+        stream));
+    HIPCHECK_TEST(hipMemsetAsync(
+        norm.residualOut, 0xff, kNormCount * sizeof(float), stream));
+    HIPCHECK_TEST(hipMemsetAsync(
+        norm.routerOut, 0xff, kNormCount * sizeof(float), stream));
+  }
+
+  // Expected epilogue outputs from the canonical reduced row of generation.
+  void computeNormReferenceAsync(int generation) {
+    std::vector<uint16_t> reduced(kNormCount);
+    for (size_t i = 0; i < kNormCount; ++i) {
+      reduced[i] = expectedOutputBits(i, generation);
+    }
+    HIPCHECK_TEST(hipMemcpyAsync(
+        norm.reduced, reduced.data(), kOneMiB, hipMemcpyHostToDevice, stream));
+    hipLaunchKernelGGL(
+        referenceGatedResidualNormKernel,
+        dim3(kNormRows),
+        dim3(1),
+        0,
+        stream,
+        reinterpret_cast<const __bf16*>(norm.reduced),
+        norm.residualIn,
+        reinterpret_cast<const __bf16*>(norm.postNormWeight),
+        reinterpret_cast<const __bf16*>(norm.preNormWeight),
+        norm.gateAlpha,
+        norm.gateBeta,
+        norm.scratch,
+        reinterpret_cast<__bf16*>(norm.expectedOutput),
+        norm.expectedResidual,
+        norm.expectedRouter);
+    HIPCHECK_TEST(hipPeekAtLastError());
+    syncStream("reference epilogue");
+  }
+
+  template <typename T>
+  bool
+  sameBits(const T* actual, const T* expected, size_t count, const char* what) {
+    std::vector<T> actualHost(count);
+    std::vector<T> expectedHost(count);
+    if (hipMemcpy(
+            actualHost.data(),
+            actual,
+            count * sizeof(T),
+            hipMemcpyDeviceToHost) != hipSuccess ||
+        hipMemcpy(
+            expectedHost.data(),
+            expected,
+            count * sizeof(T),
+            hipMemcpyDeviceToHost) != hipSuccess) {
+      ADD_FAILURE() << "R" << globalRank << " " << what
+                    << ": device-to-host copy failed";
+      return false;
+    }
+    if (std::memcmp(
+            actualHost.data(), expectedHost.data(), count * sizeof(T)) != 0) {
+      size_t first = 0;
+      while (std::memcmp(&actualHost[first], &expectedHost[first], sizeof(T)) ==
+             0) {
+        ++first;
+      }
+      ADD_FAILURE() << "R" << globalRank << " " << what
+                    << " first mismatch at index " << first;
+      return false;
+    }
+    return true;
+  }
+
+  bool normOutputsMatch(
+      bool withRouter,
+      const float* residualOut,
+      const char* what) {
+    bool ok = sameBits(output, norm.expectedOutput, kNormCount, what);
+    ok = sameBits(residualOut, norm.expectedResidual, kNormCount, what) && ok;
+    if (withRouter) {
+      ok =
+          sameBits(norm.routerOut, norm.expectedRouter, kNormCount, what) && ok;
+    }
+    return ok;
   }
 
   void snapshotAsync(uint16_t* snapshot, size_t bytes) {
@@ -331,7 +662,9 @@ class RegisteredAllReduceTest : public ::testing::Test {
         allVote(validateDevice(snapshot, bytes, generation, false, what)));
   }
 
-  GraphRun captureExecute(size_t bytes) {
+  GraphRun captureExecute(
+      size_t bytes,
+      const ncclRegisteredAllReduceGatedResidualNorm* normDesc = nullptr) {
     GraphRun run;
     syncStream("pre-capture stream drain");
 
@@ -350,6 +683,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
           countForBytes(bytes),
           ncclBfloat16,
           ncclSum,
+          normDesc,
           stream);
       if (captured != ncclSuccess) {
         ADD_FAILURE() << "registeredAllReduceExecute failed during capture: "
@@ -448,6 +782,28 @@ class RegisteredAllReduceTest : public ::testing::Test {
   uint8_t* offsetAllocation{nullptr};
   uint16_t* fixtureInput{nullptr};
   rcclx::relay::RegisteredAllReduce* request{nullptr};
+
+  struct {
+    float* residualIn{nullptr};
+    float* residualOut{nullptr};
+    float* routerOut{nullptr};
+    uint16_t* postNormWeight{nullptr};
+    uint16_t* preNormWeight{nullptr};
+    float* gateAlpha{nullptr};
+    float* gateBeta{nullptr};
+    uint16_t* reduced{nullptr};
+    float* scratch{nullptr};
+    uint16_t* expectedOutput{nullptr};
+    float* expectedResidual{nullptr};
+    float* expectedRouter{nullptr};
+  } norm;
+  struct {
+    std::vector<float> residual;
+    std::vector<uint16_t> postWeight;
+    std::vector<uint16_t> preWeight;
+    std::vector<float> alpha;
+    std::vector<float> beta;
+  } normHost;
 };
 
 TEST_F(RegisteredAllReduceTest, UnsupportedKernelPayloadRejectedBeforeLaunch) {
@@ -455,7 +811,18 @@ TEST_F(RegisteredAllReduceTest, UnsupportedKernelPayloadRejectedBeforeLaunch) {
   rcclx::relay::RegisteredAllReduceStateTable states{};
   EXPECT_EQ(
       rcclx::relay::launchRegisteredAllReduceKernel(
-          output, inputs, states, globalRank, 1, stream),
+          output, inputs, states, globalRank, 1, nullptr, stream),
+      hipErrorInvalidValue);
+  const rcclx::relay::RegisteredAllReduceGatedResidualNormArgs norm{};
+  EXPECT_EQ(
+      rcclx::relay::launchRegisteredAllReduceKernel(
+          output,
+          inputs,
+          states,
+          globalRank,
+          countForBytes(kHalfMiB),
+          &norm,
+          stream),
       hipErrorInvalidValue);
 }
 
@@ -565,6 +932,136 @@ TEST_F(RegisteredAllReduceTest, GraphCaptureOneKernelNodeChangedInput) {
   expectOutput(kHalfMiB, 10, "changed-input graph replay");
 
   destroyGraph(run);
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, GatedResidualNormMatchesReferenceEpilogue) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+  allocateNormBuffers();
+
+  std::vector<uint16_t> host;
+  for (const bool withRouter : {true, false}) {
+    const int generation = withRouter ? 40 : 41;
+    fillInputAsync(kOneMiB, generation, host);
+    fillNormOperandsAsync(static_cast<uint32_t>(generation));
+    computeNormReferenceAsync(generation);
+    clearOutputAsync(kOneMiB);
+    const auto descriptor = normDescriptor(withRouter);
+    execute(kOneMiB, &descriptor);
+    syncStream("gated residual norm");
+    EXPECT_TRUE(allVote(
+        normOutputsMatch(withRouter, norm.residualOut, "epilogue outputs")));
+    expectInput(kOneMiB, generation, "epilogue input preservation");
+  }
+
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, GatedResidualNormInPlaceResidual) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+  allocateNormBuffers();
+
+  std::vector<uint16_t> host;
+  fillInputAsync(kOneMiB, 42, host);
+  fillNormOperandsAsync(42);
+  computeNormReferenceAsync(42);
+  auto descriptor = normDescriptor();
+  descriptor.residualOut = norm.residualIn;
+  execute(kOneMiB, &descriptor);
+  syncStream("in-place gated residual norm");
+  EXPECT_TRUE(allVote(
+      normOutputsMatch(true, norm.residualIn, "in-place epilogue outputs")));
+
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, GatedResidualNormInterleavesWithPlainAndGraph) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+  allocateNormBuffers();
+  const auto descriptor = normDescriptor();
+
+  std::vector<uint16_t> host;
+  fillInputAsync(kOneMiB, 43, host);
+  clearOutputAsync(kOneMiB);
+  execute(kOneMiB);
+  syncStream("plain before epilogue");
+  expectOutput(kOneMiB, 43, "plain before epilogue");
+
+  fillInputAsync(kOneMiB, 44, host);
+  fillNormOperandsAsync(44);
+  computeNormReferenceAsync(44);
+  execute(kOneMiB, &descriptor);
+  syncStream("epilogue between plain calls");
+  EXPECT_TRUE(allVote(
+      normOutputsMatch(true, norm.residualOut, "interleaved epilogue")));
+
+  fillInputAsync(kHalfMiB, 45, host);
+  clearOutputAsync(kHalfMiB);
+  execute(kHalfMiB);
+  syncStream("plain after epilogue");
+  expectOutput(kHalfMiB, 45, "plain after epilogue");
+
+  fillInputAsync(kOneMiB, 46, host);
+  GraphRun run = captureExecute(kOneMiB, &descriptor);
+  ASSERT_NE(run.exec, nullptr);
+  fillInputAsync(kOneMiB, 47, host);
+  fillNormOperandsAsync(47);
+  computeNormReferenceAsync(47);
+  HIPCHECK_TEST(hipGraphLaunch(run.exec, stream));
+  syncStream("epilogue graph replay with changed inputs");
+  EXPECT_TRUE(allVote(
+      normOutputsMatch(true, norm.residualOut, "epilogue graph replay")));
+
+  destroyGraph(run);
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, GatedResidualNormRejectsInvalidArguments) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  createRequest();
+  allocateNormBuffers();
+  const auto valid = normDescriptor();
+  const auto rejected = [&](auto mutate) {
+    auto descriptor = valid;
+    mutate(descriptor);
+    return executeNormResult(descriptor) == ncclInvalidArgument;
+  };
+
+  EXPECT_EQ(executeNormResult(valid, kHalfMiB), ncclInvalidArgument);
+  EXPECT_TRUE(rejected([](auto& d) { d.hiddenSize = 4096; }));
+  EXPECT_TRUE(rejected([](auto& d) { d.residualIn = nullptr; }));
+  EXPECT_TRUE(rejected([](auto& d) { d.residualOut = nullptr; }));
+  EXPECT_TRUE(rejected([](auto& d) { d.gateBeta = nullptr; }));
+  EXPECT_TRUE(
+      rejected([&](auto& d) { d.postNormWeight = norm.postNormWeight + 1; }));
+  EXPECT_TRUE(rejected([](auto& d) { d.preNormEpsilon = std::nanf(""); }));
+  EXPECT_TRUE(rejected([](auto& d) { d.postNormEpsilon = -1.0f; }));
+  EXPECT_TRUE(rejected(
+      [&](auto& d) { d.residualOut = reinterpret_cast<float*>(output); }));
+  EXPECT_TRUE(rejected([&](auto& d) { d.routerOut = norm.residualIn; }));
+  EXPECT_TRUE(rejected([&](auto& d) { d.routerOut = norm.residualOut; }));
+  EXPECT_TRUE(rejected([&](auto& d) { d.residualOut = norm.residualIn + 4; }));
+
+  std::vector<uint16_t> host;
+  fillInputAsync(kOneMiB, 48, host);
+  fillNormOperandsAsync(48);
+  computeNormReferenceAsync(48);
+  EXPECT_EQ(executeNormResult(valid), ncclSuccess);
+  syncStream("epilogue after rejected arguments");
+  EXPECT_TRUE(allVote(
+      normOutputsMatch(true, norm.residualOut, "epilogue after rejections")));
+
   finalizeRequest();
 }
 

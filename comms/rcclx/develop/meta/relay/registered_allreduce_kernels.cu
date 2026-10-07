@@ -313,6 +313,246 @@ __global__ void registeredAllReduceOneMiBKernel(
       true>(output, rank, inputs, states, targetEpochs, sourceEpochs);
 }
 
+// Gated-residual-norm epilogue with a fixed arithmetic order, matching the
+// reference Triton post-norm/gated-residual/pre-norm kernel bit for bit: thread
+// t owns elements [8t, 8t + 8) of the row, row sums use the per-thread order,
+// DPP wave tree, and 16-wave butterfly of that kernel, and multiply-adds are
+// fused exactly where it fuses them.
+constexpr int kNormWaves = kRegisteredAllReduceNormThreads / 64;
+static_assert(
+    kRegisteredAllReduceNormHidden ==
+    kRegisteredAllReduceNormThreads * kElementsPerVector);
+static_assert(kNormWaves == 16);
+
+template <int DppControl, int RowMask = 0xf>
+__device__ __forceinline__ float dppUpdate(float old, float source) {
+  return __builtin_bit_cast(
+      float,
+      __builtin_amdgcn_update_dpp(
+          __builtin_bit_cast(int, old),
+          __builtin_bit_cast(int, source),
+          DppControl,
+          RowMask,
+          0xf,
+          true));
+}
+
+// Every thread redoes the order-identical cross-wave butterfly, so one barrier
+// suffices; each reduction uses its own LDS slots.
+__device__ __forceinline__ float normRowSum(float value, float* waveSums) {
+  constexpr int kRowShr = 0x110;
+  constexpr int kRowBcast15 = 0x142;
+  constexpr int kRowBcast31 = 0x143;
+  value = value + dppUpdate<kRowShr + 8>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 4>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 2>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 1>(0.0f, value);
+  value = dppUpdate<kRowBcast15, 0xa>(value, value) + value;
+  value = value + dppUpdate<kRowBcast31>(0.0f, value);
+  const float waveTotal = __builtin_bit_cast(
+      float, __builtin_amdgcn_readlane(__builtin_bit_cast(int, value), 63));
+  if (threadIdx.x % 64 == 0) {
+    waveSums[threadIdx.x / 64] = waveTotal;
+  }
+  __syncthreads();
+  float sums[kNormWaves];
+#pragma unroll
+  for (int wave = 0; wave < kNormWaves; ++wave) {
+    sums[wave] = waveSums[wave];
+  }
+#pragma unroll
+  for (int step = kNormWaves / 2; step >= 1; step /= 2) {
+#pragma unroll
+    for (int wave = 0; wave < step; ++wave) {
+      sums[wave] = sums[wave] + sums[wave + step];
+    }
+  }
+  return sums[0];
+}
+
+__device__ __forceinline__ float normSquareSum(
+    const float (&values)[kElementsPerVector]) {
+#pragma clang fp contract(off)
+  float sum = values[1] * values[1];
+  sum = __builtin_fmaf(values[0], values[0], sum);
+#pragma unroll
+  for (int element = 2; element < kElementsPerVector; ++element) {
+    sum = __builtin_fmaf(values[element], values[element], sum);
+  }
+  return sum;
+}
+
+__device__ __forceinline__ float normScale(float sum, float epsilon) {
+  constexpr float kInverseHidden = 1.0f / kRegisteredAllReduceNormHidden;
+  return __builtin_amdgcn_rsqf(__builtin_fmaf(sum, kInverseHidden, epsilon));
+}
+
+__device__ __forceinline__ float roundToBf16(float value) {
+  return static_cast<float>(static_cast<__bf16>(value));
+}
+
+// Operands that do not depend on the reduction; loaded before the handshake.
+struct NormOperands {
+  Vec postNormWeight;
+  Vec preNormWeight;
+  float residual[kElementsPerVector];
+  float gateAlpha[kElementsPerVector];
+  float gateBeta[kElementsPerVector];
+};
+
+__device__ __forceinline__ void loadFloats(
+    float (&destination)[kElementsPerVector],
+    const float* source) {
+  *reinterpret_cast<float4*>(&destination[0]) =
+      *reinterpret_cast<const float4*>(source);
+  *reinterpret_cast<float4*>(&destination[4]) =
+      *reinterpret_cast<const float4*>(source + 4);
+}
+
+__device__ __forceinline__ void storeFloats(
+    float* destination,
+    const float (&source)[kElementsPerVector]) {
+  *reinterpret_cast<float4*>(destination) =
+      *reinterpret_cast<const float4*>(&source[0]);
+  *reinterpret_cast<float4*>(destination + 4) =
+      *reinterpret_cast<const float4*>(&source[4]);
+}
+
+__device__ __forceinline__ NormOperands loadNormOperands(
+    size_t elementOffset,
+    const RegisteredAllReduceGatedResidualNormArgs& norm) {
+  const auto channel = threadIdx.x * kElementsPerVector;
+  NormOperands operands;
+  operands.postNormWeight =
+      *reinterpret_cast<const Vec*>(norm.postNormWeight + channel);
+  operands.preNormWeight =
+      *reinterpret_cast<const Vec*>(norm.preNormWeight + channel);
+  loadFloats(operands.residual, norm.residualIn + elementOffset);
+  loadFloats(operands.gateAlpha, norm.gateAlpha + channel);
+  loadFloats(operands.gateBeta, norm.gateBeta + channel);
+  return operands;
+}
+
+__device__ __forceinline__ void gatedResidualNorm(
+    const Vec& reduced,
+    const NormOperands& operands,
+    size_t elementOffset,
+    __nv_bfloat16* __restrict__ output,
+    const RegisteredAllReduceGatedResidualNormArgs& norm) {
+#pragma clang fp contract(off)
+  __shared__ float postSums[kNormWaves];
+  __shared__ float preSums[kNormWaves];
+  float branch[kElementsPerVector];
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    branch[element] = static_cast<float>(reduced[element]);
+  }
+  const float postScale = normScale(
+      normRowSum(normSquareSum(branch), postSums), norm.postNormEpsilon);
+  float residual[kElementsPerVector];
+  float preInput[kElementsPerVector];
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    const float normedBranch = roundToBf16(
+        branch[element] * postScale *
+        static_cast<float>(operands.postNormWeight[element]));
+    residual[element] = __builtin_fmaf(
+        operands.gateBeta[element],
+        normedBranch,
+        operands.gateAlpha[element] * operands.residual[element]);
+    preInput[element] = roundToBf16(residual[element]);
+  }
+  storeFloats(norm.residualOut + elementOffset, residual);
+  const float preScale = normScale(
+      normRowSum(normSquareSum(preInput), preSums), norm.preNormEpsilon);
+  Vec normed;
+  float normedFloat[kElementsPerVector];
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    normedFloat[element] = roundToBf16(
+        preInput[element] * preScale *
+        static_cast<float>(operands.preNormWeight[element]));
+    normed[element] = static_cast<__bf16>(normedFloat[element]);
+  }
+  *reinterpret_cast<Vec*>(output + elementOffset) = normed;
+  if (norm.routerOut != nullptr) {
+    storeFloats(norm.routerOut + elementOffset, normedFloat);
+  }
+}
+
+// One CTA per row. The row owner (row / 16) reduces it in canonical order into
+// its scratch and publishes one midpoint epoch per peer; every rank then runs
+// the epilogue on the full row. The plain reduced row is never written.
+__global__ void __launch_bounds__(kRegisteredAllReduceNormThreads)
+    registeredAllReduceGatedResidualNormKernel(
+        __nv_bfloat16* __restrict__ output,
+        int rank,
+        RegisteredAllReduceInputTable inputs,
+        RegisteredAllReduceStateTable states,
+        RegisteredAllReduceGatedResidualNormArgs norm) {
+  constexpr int kRowVectors =
+      kRegisteredAllReduceNormHidden / kElementsPerVector;
+  __shared__ uint32_t callsShared;
+  const auto row = blockIdx.x;
+  const int owner = row / kRegisteredAllReduceRowsPerRank;
+  const auto thread = threadIdx.x;
+  const size_t rowOffset =
+      static_cast<size_t>(row) * kRegisteredAllReduceNormHidden;
+  const size_t elementOffset = rowOffset + thread * kElementsPerVector;
+  RegisteredAllReduceRowState& local = states.state[rank]->row[row];
+  const NormOperands operands = loadNormOperands(elementOffset, norm);
+  if (thread == 0) {
+    const uint32_t calls = local.calls + 1u;
+    local.calls = calls;
+    callsShared = calls;
+    if (rank != owner) {
+      peerStore<true, __ATOMIC_RELAXED>(
+          &states.state[owner]->row[row].start[rank], calls);
+    }
+  }
+  __syncthreads();
+  const uint32_t calls = callsShared;
+  Vec* ownerScratch = reinterpret_cast<Vec*>(states.state[owner]->scratch) +
+      static_cast<size_t>(row - owner * kRegisteredAllReduceRowsPerRank) *
+          kRowVectors;
+
+  Vec reduced;
+  if (rank == owner) {
+    const Vec own =
+        reinterpret_cast<const Vec*>(inputs.input[rank] + rowOffset)[thread];
+    if (thread < kRegisteredAllReduceRanks && thread != rank) {
+      while (!epochReached(
+          peerLoad<true, __ATOMIC_RELAXED>(&local.start[thread]), calls)) {
+      }
+    }
+    __syncthreads();
+    reduced = reduceVector(inputs, rank, own, rowOffset, thread);
+    ownerScratch[thread] = reduced;
+    drainWaveStores();
+    __syncthreads();
+    if (thread < kRegisteredAllReduceRanks && thread != rank) {
+      uint32_t* remote = &states.state[thread]->row[row].midpoint;
+      if constexpr (kUncachedState) {
+        peerStore<true, __ATOMIC_RELAXED>(remote, calls);
+      } else {
+        peerStore<true, __ATOMIC_RELEASE>(remote, calls);
+      }
+    }
+  } else {
+    if (thread == 0) {
+      while (!epochReached(
+          peerLoad<true, __ATOMIC_RELAXED>(&local.midpoint), calls)) {
+      }
+      if constexpr (!kUncachedState) {
+        __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_DEVICE);
+      }
+    }
+    __syncthreads();
+    reduced = ownerScratch[thread];
+  }
+  gatedResidualNorm(reduced, operands, elementOffset, output, norm);
+}
+
 // Generic one-shot path: every rank reduces the whole payload in canonical
 // rank 0 -> N-1 stepwise BF16 order. Per CTA, a start handshake (inputs ready)
 // precedes the peer reads and a done handshake (inputs no longer read)
@@ -495,6 +735,7 @@ hipError_t launchRegisteredAllReduceKernel(
     RegisteredAllReduceStateTable states,
     int rank,
     size_t count,
+    const RegisteredAllReduceGatedResidualNormArgs* norm,
     hipStream_t stream,
     int nRanks) {
   const size_t bytes = count * sizeof(__nv_bfloat16);
@@ -502,7 +743,22 @@ hipError_t launchRegisteredAllReduceKernel(
     return hipErrorInvalidValue;
   }
   const bool fourRanks = nRanks == kRegisteredAllReduceRanks;
-  if (fourRanks && bytes == kRegisteredAllReduceHalfMiBBytes) {
+  if (norm != nullptr) {
+    if (!fourRanks || bytes != kRegisteredAllReduceOneMiBBytes) {
+      return hipErrorInvalidValue;
+    }
+    hipLaunchKernelGGL(
+        registeredAllReduceGatedResidualNormKernel,
+        dim3(kRegisteredAllReduceRows),
+        dim3(kRegisteredAllReduceNormThreads),
+        0,
+        stream,
+        reinterpret_cast<__nv_bfloat16*>(output),
+        rank,
+        inputs,
+        states,
+        *norm);
+  } else if (fourRanks && bytes == kRegisteredAllReduceHalfMiBBytes) {
     hipLaunchKernelGGL(
         registeredAllReduceHalfMiBKernel,
         dim3(kRegisteredAllReduceHalfMiBBlocks),
