@@ -71,6 +71,12 @@ ncclResult_t registeredAllReduceInit(
  * default stream is supported. Execution enqueues exactly one kernel and does
  * not synchronize the stream; completion and cross-call ordering remain the
  * caller's responsibility until collective finalization.
+ *
+ * norm is optional and requires four ranks. When set (1 MiB payloads viewed
+ * as 64 x 8192 rows), output
+ * receives the gated-residual-norm epilogue's normalized rows instead of the
+ * plain sum; see ncclRegisteredAllReduceGatedResidualNorm. Plain and epilogue
+ * executions may be interleaved on one request.
  */
 ncclResult_t registeredAllReduceExecute(
     RegisteredAllReduce* request,
@@ -79,6 +85,7 @@ ncclResult_t registeredAllReduceExecute(
     size_t count,
     ncclDataType_t datatype,
     ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm,
     hipStream_t stream);
 
 /**
@@ -118,6 +125,7 @@ ncclResult_t registeredAllReducePublicExec(
     size_t count,
     ncclDataType_t datatype,
     ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm,
     hipStream_t stream,
     void* request);
 
