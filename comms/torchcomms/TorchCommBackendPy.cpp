@@ -293,7 +293,8 @@ Returns:
           }
           return ptr;
         };
-        TorchCommFactory::get().register_backend(name, factory);
+        TorchCommFactory::get().register_backend(
+            name, factory, TORCHCOMM_BACKEND_ABI_VERSION);
       },
       py::arg("name"),
       py::arg("backend_class"),
