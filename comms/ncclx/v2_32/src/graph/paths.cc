@@ -1053,8 +1053,12 @@ ncclResult_t ncclTopoComputeP2pChannels(struct ncclComm* comm) {
     comm->p2pnChannelsPerPeer = std::min(comm->p2pnChannels, comm->p2pnChannelsPerPeer);
   }
 
-  // Init channels that weren't used so far
-  for (int c = comm->nChannels; c < comm->p2pnChannels; c++) NCCLCHECK(initChannel(comm, c));
+  // [META] Only init channels now if lazySetupChannels is disabled.
+  // Otherwise, they will be delayed until needed
+  if (!comm->lazySetupChannels) {
+    // Init channels that weren't used so far
+    for (int c = comm->nChannels; c < comm->p2pnChannels; c++) NCCLCHECK(initChannel(comm, c));
+  }
 
   return ncclSuccess;
 }

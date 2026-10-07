@@ -28,6 +28,8 @@
 #include <cinttypes> // PRIx64
 #include <cfloat> // FLT_MAX
 
+#include "meta/transport/transportConnect.h"
+
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
 NCCL_PARAM(EnqueueRearchEnable, "ENQUEUE_REARCH_ENABLE", 0);
@@ -569,7 +571,20 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
     bool regNeedConnect = true;
     ncclRegisterCollNvlsBuffers(comm, task, regBufSend, regBufRecv, &planner->collCleanupQueue, &regNeedConnect);
 
-    if (comm->runtimeConn && comm->initAlgoChannels[task->algorithm] == false) {
+    // [META] If NCCLX lazy channel setup is enabled and applicable, mark algos and
+    // number of channels need to be setup later in ncclCollPreconnectFunc for
+    // collectives. Otherwise, fallback to baseline runtime connection logic
+    if (comm->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
+      // [META] scheduleCollTasksToPlan floors nMaxChannels at minCTAs after preconnect; provision channels for the
+      // floored count here and leave the scheduling input unchanged.
+      const int nMaxChannels = task->nMaxChannels;
+      const int nKindChannels = task->isNvls ? comm->nvlsChannels : comm->nChannels;
+      task->nMaxChannels = std::min({std::max<int>(nMaxChannels, task->minCTAs), task->maxCTAs, nKindChannels});
+      const bool taskNeedConnect = ncclx::algoNeedConnect(comm, task);
+      task->nMaxChannels = nMaxChannels;
+      *needConnect |= taskNeedConnect;
+      algoNeedConnect[task->algorithm] |= taskNeedConnect;
+    } else if (comm->runtimeConn && comm->initAlgoChannels[task->algorithm] == false) {
       if (task->algorithm == NCCL_ALGO_NVLS_TREE && comm->initAlgoChannels[NCCL_ALGO_NVLS] == false &&
           regNeedConnect == true) {
         comm->initAlgoChannels[NCCL_ALGO_NVLS] = true;
@@ -2715,7 +2730,11 @@ static ncclResult_t p2pTaskAppend(struct ncclComm* comm, struct ncclInfo* info, 
       uint8_t base = ncclP2pChannelBaseForRound(comm, round);
       for (int c = 0; c < comm->p2pnChannelsPerPeer; c++) {
         int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, c);
-        if (isSendNotRecv) {
+        /* [META] if lazy setup is enabled, mark the channel as needing setup if
+         * peerInfo is not initilized on the assigned channelId */
+        if (comm->lazySetupChannels && !comm->channels[channelId].peers) {
+          ncclx::p2pNeedConnect(comm, peer, channelId, isSendNotRecv);
+        } else if (isSendNotRecv) {
           if (comm->channels[channelId].peers[peer]->send[1].hasSeen == 0) {
             // P2P uses only 1 connector
             // the send/recv connector is shared among split shared comms. We need to set hasSeen to
