@@ -7,6 +7,9 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 32, 0)
+#include "config/collconfig.h"
+#endif
 
 #define NCCLARGCHECK(statement, ...)              \
   do {                                            \
@@ -231,5 +234,10 @@ ncclResult_t ncclAllReduceSparseBlock(
       stream, /* Args */
       ALLREDUCE_CHUNKSTEPS,
       ALLREDUCE_SLICESTEPS};
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 32, 0)
+  // Aggregate init leaves collConfig zeroed, and enqueue treats 0 as a real
+  // per-call setting (cgaClusterSize 0, CTAPolicy 0). Start from UNDEF instead.
+  NCCLCHECK(ncclParseCollConfig(nullptr, &info.collConfig));
+#endif
   return ncclEnqueueCheck(&info);
 }
