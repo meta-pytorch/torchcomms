@@ -27,6 +27,21 @@ struct RcclxRelayPlan {
   uint32_t flags{0};
 };
 
+// Mirrors `ncclRegisteredAllReduceGatedResidualNorm` for the same reason as
+// RcclxRelayPlan; converted in RcclxApiShardedRelay.cpp.
+struct RcclxGatedResidualNorm {
+  const float* residualIn{nullptr};
+  float* residualOut{nullptr};
+  float* routerOut{nullptr};
+  const void* postNormWeight{nullptr};
+  const void* preNormWeight{nullptr};
+  const float* gateAlpha{nullptr};
+  const float* gateBeta{nullptr};
+  size_t hiddenSize{0};
+  float postNormEpsilon{0.0f};
+  float preNormEpsilon{0.0f};
+};
+
 #ifdef NCCL_RMA_SUPPORTED
 using RcclxWindow = ncclWindow_t;
 using RcclxWindowCmpOp = ncclCmpOp_t;
@@ -289,6 +304,7 @@ class RcclxApi {
       size_t count,
       ncclDataType_t datatype,
       ncclRedOp_t op,
+      const RcclxGatedResidualNorm* norm,
       hipStream_t stream,
       void* request) = 0;
 
@@ -632,6 +648,7 @@ class DefaultRcclxApi : public RcclxApi {
       size_t count,
       ncclDataType_t datatype,
       ncclRedOp_t op,
+      const RcclxGatedResidualNorm* norm,
       hipStream_t stream,
       void* request) override;
 

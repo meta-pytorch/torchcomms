@@ -82,7 +82,7 @@ void RcclxMock::setupDefaultBehaviors() {
       .WillByDefault(DoAll(
           SetArgPointee<4>(reinterpret_cast<void*>(0x8000)),
           Return(ncclSuccess)));
-  ON_CALL(*this, registeredAllReduceExec(_, _, _, _, _, _, _))
+  ON_CALL(*this, registeredAllReduceExec(_, _, _, _, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, registeredAllReduceFinalize(_, _))
       .WillByDefault(Return(ncclSuccess));
