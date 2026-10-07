@@ -16,10 +16,27 @@ work_dir="$(mktemp -d)" || exit 1
 
 python="${PYTHON:-python3}"
 cmake_generator="${UNIFLOW_CMAKE_GENERATOR:-Ninja}"
-package_cuda="${UNIFLOW_PACKAGE_ENABLE_CUDA:-OFF}"
-if [[ "${package_cuda}" != ON && "${package_cuda}" != OFF ]]; then
-  echo "UNIFLOW_PACKAGE_ENABLE_CUDA must be ON or OFF" >&2
+package_gpu_platform="${UNIFLOW_PACKAGE_GPU_PLATFORM:-}"
+if [[ -z "${package_gpu_platform}" ]]; then
+  package_cuda="${UNIFLOW_PACKAGE_ENABLE_CUDA:-OFF}"
+  if [[ "${package_cuda}" != ON && "${package_cuda}" != OFF ]]; then
+    echo "UNIFLOW_PACKAGE_ENABLE_CUDA must be ON or OFF" >&2
+    exit 1
+  fi
+  if [[ "${package_cuda}" == ON ]]; then
+    package_gpu_platform=CUDA
+  else
+    package_gpu_platform=NONE
+  fi
+fi
+package_gpu_platform="${package_gpu_platform^^}"
+if [[ ! "${package_gpu_platform}" =~ ^(NONE|CUDA|HIP)$ ]]; then
+  echo "UNIFLOW_PACKAGE_GPU_PLATFORM must be NONE, CUDA, or HIP" >&2
   exit 1
+fi
+package_cuda=OFF
+if [[ "${package_gpu_platform}" == CUDA ]]; then
+  package_cuda=ON
 fi
 package_cuda_version="${UNIFLOW_CUDA_VERSION:-}"
 if [[ "${package_cuda}" == ON && ! "${package_cuda_version}" =~ ^(12|13)\.[0-9]+$ ]]; then
@@ -32,21 +49,26 @@ if [[ "${auditwheel_enabled}" != ON && "${auditwheel_enabled}" != OFF ]]; then
   exit 1
 fi
 expected_manylinux="${UNIFLOW_EXPECT_MANYLINUX:-}"
-if [[ "${package_cuda}" == ON ]]; then
-  package_gpu_platform=CUDA
-else
-  package_gpu_platform=NONE
-fi
+torch_index_url="${UNIFLOW_PACKAGE_TORCH_INDEX_URL:-}"
+dependency_prefix_path="${UNIFLOW_PACKAGE_DEPENDENCY_PREFIX_PATH:-}"
 package_gpu_cmake_args=("-DUNIFLOW_GPU_PLATFORM=${package_gpu_platform}")
 package_cmake_args="${CMAKE_ARGS:-} ${package_gpu_cmake_args[*]}"
-package_test_env=(env -u LD_LIBRARY_PATH -u PYTHONPATH)
+package_test_env=(env -u PYTHONPATH)
+if [[ "${package_gpu_platform}" != HIP ]]; then
+  package_test_env+=(-u LD_LIBRARY_PATH)
+fi
 
 build_consumer() {
   local prefix="$1"
   local name="$2"
   local build_dir="${work_dir}/${name}-consumer"
 
-  CMAKE_PREFIX_PATH="${prefix}" cmake \
+  local cmake_prefix_path="${prefix}"
+  if [[ -n "${dependency_prefix_path}" ]]; then
+    cmake_prefix_path="${prefix}:${dependency_prefix_path}"
+  fi
+
+  CMAKE_PREFIX_PATH="${cmake_prefix_path}" cmake \
     -S "${source_dir}/tests/cmake/consumer" \
     -B "${build_dir}" \
     -G "${cmake_generator}"
@@ -180,7 +202,7 @@ if [[ ${#wheels[@]} -ne 1 || ${#python_only_wheels[@]} -ne 1 ]]; then
 fi
 
 "${python}" - "${sdists[0]}" "${wheels[0]}" \
-  "${python_only_wheels[0]}" "${source_dir}" "${package_cuda}" \
+  "${python_only_wheels[0]}" "${source_dir}" "${package_gpu_platform}" \
   "${package_cuda_version}" "${expected_manylinux}" <<'PY'
 import sys
 import tarfile
@@ -193,11 +215,11 @@ import zipfile
     wheel,
     python_only_wheel,
     source_dir,
-    package_cuda,
+    package_gpu_platform,
     cuda_version,
     expected_manylinux,
 ) = sys.argv[1:]
-expect_cuda = package_cuda == "ON"
+expect_cuda = package_gpu_platform == "CUDA"
 expected_version = (Path(source_dir) / "VERSION").read_text().strip()
 portable_tests = {
     "tests/py/__init__.py",
@@ -246,6 +268,8 @@ def inspect_wheel(filename: str, expect_sdk: bool) -> None:
         assert len(metadata_files) == 1, metadata_files
         metadata = archive.read(metadata_files[0]).decode()
         assert f"Version: {expected_version}\n" in metadata
+        build_config = archive.read("uniflow/_build_config.py").decode()
+        assert f'GPU_PLATFORM: str = "{package_gpu_platform}"' in build_config
 
         for name in names:
             path = PurePosixPath(name)
@@ -485,6 +509,10 @@ PY
 
 venv_python="$(create_venv wheel-venv)"
 run_package_test "${venv_python}" -m pip install "${wheels[0]}"
+if [[ -n "${torch_index_url}" ]]; then
+  run_package_test "${venv_python}" -m pip install \
+    --pre torch --index-url "${torch_index_url}"
+fi
 run_package_test "${venv_python}" -m pip install "pytest>=7"
 run_package_test "${venv_python}" -m pytest --pyargs uniflow
 

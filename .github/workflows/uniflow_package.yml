@@ -234,3 +234,67 @@ jobs:
         python -m pip install --upgrade auditwheel build
         UNIFLOW_CUDA_VERSION="${{ matrix.cuda-version }}" \
           comms/uniflow/tests/package/verify_nvidia_wheel.sh
+
+  amd:
+    name: rocm-${{ matrix.rocm-version }}-py${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rocm-version: '7.0.2'
+            python-version: '3.12'
+            torch-index-url: https://download.pytorch.org/whl/rocm7.0
+          - rocm-version: '7.2.1'
+            python-version: '3.12'
+            torch-index-url: https://download.pytorch.org/whl/rocm7.2
+          - rocm-version: '7.14.0'
+            python-version: '3.12'
+            torch-index-url: https://download.pytorch.org/whl/nightly/rocm7.14
+          - rocm-version: '7.14.1'
+            python-version: '3.12'
+            torch-index-url: https://download.pytorch.org/whl/rocm7.14
+          - rocm-version: '10.0'
+            python-version: '3.10'
+            torch-index-url: https://download.pytorch.org/whl/nightly/rocm10.0
+          - rocm-version: '10.0'
+            python-version: '3.11'
+            torch-index-url: https://download.pytorch.org/whl/nightly/rocm10.0
+          - rocm-version: '10.0'
+            python-version: '3.12'
+            torch-index-url: https://download.pytorch.org/whl/nightly/rocm10.0
+          - rocm-version: '10.0'
+            python-version: '3.13'
+            torch-index-url: https://download.pytorch.org/whl/nightly/rocm10.0
+          - rocm-version: '10.0'
+            python-version: '3.14'
+            torch-index-url: https://download.pytorch.org/whl/nightly/rocm10.0
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      timeout: 180
+      runner: linux.rocm.gpu.meta-pytorch.mi350.4
+      gpu-arch-type: rocm
+      gpu-arch-version: ${{ matrix.rocm-version }}
+      script: |
+        set -eux
+        if [[ -f /etc/rocm_env.sh ]]; then
+          source /etc/rocm_env.sh
+        fi
+        if command -v rocm-sdk >/dev/null 2>&1; then
+          rocm_root="$(rocm-sdk path --root 2>/dev/null || true)"
+          if [[ -x "${rocm_root}/bin/hipcc" ]]; then
+            export ROCM_HOME="${rocm_root}"
+          fi
+        fi
+        export ROCM_PATH="${ROCM_HOME:-/opt/rocm}"
+        export CMAKE_PREFIX_PATH="${ROCM_PATH}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+        export PATH="${ROCM_PATH}/bin:${PATH}"
+        conda config --set solver libmamba
+        conda create --name uniflow python=${{ matrix.python-version }} --yes
+        conda activate uniflow
+        python -m pip install --upgrade build cmake ninja
+        hipcc --version
+        UNIFLOW_PACKAGE_TORCH_INDEX_URL=${{ matrix.torch-index-url }} \
+          comms/uniflow/tests/package/verify_amd_wheel.sh
