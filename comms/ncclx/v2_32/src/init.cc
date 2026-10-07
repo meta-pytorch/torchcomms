@@ -379,7 +379,13 @@ static ncclResult_t commFree(ncclComm_t comm) {
       NCCLCHECK(ncclGinFinalize(comm));
       for (int c = 0; c < MAXCHANNELS; c++) {
         if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
-        if (comm->sharedRes->devPeers[c]) ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
+        if (comm->sharedRes->devPeers[c]) {
+          if (comm->channelMetadataOnHost) {
+            ncclCudaHostFree(comm->sharedRes->devPeers[c]);
+          } else if (!comm->slabAllocator) {
+            ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
+          }
+        }
       }
       free(comm->sharedRes->tpRankToLocalRank);
       NCCLCHECK(ncclStrongStreamDestruct(&comm->sharedRes->hostStream));
@@ -2236,6 +2242,15 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
   comm->logMetaData.rank = comm->rank;
   comm->logMetaData.nRanks = comm->nRanks;
+
+  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
+    comm->slabAllocator = std::make_unique<ncclx::memory::SlabAllocator>();
+  }
+  comm->channelMetadataOnHost =
+      NCCL_CHANNEL_METADATA_LOCATION == NCCL_CHANNEL_METADATA_LOCATION::host ||
+      (NCCL_CHANNEL_METADATA_LOCATION ==
+           NCCL_CHANNEL_METADATA_LOCATION::unset &&
+       NCCL_USE_MEM_CACHE);
 
   NCCLCHECKGOTO(initTransportsRank(comm, job->parent, timers), res, fail);
 
