@@ -109,6 +109,29 @@ class NcclxLazyConnectTestFixture
     CUDACHECK_TEST(cudaDeviceSynchronize());
   }
 
+  // The large alltoall sets up every p2p channel; the small allgather after it
+  // connects only the ring channels its tuned channel count needs.
+  void runAlltoallThenAllGather() {
+    size_t count = 1 << 21; // 2M BF16 elements
+    size_t allgatherCount = 1 << 10; // 1K elements for allgather
+    size_t bytesPerRank = count * ncclTypeSize(dataType);
+    size_t sendBytes = bytesPerRank * numRanks;
+    size_t recvBytes = sendBytes * numRanks;
+
+    prepBuffers(sendBytes, recvBytes, rootComm);
+
+    // run alltoall
+    auto res =
+        ncclAlltoAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
+    EXPECT_EQ(res, ncclSuccess);
+    // run allgather
+    res = ncclAllGather(
+        sendBuf, recvBuf, allgatherCount, dataType, rootComm, stream);
+    EXPECT_EQ(res, ncclSuccess);
+
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  }
+
   void checkAlgoInitState(ncclComm_t comm, int expectedAlgo) {
     // NOTE: single-rank communicator won't connect algorithms, skip the check
     if (comm->nRanks == 1) {
@@ -414,23 +437,7 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
   // p2p channels should be higher than collective channels
   EXPECT_GE(rootComm->p2pnChannels, rootComm->collChannels);
 
-  size_t count = 1 << 21; // 2M BF16 elements
-  size_t allgatherCount = 1 << 10; // 1K elements for allgather
-  size_t bytesPerRank = count * ncclTypeSize(dataType);
-  size_t sendBytes = bytesPerRank * numRanks;
-  size_t recvBytes = sendBytes * numRanks;
-
-  prepBuffers(sendBytes, recvBytes, rootComm);
-
-  // run alltoall
-  auto res = ncclAlltoAll(sendBuf, recvBuf, count, dataType, rootComm, stream);
-  EXPECT_EQ(res, ncclSuccess);
-  // run allgather
-  res = ncclAllGather(
-      sendBuf, recvBuf, allgatherCount, dataType, rootComm, stream);
-  EXPECT_EQ(res, ncclSuccess);
-
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  runAlltoallThenAllGather();
 
   if (LAZY_CONNECT_ENABLED) {
     // RING should be connected
@@ -440,6 +447,31 @@ TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanColl) {
     // RING should be connected in rootComm
     checkAlgoChannelState(rootComm, NCCL_ALGO_RING, LAZY_CONNECT_ENABLED);
   }
+
+  NCCLCHECK_TEST(ncclCommDestroy(rootComm));
+}
+
+// 2.32 raises the scheduled channel count to minCTAs after preconnect, so lazy
+// setup must connect that many ring channels for the allgather, although the
+// alltoall already set up every channel.
+TEST_P(NcclxLazyConnectTestFixture, higherP2pChThanCollMinCtas) {
+  SysEnvRAII p2pMinCh("NCCL_MIN_P2P_NCHANNELS", std::to_string(MAXCHANNELS));
+  SysEnvRAII p2pMaxCh("NCCL_MAX_P2P_NCHANNELS", std::to_string(MAXCHANNELS));
+  EnvRAII<int64_t> p2pMinChEnv(
+      NCCL_MIN_P2P_NCHANNELS, static_cast<int64_t>(MAXCHANNELS));
+  EnvRAII<int64_t> p2pMaxChEnv(
+      NCCL_MAX_P2P_NCHANNELS, static_cast<int64_t>(MAXCHANNELS));
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  config.minCTAs = 16;
+  ncclx::Hints hints{{"noLocal", "1"}};
+  if (isNoLocal()) {
+    config.hints = &hints;
+  }
+  rootComm = ncclx::test::createNcclComm(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  ASSERT_NE(nullptr, rootComm);
+
+  runAlltoallThenAllGather();
 
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }
