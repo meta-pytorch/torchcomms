@@ -3490,9 +3490,10 @@ cvars:
      not necessarily map one-to-one to CUDA blocks; for example, ctree uses
      two channels per block. When both geometry cvars are unset, fused Ring
      derives a logical channel budget within the default physical capacity;
-     fused Tree provisions up to 64 channels and derives a logical subset from
-     its requested block cap. Explicit values remain the physical and logical
-     limit.
+     fused Tree provisions 32 channels for block caps up to 32 and retains the
+     previous 64-channel capacity for larger legacy block caps. It derives a
+     logical subset from the requested block cap. Explicit values remain the
+     physical and logical limit.
 
  - name        : MCCL_IB_MODE
    type        : enum
