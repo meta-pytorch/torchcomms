@@ -11,28 +11,68 @@
 # system and which to point at header trees, and for the ROCm invocation.
 
 [build-system]
-requires = ["scikit-build-core>=0.10"]
+requires = ["scikit-build-core>=1.1", "pybind11>=2.13"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "torchcomms-uniflow"
-version = "0.0.1"
+dynamic = ["version"]
 description = "UniFlow point-to-point transport, and its Python binding"
 readme = "python/README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
 
 [project.urls]
 Homepage = "https://github.com/meta-pytorch/torchcomms"
 
 [tool.scikit-build]
-# CMakeLists.txt sits in this directory and installs the package under uniflow/,
-# so the install tree maps onto the wheel unchanged.
 cmake.version = ">=3.20"
 cmake.source-dir = "."
-# The extension is only built when asked; this is the build that asks.
-cmake.define.UNIFLOW_BUILD_PYTHON = "ON"
-wheel.install-dir = "."
-# An sdist would otherwise sweep up the whole directory, including build
-# configuration and test trees that are not part of the distribution.
-sdist.exclude = ["**/BUCK", "**/TARGETS", "**/*.bzl", "**/PACKAGE", ".clang-tidy",
-                 "fb", "docs", ".claude"]
+cmake.build-type = "Release"
+cmake.args = [
+  "-DUNIFLOW_BUILD_PYTHON=ON",
+  "-DUNIFLOW_BUILD_SHARED_LIBS=ON",
+  "-DUNIFLOW_BUILD_TESTS=OFF",
+  "-DUNIFLOW_BUILD_BENCHMARKS=OFF",
+  "-DUNIFLOW_INSTALL_CPP=ON",
+  "-DUNIFLOW_USE_SYSTEM_SPDLOG=OFF",
+]
+wheel.install-dir = "uniflow"
+wheel.packages = []
+sdist.exclude = [
+  ".claude/**",
+  ".llms/**",
+  "amd/**",
+  "**/BUCK",
+  "**/TARGETS",
+  "**/*.bzl",
+  "**/PACKAGE",
+  ".clang-tidy",
+  "**/benchmarks/**",
+  "docs/**",
+  "fb/**",
+  "controller/tests/**",
+  "core/tests/**",
+  "drivers/*/mock/**",
+  "drivers/*/tests/**",
+  "executor/tests/**",
+  "fb/tests/**",
+  "logging/tests/**",
+  "tests/CMakeLists.txt",
+  "tests/cmake/**",
+  "tests/headers/**",
+  "tests/integration/**",
+  "tests/package/**",
+  "tests/py/test_uniflow_integration.py",
+  "tests/unit/**",
+  "transport/tests/**",
+  "transport/*/tests/**",
+]
+
+[[tool.dynamic-metadata]]
+provider = "scikit_build_core.metadata.regex"
+field = "version"
+input = "VERSION"
+regex = "^(?P<value>.+?)\\s*$"

@@ -1,8 +1,23 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-# pyre-strict
-
 import ctypes
+import importlib
 import unittest
+
+try:
+    _GPU_ENABLED = bool(
+        importlib.import_module("uniflow._build_config").__dict__["GPU_ENABLED"]
+    )
+except ImportError:
+    _GPU_ENABLED = True
+
+
+def _has_torch() -> bool:
+    try:
+        import torch
+
+        return hasattr(torch, "Tensor") and hasattr(torch, "zeros")
+    except ImportError:
+        return False
 
 
 def _has_gpu() -> bool:
@@ -11,11 +26,12 @@ def _has_gpu() -> bool:
         import torch
 
         return torch.cuda.is_available() and torch.cuda.device_count() > 0
-    except ImportError:
+    except (AttributeError, ImportError):
         return False
 
 
-_HAS_GPU: bool = _has_gpu()
+_HAS_GPU: bool = _GPU_ENABLED and _has_gpu()
+_HAS_TORCH: bool = _has_torch()
 
 
 class TestTypesAndSegment(unittest.TestCase):
@@ -47,7 +63,8 @@ class TestTypesAndSegment(unittest.TestCase):
             self.assertTrue(
                 hasattr(uniflow, name), f"uniflow missing public export: {name}"
             )
-            self.assertIs(getattr(uniflow, name), getattr(uniflow._core, name))
+            if name != "cmake_prefix_path":
+                self.assertIs(getattr(uniflow, name), getattr(uniflow._core, name))
 
     def test_err_code_enum(self) -> None:
         from uniflow._core import ErrCode
@@ -92,6 +109,7 @@ class TestTypesAndSegment(unittest.TestCase):
         self.assertEqual(seg.mem_type, MemoryType.DRAM)
         self.assertEqual(seg.device_id, -1)
 
+    @unittest.skipUnless(_HAS_TORCH, "Requires PyTorch")
     def test_segment_from_tensor_cpu(self) -> None:
         import torch
         from uniflow._core import MemoryType, Segment
@@ -117,12 +135,14 @@ class TestTypesAndSegment(unittest.TestCase):
         self.assertEqual(seg.mem_type, MemoryType.VRAM)
         self.assertEqual(seg.device_id, 0)
 
+    @unittest.skipUnless(_HAS_TORCH, "Requires PyTorch")
     def test_segment_from_tensor_rejects_non_tensor(self) -> None:
         from uniflow._core import Segment
 
         with self.assertRaises(TypeError):
             Segment.from_tensor("not a tensor")
 
+    @unittest.skipUnless(_HAS_TORCH, "Requires PyTorch")
     def test_segment_from_tensor_rejects_non_contiguous(self) -> None:
         import torch
         from uniflow._core import Segment
@@ -133,18 +153,28 @@ class TestTypesAndSegment(unittest.TestCase):
             Segment.from_tensor(t)
 
     def test_uniflow_agent_config(self) -> None:
-        from uniflow._core import UniflowAgentConfig
+        from uniflow._core import TransportType, UniflowAgentConfig
 
         config = UniflowAgentConfig(
             device_id=0,
             name="test_agent",
             connect_retries=5,
             connect_timeout_ms=2000,
+            enable_tcp=True,
+            tcp_bind_host="127.0.0.1",
+            preferred_transport=TransportType.TCP,
+            intra_node_transport=TransportType.NVLink,
+            inter_node_transport=TransportType.RDMA,
         )
         self.assertEqual(config.device_id, 0)
         self.assertEqual(config.name, "test_agent")
         self.assertEqual(config.connect_retries, 5)
         self.assertEqual(config.connect_timeout_ms, 2000)
+        self.assertTrue(config.enable_tcp)
+        self.assertEqual(config.tcp_bind_host, "127.0.0.1")
+        self.assertEqual(config.preferred_transport, TransportType.TCP)
+        self.assertEqual(config.intra_node_transport, TransportType.NVLink)
+        self.assertEqual(config.inter_node_transport, TransportType.RDMA)
 
     @unittest.skipUnless(_HAS_GPU, "Requires GPU")
     def test_get_unique_id_with_server(self) -> None:
