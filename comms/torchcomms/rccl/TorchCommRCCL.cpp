@@ -1804,9 +1804,10 @@ namespace {
 class RCCLRegistration {
  public:
   RCCLRegistration() {
-    torch::comms::TorchCommFactory::get().register_backend("rccl", []() {
-      return std::make_shared<torch::comms::TorchCommRCCL>();
-    });
+    torch::comms::TorchCommFactory::get().register_backend(
+        "rccl",
+        []() { return std::make_shared<torch::comms::TorchCommRCCL>(); },
+        torch::comms::TORCHCOMM_BACKEND_ABI_VERSION);
   }
 };
 
