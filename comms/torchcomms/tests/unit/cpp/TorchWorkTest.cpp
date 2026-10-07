@@ -5,12 +5,21 @@
 #include <atomic>
 #include <functional>
 #include <future>
+#include <stdexcept>
 #include <thread>
 
 #include <c10/util/intrusive_ptr.h>
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace torch::comms::test {
+
+namespace {
+
+[[noreturn]] void throwLifecycleObserverFailure() {
+  throw std::runtime_error("synthetic lifecycle observer failure");
+}
+
+} // namespace
 
 class TestWork : public TorchWork {
  public:
@@ -252,6 +261,36 @@ TEST(TorchWorkTest, EndHooksFiredAtMostOnce) {
   // Second terminal status should not fire end hooks again
   work->setStatus(TorchWork::WorkStatus::ERROR);
   EXPECT_EQ(end_count, 1);
+}
+
+TEST(TorchWorkTest, ThrowingStartHookDoesNotSuppressLaterObserver) {
+  auto work = c10::make_intrusive<TestWork>();
+  int later_count = 0;
+  work->registerWorkStartHook(throwLifecycleObserverFailure);
+  work->registerWorkStartHook([&later_count]() { later_count++; });
+
+  EXPECT_NO_THROW(work->setStatus(TorchWork::WorkStatus::INPROGRESS));
+  EXPECT_EQ(later_count, 1);
+  EXPECT_EQ(work->status(), TorchWork::WorkStatus::INPROGRESS);
+}
+
+TEST(TorchWorkTest, ThrowingEndHookDoesNotSuppressLaterObserver) {
+  auto work = c10::make_intrusive<TestWork>();
+  int later_count = 0;
+  work->registerWorkEndHook(throwLifecycleObserverFailure);
+  work->registerWorkEndHook([&later_count]() { later_count++; });
+
+  EXPECT_NO_THROW(work->setStatus(TorchWork::WorkStatus::ERROR));
+  EXPECT_EQ(later_count, 1);
+  EXPECT_EQ(work->status(), TorchWork::WorkStatus::ERROR);
+}
+
+TEST(TorchWorkTest, LateThrowingLifecycleHooksDoNotEscape) {
+  auto work = c10::make_intrusive<TestWork>();
+  work->setStatus(TorchWork::WorkStatus::COMPLETED);
+
+  EXPECT_NO_THROW(work->registerWorkStartHook(throwLifecycleObserverFailure));
+  EXPECT_NO_THROW(work->registerWorkEndHook(throwLifecycleObserverFailure));
 }
 
 // -- Thread-safety / state-machine tests --
