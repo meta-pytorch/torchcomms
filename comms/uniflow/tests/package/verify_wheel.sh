@@ -15,6 +15,7 @@ trap 'rc=$?; set +e; rm -rf -- "${work_dir}"; exit $rc' EXIT
 work_dir="$(mktemp -d)" || exit 1
 
 python="${PYTHON:-python3}"
+cmake_generator="${UNIFLOW_CMAKE_GENERATOR:-Ninja}"
 package_cuda="${UNIFLOW_PACKAGE_ENABLE_CUDA:-OFF}"
 if [[ "${package_cuda}" != ON && "${package_cuda}" != OFF ]]; then
   echo "UNIFLOW_PACKAGE_ENABLE_CUDA must be ON or OFF" >&2
@@ -25,6 +26,12 @@ if [[ "${package_cuda}" == ON && ! "${package_cuda_version}" =~ ^(12|13)\.[0-9]+
   echo "UNIFLOW_CUDA_VERSION must name a supported CUDA version" >&2
   exit 1
 fi
+auditwheel_enabled="${UNIFLOW_PACKAGE_AUDITWHEEL:-${package_cuda}}"
+if [[ "${auditwheel_enabled}" != ON && "${auditwheel_enabled}" != OFF ]]; then
+  echo "UNIFLOW_PACKAGE_AUDITWHEEL must be ON or OFF" >&2
+  exit 1
+fi
+expected_manylinux="${UNIFLOW_EXPECT_MANYLINUX:-}"
 if [[ "${package_cuda}" == ON ]]; then
   package_gpu_platform=CUDA
 else
@@ -42,7 +49,7 @@ build_consumer() {
   CMAKE_PREFIX_PATH="${prefix}" cmake \
     -S "${source_dir}/tests/cmake/consumer" \
     -B "${build_dir}" \
-    -G Ninja
+    -G "${cmake_generator}"
   CMAKE_PREFIX_PATH="${prefix}" cmake --build "${build_dir}"
   "${build_dir}/uniflow_consumer"
 }
@@ -56,7 +63,7 @@ build_cpp_sdk() {
   cmake \
     -S "${unpacked_source}" \
     -B "${build_dir}" \
-    -G Ninja \
+    -G "${cmake_generator}" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_PREFIX="${prefix}" \
     -DUNIFLOW_BUILD_BENCHMARKS=OFF \
@@ -127,7 +134,7 @@ CMAKE_ARGS="${package_cmake_args} -DUNIFLOW_INSTALL_CPP=OFF" \
   --outdir "${work_dir}/python-only-wheel" \
   "${unpacked_source}"
 
-if [[ "${package_cuda}" == ON ]]; then
+if [[ "${auditwheel_enabled}" == ON ]]; then
   raw_wheels=("${work_dir}"/wheel/torchcomms_uniflow-*.whl)
   raw_python_only_wheels=(
     "${work_dir}"/python-only-wheel/torchcomms_uniflow-*.whl)
@@ -144,11 +151,11 @@ if [[ "${package_cuda}" == ON ]]; then
     --exclude libibverbs.so.1
     --exclude librdmacm.so.1
   )
-  "${python}" -m auditwheel repair \
+  auditwheel repair \
     "${auditwheel_args[@]}" \
     --wheel-dir "${work_dir}/wheel-repaired" \
     "${raw_wheels[0]}"
-  "${python}" -m auditwheel repair \
+  auditwheel repair \
     "${auditwheel_args[@]}" \
     --wheel-dir "${work_dir}/python-only-wheel-repaired" \
     "${raw_python_only_wheels[0]}"
@@ -174,14 +181,22 @@ fi
 
 "${python}" - "${sdists[0]}" "${wheels[0]}" \
   "${python_only_wheels[0]}" "${source_dir}" "${package_cuda}" \
-  "${package_cuda_version}" <<'PY'
+  "${package_cuda_version}" "${expected_manylinux}" <<'PY'
 import sys
 import tarfile
 from packaging.requirements import Requirement
 from pathlib import Path, PurePosixPath
 import zipfile
 
-sdist, wheel, python_only_wheel, source_dir, package_cuda, cuda_version = sys.argv[1:]
+(
+    sdist,
+    wheel,
+    python_only_wheel,
+    source_dir,
+    package_cuda,
+    cuda_version,
+    expected_manylinux,
+) = sys.argv[1:]
 expect_cuda = package_cuda == "ON"
 expected_version = (Path(source_dir) / "VERSION").read_text().strip()
 portable_tests = {
@@ -212,6 +227,8 @@ with tarfile.open(sdist) as archive:
 
 
 def inspect_wheel(filename: str, expect_sdk: bool) -> None:
+    if expected_manylinux:
+        assert expected_manylinux in PurePosixPath(filename).name, filename
     package_files = {
         PurePosixPath("__init__.py"),
         PurePosixPath("_build_config.py"),

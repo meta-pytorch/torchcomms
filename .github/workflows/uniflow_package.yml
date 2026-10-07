@@ -1,0 +1,236 @@
+name: Test UniFlow packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/setup_env.sh'
+      - '.github/workflows/uniflow_package.yml'
+      - 'comms/uniflow/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/scripts/setup_env.sh'
+      - '.github/workflows/uniflow_package.yml'
+      - 'comms/uniflow/**'
+  workflow_dispatch:
+
+jobs:
+  portable:
+    name: portable-${{ matrix.architecture }}-py${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            python-version: '3.10'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            python-version: '3.11'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            python-version: '3.12'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            python-version: '3.13'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            python-version: '3.14'
+            runner: ubuntu-24.04
+          - architecture: aarch64
+            python-version: '3.10'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            python-version: '3.11'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            python-version: '3.12'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            python-version: '3.13'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            python-version: '3.14'
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build
+          python -m pip install --upgrade build
+      - name: Build and install UniFlow packages
+        run: comms/uniflow/tests/package/verify_wheel.sh
+
+  manylinux:
+    name: manylinux-${{ matrix.architecture }}-py${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            image: quay.io/pypa/manylinux_2_28_x86_64:latest
+            python: /opt/python/cp310-cp310/bin/python
+            python-version: '3.10'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: quay.io/pypa/manylinux_2_28_x86_64:latest
+            python: /opt/python/cp311-cp311/bin/python
+            python-version: '3.11'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: quay.io/pypa/manylinux_2_28_x86_64:latest
+            python: /opt/python/cp312-cp312/bin/python
+            python-version: '3.12'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: quay.io/pypa/manylinux_2_28_x86_64:latest
+            python: /opt/python/cp313-cp313/bin/python
+            python-version: '3.13'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: quay.io/pypa/manylinux_2_28_x86_64:latest
+            python: /opt/python/cp314-cp314/bin/python
+            python-version: '3.14'
+            runner: ubuntu-24.04
+          - architecture: aarch64
+            image: quay.io/pypa/manylinux_2_28_aarch64:latest
+            python: /opt/python/cp310-cp310/bin/python
+            python-version: '3.10'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: quay.io/pypa/manylinux_2_28_aarch64:latest
+            python: /opt/python/cp311-cp311/bin/python
+            python-version: '3.11'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: quay.io/pypa/manylinux_2_28_aarch64:latest
+            python: /opt/python/cp312-cp312/bin/python
+            python-version: '3.12'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: quay.io/pypa/manylinux_2_28_aarch64:latest
+            python: /opt/python/cp313-cp313/bin/python
+            python-version: '3.13'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: quay.io/pypa/manylinux_2_28_aarch64:latest
+            python: /opt/python/cp314-cp314/bin/python
+            python-version: '3.14'
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build tools
+        run: ${{ matrix.python }} -m pip install --upgrade auditwheel build ninja
+      - name: Build and install manylinux packages
+        env:
+          PYTHON: ${{ matrix.python }}
+        run: |
+          export PATH="$(dirname "${PYTHON}"):${PATH}"
+          comms/uniflow/tests/package/verify_manylinux_wheel.sh
+
+  manylinux-nvidia:
+    name: manylinux-cuda12.8-${{ matrix.architecture }}-py${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            image: pytorch/manylinux2_28-builder:cuda12.8
+            python: /opt/python/cp310-cp310/bin/python
+            python-version: '3.10'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: pytorch/manylinux2_28-builder:cuda12.8
+            python: /opt/python/cp311-cp311/bin/python
+            python-version: '3.11'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: pytorch/manylinux2_28-builder:cuda12.8
+            python: /opt/python/cp312-cp312/bin/python
+            python-version: '3.12'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: pytorch/manylinux2_28-builder:cuda12.8
+            python: /opt/python/cp313-cp313/bin/python
+            python-version: '3.13'
+            runner: ubuntu-24.04
+          - architecture: x86_64
+            image: pytorch/manylinux2_28-builder:cuda12.8
+            python: /opt/python/cp314-cp314/bin/python
+            python-version: '3.14'
+            runner: ubuntu-24.04
+          - architecture: aarch64
+            image: pytorch/manylinuxaarch64-builder:cuda12.8
+            python: /opt/python/cp310-cp310/bin/python
+            python-version: '3.10'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: pytorch/manylinuxaarch64-builder:cuda12.8
+            python: /opt/python/cp311-cp311/bin/python
+            python-version: '3.11'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: pytorch/manylinuxaarch64-builder:cuda12.8
+            python: /opt/python/cp312-cp312/bin/python
+            python-version: '3.12'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: pytorch/manylinuxaarch64-builder:cuda12.8
+            python: /opt/python/cp313-cp313/bin/python
+            python-version: '3.13'
+            runner: ubuntu-24.04-arm
+          - architecture: aarch64
+            image: pytorch/manylinuxaarch64-builder:cuda12.8
+            python: /opt/python/cp314-cp314/bin/python
+            python-version: '3.14'
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build tools
+        run: ${{ matrix.python }} -m pip install --upgrade auditwheel build ninja
+      - name: Build and install CUDA manylinux packages
+        env:
+          PYTHON: ${{ matrix.python }}
+          UNIFLOW_CUDA_VERSION: '12.8'
+          UNIFLOW_EXPECT_MANYLINUX: manylinux_2_28
+        run: |
+          export PATH="$(dirname "${PYTHON}"):${PATH}"
+          comms/uniflow/tests/package/verify_nvidia_wheel.sh
+
+  nvidia:
+    name: cuda-${{ matrix.cuda-version }}-py${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        cuda-version: ['12.8', '12.9', '13.0']
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      timeout: 120
+      runner: linux.g5.12xlarge.nvidia.gpu
+      gpu-arch-type: cuda
+      gpu-arch-version: ${{ matrix.cuda-version }}
+      script: |
+        set -eux
+        source .github/scripts/setup_env.sh \
+          --with-cmake \
+          --cuda-version "${{ matrix.cuda-version }}" \
+          --python-version "${{ matrix.python-version }}" \
+          stable
+        python -m pip install --upgrade auditwheel build
+        UNIFLOW_CUDA_VERSION="${{ matrix.cuda-version }}" \
+          comms/uniflow/tests/package/verify_nvidia_wheel.sh

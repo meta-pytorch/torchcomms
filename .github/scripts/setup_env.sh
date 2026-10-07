@@ -1,8 +1,9 @@
 #!/bin/bash
 # Common environment setup for CI jobs
-# Usage: source setup_env.sh [--with-cmake] [--cuda-version <version>] [--torch-version <version>] <torch-channel>
+# Usage: source setup_env.sh [--with-cmake] [--cuda-version <version>] [--python-version <version>] [--torch-version <version>] <torch-channel>
 #   --with-cmake: Install cmake and ninja-build
 #   --cuda-version: CUDA version (e.g., "13.2") - required for nightly builds
+#   --python-version: Python version (default: "3.12")
 #   --torch-version: Exact torch version to install (e.g., "2.6.0.dev20250101")
 #   torch-channel: "stable" or "nightly"
 
@@ -11,6 +12,7 @@ set -ex
 INSTALL_CMAKE=false
 TORCH_CHANNEL=""
 CUDA_VERSION=""
+PYTHON_VERSION="3.12"
 TORCH_VERSION=""
 
 # Parse arguments
@@ -22,6 +24,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cuda-version)
       CUDA_VERSION="$2"
+      shift 2
+      ;;
+    --python-version)
+      PYTHON_VERSION="$2"
       shift 2
       ;;
     --torch-version)
@@ -54,7 +60,7 @@ fi
 
 # Set up conda environment
 conda config --set solver libmamba
-conda create -n venv python=3.12 -y
+conda create -n venv python="${PYTHON_VERSION}" -y
 conda activate venv
 python -m pip install --upgrade pip
 
