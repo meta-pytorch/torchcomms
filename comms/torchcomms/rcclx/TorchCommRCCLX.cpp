@@ -2809,7 +2809,9 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
   void all_reduce(
       const at::Tensor& input,
       const ReduceOp& op,
-      const at::Tensor& output) override {
+      const at::Tensor& output,
+      const std::optional<RegisteredAllReduceGatedResidualNorm>& norm)
+      override {
     TORCH_CHECK(!closed_, "RegisteredAllReduce has already been closed");
     comm_->checkInitialized();
     comm_->checkAndAbortIfTimedOutOrErrorNoCleanup();
@@ -2825,6 +2827,8 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
     TORCH_CHECK(
         op.type() != ReduceOp::RedOpType::PREMUL_SUM,
         "RegisteredAllReduce does not support PREMUL_SUM");
+    const RcclxGatedResidualNorm rcclxNorm =
+        norm.has_value() ? toRcclxNorm(*norm) : RcclxGatedResidualNorm{};
 
     const ncclDataType_t datatype = comm_->getNcclDataType(input_);
     const auto ncclOp = comm_->getNcclReduceOp(op, comm_->nccl_comm_, datatype);
@@ -2844,11 +2848,70 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
             static_cast<size_t>(input_.numel()),
             datatype,
             ncclOp,
+            norm.has_value() ? &rcclxNorm : nullptr,
             stream,
             request_),
         "RCCLX registeredAllReduceExec failed");
   }
 
+ private:
+  // Checks the tensor properties the RCCLX API cannot see; shape limits and
+  // buffer overlap stay with RCCLX.
+  RcclxGatedResidualNorm toRcclxNorm(
+      const RegisteredAllReduceGatedResidualNorm& norm) const {
+    const auto checkTensor = [this](
+                                 const at::Tensor& tensor,
+                                 at::ScalarType dtype,
+                                 int64_t numel,
+                                 const char* name) {
+      TORCH_CHECK(
+          tensor.defined() && tensor.device() == input_.device() &&
+              tensor.scalar_type() == dtype && tensor.is_contiguous() &&
+              tensor.numel() == numel,
+          "RegisteredAllReduce gated residual norm ",
+          name,
+          " must be a contiguous ",
+          c10::toString(dtype),
+          " tensor of ",
+          numel,
+          " elements on the registered input device");
+    };
+    const int64_t hidden = norm.post_norm_weight.numel();
+    TORCH_CHECK(
+        hidden > 0 && input_.numel() % hidden == 0,
+        "RegisteredAllReduce gated residual norm weights must divide the "
+        "input into rows");
+    checkTensor(norm.residual_in, at::kFloat, input_.numel(), "residual_in");
+    checkTensor(norm.residual_out, at::kFloat, input_.numel(), "residual_out");
+    if (norm.router_out.has_value()) {
+      checkTensor(*norm.router_out, at::kFloat, input_.numel(), "router_out");
+    }
+    checkTensor(
+        norm.post_norm_weight,
+        input_.scalar_type(),
+        hidden,
+        "post_norm_weight");
+    checkTensor(
+        norm.pre_norm_weight, input_.scalar_type(), hidden, "pre_norm_weight");
+    checkTensor(norm.gate_alpha, at::kFloat, hidden, "gate_alpha");
+    checkTensor(norm.gate_beta, at::kFloat, hidden, "gate_beta");
+    RcclxGatedResidualNorm converted;
+    converted.residualIn = norm.residual_in.data_ptr<float>();
+    converted.residualOut = norm.residual_out.data_ptr<float>();
+    converted.routerOut = norm.router_out.has_value()
+        ? norm.router_out->data_ptr<float>()
+        : nullptr;
+    converted.postNormWeight = norm.post_norm_weight.data_ptr();
+    converted.preNormWeight = norm.pre_norm_weight.data_ptr();
+    converted.gateAlpha = norm.gate_alpha.data_ptr<float>();
+    converted.gateBeta = norm.gate_beta.data_ptr<float>();
+    converted.hiddenSize = static_cast<size_t>(hidden);
+    converted.postNormEpsilon = static_cast<float>(norm.post_norm_eps);
+    converted.preNormEpsilon = static_cast<float>(norm.pre_norm_eps);
+    return converted;
+  }
+
+ public:
   void close() override {
     if (closed_) {
       return;

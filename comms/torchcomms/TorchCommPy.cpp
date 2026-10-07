@@ -1261,6 +1261,52 @@ or an object with a ``wait()`` method for asynchronous operations.
           )")
       .def(py::init<>());
 
+  py::class_<RegisteredAllReduceGatedResidualNorm>(
+      m,
+      "RegisteredAllReduceGatedResidualNorm",
+      R"(
+Epilogue applied to the all-reduced rows of a RegisteredAllReduce execution.
+
+For every row of hidden-size elements:
+    normed       = bf16(reduced * rsqrt(mean(reduced^2) + post_norm_eps) * post_norm_weight)
+    residual_out = gate_alpha * residual_in + gate_beta * normed   (fp32)
+    out          = bf16(p * rsqrt(mean(p^2) + pre_norm_eps) * pre_norm_weight),
+                   where p = bf16(residual_out)
+    router_out   = out widened to fp32 (optional)
+
+residual_out may be residual_in (in-place update).
+          )")
+      .def(
+          py::init([](at::Tensor residual_in,
+                      at::Tensor residual_out,
+                      at::Tensor post_norm_weight,
+                      at::Tensor pre_norm_weight,
+                      at::Tensor gate_alpha,
+                      at::Tensor gate_beta,
+                      double post_norm_eps,
+                      double pre_norm_eps,
+                      std::optional<at::Tensor> router_out) {
+            return RegisteredAllReduceGatedResidualNorm{
+                std::move(residual_in),
+                std::move(residual_out),
+                std::move(router_out),
+                std::move(post_norm_weight),
+                std::move(pre_norm_weight),
+                std::move(gate_alpha),
+                std::move(gate_beta),
+                post_norm_eps,
+                pre_norm_eps};
+          }),
+          py::arg("residual_in"),
+          py::arg("residual_out"),
+          py::arg("post_norm_weight"),
+          py::arg("pre_norm_weight"),
+          py::arg("gate_alpha"),
+          py::arg("gate_beta"),
+          py::arg("post_norm_eps"),
+          py::arg("pre_norm_eps"),
+          py::arg("router_out") = std::nullopt);
+
   py_opaque_class<RegisteredAllReduce, std::shared_ptr<RegisteredAllReduce>>(
       m, "RegisteredAllReduce")
       .def(
@@ -1269,12 +1315,14 @@ or an object with a ``wait()`` method for asynchronous operations.
              const at::Tensor& input,
              const ReduceOp& op,
              const std::optional<at::Tensor>& out,
-             bool registered_input) {
+             bool registered_input,
+             const std::optional<RegisteredAllReduceGatedResidualNorm>&
+                 gated_residual_norm) {
             TORCH_CHECK(
                 registered_input,
                 "RegisteredAllReduce only supports registered_input=True");
             const at::Tensor& output = out.has_value() ? *out : self.output();
-            self.all_reduce(input, op, output);
+            self.all_reduce(input, op, output, gated_residual_norm);
           },
           R"(
 Execute the registered all-reduce on the current stream.
@@ -1286,17 +1334,22 @@ Args:
         registered output is used.
     registered_input: Must be True. No unregistered-input fallback, staging copy,
         or temporary tensor is performed.
+    gated_residual_norm: Optional RegisteredAllReduceGatedResidualNorm epilogue.
+        When set, out receives the epilogue's normalized rows instead of the
+        plain sum.
 
 Returns:
     None. The operation is enqueued on the current stream without a TorchWork.
 
 Note:
     Every execution and graph replay for one request must use the same stream.
+    Plain and epilogue executions may be interleaved on one request.
           )",
           py::arg("input"),
           py::arg("op") = ReduceOp::SUM,
           py::arg("out") = std::nullopt,
           py::arg("registered_input") = true,
+          py::arg("gated_residual_norm") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "close",

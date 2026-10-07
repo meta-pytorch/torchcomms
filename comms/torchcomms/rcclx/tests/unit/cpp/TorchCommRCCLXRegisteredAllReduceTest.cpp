@@ -15,8 +15,12 @@
 #include "comms/torchcomms/rcclx/tests/unit/cpp/mocks/RcclxMock.hpp"
 
 using ::testing::_;
+using ::testing::AllOf;
 using ::testing::DoAll;
+using ::testing::Field;
+using ::testing::IsNull;
 using ::testing::NiceMock;
+using ::testing::Pointee;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
@@ -139,7 +143,7 @@ class TorchCommRCCLXRegisteredAllReduceTest : public ::testing::Test {
     ON_CALL(*rcclx_mock_, registeredAllReduceInit(_, _, _, _, _))
         .WillByDefault(
             DoAll(SetArgPointee<4>(registered_request_), Return(ncclSuccess)));
-    ON_CALL(*rcclx_mock_, registeredAllReduceExec(_, _, _, _, _, _, _))
+    ON_CALL(*rcclx_mock_, registeredAllReduceExec(_, _, _, _, _, _, _, _))
         .WillByDefault(Return(ncclSuccess));
     ON_CALL(*rcclx_mock_, registeredAllReduceFinalize(_, _))
         .WillByDefault(Return(ncclSuccess));
@@ -273,13 +277,14 @@ TEST_F(TorchCommRCCLXRegisteredAllReduceTest, ExecUsesCurrentStreamAndNoWork) {
           kBFloat16Elements,
           ncclBfloat16,
           ncclSum,
+          IsNull(),
           current_stream_,
           registered_request_))
       .Times(2)
       .WillRepeatedly(Return(ncclSuccess));
 
-  request->all_reduce(input, ReduceOp::SUM, output);
-  request->all_reduce(input, ReduceOp::SUM, output);
+  request->all_reduce(input, ReduceOp::SUM, output, std::nullopt);
+  request->all_reduce(input, ReduceOp::SUM, output, std::nullopt);
 
   EXPECT_EQ(comm->createWorkCalls(), 0);
   request->close();
@@ -299,11 +304,12 @@ TEST_F(
       .WillOnce(Return(current_stream_))
       .WillOnce(Return(otherStream));
   EXPECT_CALL(
-      *rcclx_mock_, registeredAllReduceExec(_, _, _, _, _, current_stream_, _))
+      *rcclx_mock_,
+      registeredAllReduceExec(_, _, _, _, _, _, current_stream_, _))
       .Times(1)
       .WillOnce(Return(ncclSuccess));
   EXPECT_CALL(
-      *rcclx_mock_, registeredAllReduceExec(_, _, _, _, _, otherStream, _))
+      *rcclx_mock_, registeredAllReduceExec(_, _, _, _, _, _, otherStream, _))
       .Times(0);
   EXPECT_CALL(
       *rcclx_mock_,
@@ -311,8 +317,10 @@ TEST_F(
       .Times(1)
       .WillOnce(Return(ncclSuccess));
 
-  request->all_reduce(input, ReduceOp::SUM, output);
-  EXPECT_THROW(request->all_reduce(input, ReduceOp::SUM, output), c10::Error);
+  request->all_reduce(input, ReduceOp::SUM, output, std::nullopt);
+  EXPECT_THROW(
+      request->all_reduce(input, ReduceOp::SUM, output, std::nullopt),
+      c10::Error);
   request->close();
   comm->finalize();
 }
@@ -328,9 +336,11 @@ TEST_F(
   auto request = comm->registered_all_reduce(input, output, kHalfMiB);
 
   EXPECT_THROW(
-      request->all_reduce(otherInput, ReduceOp::SUM, output), c10::Error);
+      request->all_reduce(otherInput, ReduceOp::SUM, output, std::nullopt),
+      c10::Error);
   EXPECT_THROW(
-      request->all_reduce(input, ReduceOp::SUM, otherOutput), c10::Error);
+      request->all_reduce(input, ReduceOp::SUM, otherOutput, std::nullopt),
+      c10::Error);
 
   request->close();
   comm->finalize();
@@ -343,11 +353,12 @@ TEST_F(TorchCommRCCLXRegisteredAllReduceTest, PropagatesExecRejections) {
   auto request = comm->registered_all_reduce(input, output, kHalfMiB * 2);
 
   EXPECT_CALL(
-      *rcclx_mock_, registeredAllReduceExec(_, _, _, ncclFloat32, _, _, _))
+      *rcclx_mock_, registeredAllReduceExec(_, _, _, ncclFloat32, _, _, _, _))
       .WillOnce(Return(ncclInvalidArgument));
 
   EXPECT_THROW(
-      request->all_reduce(input, ReduceOp::SUM, output), RCCLXException);
+      request->all_reduce(input, ReduceOp::SUM, output, std::nullopt),
+      RCCLXException);
 
   request->close();
   comm->finalize();
@@ -363,7 +374,8 @@ TEST_F(
 
   EXPECT_CALL(*rcclx_mock_, redOpCreatePreMulSum(_, _, _, _, _)).Times(0);
   EXPECT_THROW(
-      request->all_reduce(input, ReduceOp::make_nccl_premul_sum(1.0), output),
+      request->all_reduce(
+          input, ReduceOp::make_nccl_premul_sum(1.0), output, std::nullopt),
       c10::Error);
 
   request->close();
@@ -386,7 +398,9 @@ TEST_F(TorchCommRCCLXRegisteredAllReduceTest, CloseFinalizesOnCurrentStream) {
   EXPECT_TRUE(request->isClosed());
   request->close();
 
-  EXPECT_THROW(request->all_reduce(input, ReduceOp::SUM, output), c10::Error);
+  EXPECT_THROW(
+      request->all_reduce(input, ReduceOp::SUM, output, std::nullopt),
+      c10::Error);
   comm->finalize();
 }
 
@@ -484,6 +498,143 @@ TEST_F(TorchCommRCCLXRegisteredAllReduceTest, InitPropagatesRcclxErrors) {
 
   EXPECT_THROW(
       comm->registered_all_reduce(input, output, kHalfMiB), RCCLXException);
+  comm->finalize();
+}
+
+TEST_F(
+    TorchCommRCCLXRegisteredAllReduceTest,
+    GatedResidualNormForwardsEpilogue) {
+  constexpr int64_t kHidden = 4096;
+  auto comm = createAndInitComm();
+  auto input = makeRegisteredTensor();
+  auto output = makeRegisteredTensor();
+  const auto floats = [](int64_t n) {
+    return at::empty({n}, at::TensorOptions().dtype(at::kFloat));
+  };
+  RegisteredAllReduceGatedResidualNorm norm{
+      floats(kBFloat16Elements),
+      floats(kBFloat16Elements),
+      floats(kBFloat16Elements),
+      at::empty({kHidden}, at::TensorOptions().dtype(at::kBFloat16)),
+      at::empty({kHidden}, at::TensorOptions().dtype(at::kBFloat16)),
+      floats(kHidden),
+      floats(kHidden),
+      1e-8,
+      1e-5};
+  auto request = comm->registered_all_reduce(input, output, kHalfMiB);
+
+  EXPECT_CALL(
+      *rcclx_mock_,
+      registeredAllReduceExec(
+          input.data_ptr(),
+          output.data_ptr(),
+          kBFloat16Elements,
+          ncclBfloat16,
+          ncclSum,
+          Pointee(AllOf(
+              Field(
+                  &RcclxGatedResidualNorm::residualIn,
+                  norm.residual_in.data_ptr<float>()),
+              Field(
+                  &RcclxGatedResidualNorm::residualOut,
+                  norm.residual_out.data_ptr<float>()),
+              Field(
+                  &RcclxGatedResidualNorm::routerOut,
+                  norm.router_out->data_ptr<float>()),
+              Field(
+                  &RcclxGatedResidualNorm::postNormWeight,
+                  norm.post_norm_weight.data_ptr()),
+              Field(
+                  &RcclxGatedResidualNorm::preNormWeight,
+                  norm.pre_norm_weight.data_ptr()),
+              Field(
+                  &RcclxGatedResidualNorm::gateAlpha,
+                  norm.gate_alpha.data_ptr<float>()),
+              Field(
+                  &RcclxGatedResidualNorm::gateBeta,
+                  norm.gate_beta.data_ptr<float>()),
+              Field(
+                  &RcclxGatedResidualNorm::hiddenSize,
+                  static_cast<size_t>(kHidden)),
+              Field(&RcclxGatedResidualNorm::postNormEpsilon, 1e-8f),
+              Field(&RcclxGatedResidualNorm::preNormEpsilon, 1e-5f))),
+          current_stream_,
+          registered_request_))
+      .WillOnce(Return(ncclSuccess));
+  request->all_reduce(input, ReduceOp::SUM, output, norm);
+
+  norm.router_out = std::nullopt;
+  EXPECT_CALL(
+      *rcclx_mock_,
+      registeredAllReduceExec(
+          _,
+          _,
+          _,
+          _,
+          _,
+          Pointee(Field(&RcclxGatedResidualNorm::routerOut, IsNull())),
+          _,
+          _))
+      .WillOnce(Return(ncclSuccess));
+  request->all_reduce(input, ReduceOp::SUM, output, norm);
+
+  request->close();
+  comm->finalize();
+}
+
+TEST_F(
+    TorchCommRCCLXRegisteredAllReduceTest,
+    GatedResidualNormRejectsInvalidTensors) {
+  constexpr int64_t kHidden = 4096;
+  auto comm = createAndInitComm();
+  auto input = makeRegisteredTensor();
+  auto output = makeRegisteredTensor();
+  const auto floats = [](int64_t n) {
+    return at::empty({n}, at::TensorOptions().dtype(at::kFloat));
+  };
+  const auto weight = [] {
+    return at::empty({kHidden}, at::TensorOptions().dtype(at::kBFloat16));
+  };
+  const RegisteredAllReduceGatedResidualNorm valid{
+      floats(kBFloat16Elements),
+      floats(kBFloat16Elements),
+      std::nullopt,
+      weight(),
+      weight(),
+      floats(kHidden),
+      floats(kHidden),
+      1e-8,
+      1e-5};
+  auto request = comm->registered_all_reduce(input, output, kHalfMiB);
+
+  EXPECT_CALL(*rcclx_mock_, registeredAllReduceExec(_, _, _, _, _, _, _, _))
+      .Times(0);
+  const auto run = [&](const auto& mutate) {
+    auto norm = valid;
+    mutate(norm);
+    request->all_reduce(input, ReduceOp::SUM, output, norm);
+  };
+  EXPECT_THROW(
+      run([&](auto& n) { n.residual_in = makeRegisteredTensor(); }),
+      c10::Error);
+  EXPECT_THROW(
+      run([&](auto& n) { n.residual_out = floats(kBFloat16Elements / 2); }),
+      c10::Error);
+  EXPECT_THROW(
+      run([&](auto& n) { n.router_out = makeRegisteredTensor(); }), c10::Error);
+  EXPECT_THROW(
+      run([&](auto& n) { n.pre_norm_weight = floats(kHidden); }), c10::Error);
+  EXPECT_THROW(
+      run([&](auto& n) { n.gate_beta = floats(kHidden - 1); }), c10::Error);
+  EXPECT_THROW(
+      run([&](auto& n) {
+        n.post_norm_weight =
+            at::empty({kHidden - 1}, at::TensorOptions().dtype(at::kBFloat16));
+      }),
+      c10::Error);
+  EXPECT_THROW(run([](auto& n) { n.gate_alpha = at::Tensor(); }), c10::Error);
+
+  request->close();
   comm->finalize();
 }
 

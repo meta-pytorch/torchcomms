@@ -437,6 +437,20 @@ class RegisteredAllReduceOptions:
 # Opaque handle type for persistent AllGather
 AllGatherPHandle = Any
 
+class RegisteredAllReduceGatedResidualNorm:
+    def __init__(
+        self,
+        residual_in: Any,
+        residual_out: Any,
+        post_norm_weight: Any,
+        pre_norm_weight: Any,
+        gate_alpha: Any,
+        gate_beta: Any,
+        post_norm_eps: float,
+        pre_norm_eps: float,
+        router_out: Any | None = None,
+    ) -> None: ...
+
 class RegisteredAllReduce:
     def all_reduce(
         self,
@@ -444,6 +458,7 @@ class RegisteredAllReduce:
         op: ReduceOp = ReduceOp.SUM,
         out: Any | None = None,
         registered_input: bool = True,
+        gated_residual_norm: RegisteredAllReduceGatedResidualNorm | None = None,
     ) -> None: ...
     def close(self) -> None: ...
     def finalize(self) -> None: ...

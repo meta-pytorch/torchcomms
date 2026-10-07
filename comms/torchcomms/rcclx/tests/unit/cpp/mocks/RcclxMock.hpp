@@ -308,6 +308,7 @@ class RcclxMock : public RcclxApi {
        size_t count,
        ncclDataType_t datatype,
        ncclRedOp_t op,
+       const RcclxGatedResidualNorm* norm,
        hipStream_t stream,
        void* request),
       (override));
