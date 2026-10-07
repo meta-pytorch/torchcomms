@@ -409,7 +409,10 @@ if configured_directory("TORCHCOMMS_PYTHON_BUILD_DIR") is not None:
 setup(
     name="torchcomms",
     version=PACKAGE_VERSION,
-    packages=find_packages("comms"),
+    packages=find_packages(
+        "comms",
+        exclude=("torchcomms.mccl", "torchcomms.mccl.*"),
+    ),
     package_dir={"": "comms"},
     package_data={
         "torchcomms": ["_build_info.json"],
