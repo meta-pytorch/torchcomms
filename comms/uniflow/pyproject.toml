@@ -16,7 +16,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "torchcomms-uniflow"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "UniFlow point-to-point transport, and its Python binding"
 readme = "python/README.md"
 requires-python = ">=3.10"
@@ -76,3 +76,6 @@ provider = "scikit_build_core.metadata.regex"
 field = "version"
 input = "VERSION"
 regex = "^(?P<value>.+?)\\s*$"
+
+[[tool.dynamic-metadata]]
+provider = { path = "packaging", module = "uniflow_metadata" }

@@ -129,6 +129,18 @@ if(UNIFLOW_GPU_PLATFORM STREQUAL HIP AND UNIFLOW_ENABLE_NVLINK)
   message(FATAL_ERROR
     "NVLink is available only with UNIFLOW_GPU_PLATFORM=CUDA.")
 endif()
+if(SKBUILD AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  if(CUDAToolkit_VERSION_MAJOR EQUAL 12)
+    set(_UNIFLOW_CUDA_RUNTIME_PACKAGE_DIR "nvidia/cuda_runtime/lib")
+  elseif(CUDAToolkit_VERSION_MAJOR EQUAL 13)
+    set(_UNIFLOW_CUDA_RUNTIME_PACKAGE_DIR "nvidia/cu13/lib")
+  else()
+    message(FATAL_ERROR
+      "No Python CUDA runtime package is defined for CUDA "
+      "${CUDAToolkit_VERSION_MAJOR}")
+  endif()
+endif()
+
 set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
 file(
@@ -590,6 +602,11 @@ target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
 
 if(UNIFLOW_LIB_TYPE STREQUAL SHARED)
   target_link_options(uniflow PRIVATE "LINKER:--no-undefined")
+endif()
+if(SKBUILD AND UNIFLOW_BUILD_SHARED_LIBS AND
+   UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+  set_target_properties(uniflow PROPERTIES INSTALL_RPATH
+    "\$ORIGIN/../../${_UNIFLOW_CUDA_RUNTIME_PACKAGE_DIR}")
 endif()
 
 if(UNIFLOW_BUILD_PYTHON)

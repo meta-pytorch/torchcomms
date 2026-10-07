@@ -20,6 +20,11 @@ if [[ "${package_cuda}" != ON && "${package_cuda}" != OFF ]]; then
   echo "UNIFLOW_PACKAGE_ENABLE_CUDA must be ON or OFF" >&2
   exit 1
 fi
+package_cuda_version="${UNIFLOW_CUDA_VERSION:-}"
+if [[ "${package_cuda}" == ON && ! "${package_cuda_version}" =~ ^(12|13)\.[0-9]+$ ]]; then
+  echo "UNIFLOW_CUDA_VERSION must name a supported CUDA version" >&2
+  exit 1
+fi
 if [[ "${package_cuda}" == ON ]]; then
   package_gpu_platform=CUDA
 else
@@ -83,9 +88,11 @@ run_package_test() (
 
 mkdir \
   "${work_dir}/python-only-wheel" \
+  "${work_dir}/python-only-wheel-repaired" \
   "${work_dir}/sdist" \
   "${work_dir}/unpacked" \
-  "${work_dir}/wheel"
+  "${work_dir}/wheel" \
+  "${work_dir}/wheel-repaired"
 
 CMAKE_ARGS="${package_cmake_args}" "${python}" -m build \
   --sdist \
@@ -120,26 +127,62 @@ CMAKE_ARGS="${package_cmake_args} -DUNIFLOW_INSTALL_CPP=OFF" \
   --outdir "${work_dir}/python-only-wheel" \
   "${unpacked_source}"
 
+if [[ "${package_cuda}" == ON ]]; then
+  raw_wheels=("${work_dir}"/wheel/torchcomms_uniflow-*.whl)
+  raw_python_only_wheels=(
+    "${work_dir}"/python-only-wheel/torchcomms_uniflow-*.whl)
+  if [[ ${#raw_wheels[@]} -ne 1 || ${#raw_python_only_wheels[@]} -ne 1 ]]; then
+    echo "Expected one raw SDK wheel and one raw Python-only wheel" >&2
+    exit 1
+  fi
+
+  auditwheel_args=(
+    --exclude libcuda.so.1
+    --exclude libcudart.so.12
+    --exclude libcudart.so.13
+    --exclude libnvidia-ml.so.1
+    --exclude libibverbs.so.1
+    --exclude librdmacm.so.1
+  )
+  "${python}" -m auditwheel repair \
+    "${auditwheel_args[@]}" \
+    --wheel-dir "${work_dir}/wheel-repaired" \
+    "${raw_wheels[0]}"
+  "${python}" -m auditwheel repair \
+    "${auditwheel_args[@]}" \
+    --wheel-dir "${work_dir}/python-only-wheel-repaired" \
+    "${raw_python_only_wheels[0]}"
+
+  wheel_dir="${work_dir}/wheel-repaired"
+  python_only_wheel_dir="${work_dir}/python-only-wheel-repaired"
+else
+  wheel_dir="${work_dir}/wheel"
+  python_only_wheel_dir="${work_dir}/python-only-wheel"
+fi
+
 mv "${unpacked_source}" "${work_dir}/source-hidden"
 build_consumer "${work_dir}/static-install" static
 build_consumer "${work_dir}/shared-install" shared
 
-wheels=("${work_dir}"/wheel/torchcomms_uniflow-*.whl)
+wheels=("${wheel_dir}"/torchcomms_uniflow-*.whl)
 python_only_wheels=(
-  "${work_dir}"/python-only-wheel/torchcomms_uniflow-*.whl)
+  "${python_only_wheel_dir}"/torchcomms_uniflow-*.whl)
 if [[ ${#wheels[@]} -ne 1 || ${#python_only_wheels[@]} -ne 1 ]]; then
   echo "Expected one SDK wheel and one Python-only wheel" >&2
   exit 1
 fi
 
 "${python}" - "${sdists[0]}" "${wheels[0]}" \
-  "${python_only_wheels[0]}" "${source_dir}" <<'PY'
+  "${python_only_wheels[0]}" "${source_dir}" "${package_cuda}" \
+  "${package_cuda_version}" <<'PY'
 import sys
 import tarfile
+from packaging.requirements import Requirement
 from pathlib import Path, PurePosixPath
 import zipfile
 
-sdist, wheel, python_only_wheel, source_dir = sys.argv[1:]
+sdist, wheel, python_only_wheel, source_dir, package_cuda, cuda_version = sys.argv[1:]
+expect_cuda = package_cuda == "ON"
 expected_version = (Path(source_dir) / "VERSION").read_text().strip()
 portable_tests = {
     "tests/py/__init__.py",
@@ -342,6 +385,31 @@ def inspect_wheel(filename: str, expect_sdk: bool) -> None:
                 ):
                     assert forbidden.encode() not in contents, (path, forbidden)
 
+        requirements = [
+            Requirement(line.removeprefix("Requires-Dist: "))
+            for line in metadata.splitlines()
+            if line.startswith("Requires-Dist: ")
+        ]
+        cuda_runtime_requirements = [
+            requirement
+            for requirement in requirements
+            if requirement.name.startswith("nvidia-cuda-runtime")
+        ]
+        if expect_cuda:
+            cuda_major = cuda_version.partition(".")[0]
+            expected_cuda_requirement = Requirement(
+                {
+                    "12": 'nvidia-cuda-runtime-cu12>=12.8,<13; platform_system == "Linux"',
+                    "13": 'nvidia-cuda-runtime>=13,<14; platform_system == "Linux"',
+                }[cuda_major]
+            )
+            assert cuda_runtime_requirements == [expected_cuda_requirement], (
+                cuda_runtime_requirements
+            )
+            assert "manylinux" in PurePosixPath(filename).name, filename
+        else:
+            assert not cuda_runtime_requirements, cuda_runtime_requirements
+
     required = {
         "uniflow/__init__.py",
         "uniflow/_build_config.py",
@@ -399,8 +467,7 @@ inspect_wheel(python_only_wheel, expect_sdk=False)
 PY
 
 venv_python="$(create_venv wheel-venv)"
-run_package_test "${venv_python}" -m pip install \
-  --no-deps "${wheels[0]}"
+run_package_test "${venv_python}" -m pip install "${wheels[0]}"
 run_package_test "${venv_python}" -m pip install "pytest>=7"
 run_package_test "${venv_python}" -m pytest --pyargs uniflow
 
@@ -412,6 +479,6 @@ build_consumer "${wheel_prefix}" wheel
 
 python_only_venv_python="$(create_venv python-only-venv)"
 run_package_test "${python_only_venv_python}" -m pip install \
-  --no-deps "${python_only_wheels[0]}"
+  "${python_only_wheels[0]}"
 run_package_test "${python_only_venv_python}" -m pip install "pytest>=7"
 run_package_test "${python_only_venv_python}" -m pytest --pyargs uniflow
