@@ -502,6 +502,8 @@ def _generate_lib_ops(lib: Any) -> None:  # noqa: C901
                                 orig_wrapped, FunctionalTensor
                             ) and isinstance(new_unwrapped, torch.Tensor):
                                 ctx.replace(orig_wrapped, new_unwrapped)
+                                ctx.commit_update(orig_wrapped)
+                                ctx.sync(orig_wrapped)
                             elif isinstance(orig_wrapped, (list, tuple)) and isinstance(
                                 new_unwrapped, (list, tuple)
                             ):
@@ -510,6 +512,8 @@ def _generate_lib_ops(lib: Any) -> None:  # noqa: C901
                                         nu, torch.Tensor
                                     ):
                                         ctx.replace(ow, nu)
+                                        ctx.commit_update(ow)
+                                        ctx.sync(ow)
 
                     return result
                     """

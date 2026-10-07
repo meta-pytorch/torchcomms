@@ -35,6 +35,88 @@ try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
 
+    def _register_sideeffect_lowering(base_op_name: str, schema) -> None:
+        """Register a _CollectiveKernel-based lowering for ops with no mutable tensor arg.
+
+        Builds a FixedLayout _CollectiveKernel when the op produces a real
+        tensor and a NoneLayout _CollectiveKernel otherwise.
+        """
+        from torch._inductor.virtualized import V
+
+        functional_op = getattr(torch.ops.torchcomms, base_op_name, None)
+        if functional_op is None:
+            return
+
+        def _sideeffect_lowering(*args):
+            logger.debug(f"Lowering side-effect-capable {base_op_name}")
+
+            with V.graph.fake_mode:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = _unpack_process_kernel(
+                    ir._CollectiveKernel.process_kernel(functional_op.default, *args)
+                )
+            assert not unbacked_bindings, f"{functional_op} {unbacked_bindings}"
+
+            if isinstance(example_output, torch.Tensor):
+                for tensor_arg in tensor_args:
+                    if not isinstance(tensor_arg, ir.TorchBindObject):
+                        tensor_arg.realize()
+                packed = ir._CollectiveKernel(
+                    ir._CollectiveKernel.tensor_to_layout(example_output),
+                    functional_op.default,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                )
+                packed.outputs = [packed]
+                return ir.TensorBox.create(packed)
+
+            device = None
+            for a in args:
+                if isinstance(a, ir.TensorBox):
+                    a.realize()
+                    if device is None:
+                        device = a.get_device()
+            if device is None:
+                device = V.graph.current_device
+            if device is None:
+                for graph_input in V.graph.graph_inputs.values():
+                    if isinstance(graph_input, ir.IRNode):
+                        try:
+                            device = graph_input.get_device()
+                        except Exception:
+                            device = None
+                        if device is not None:
+                            break
+            if device is None:
+                try:
+                    device = torch.device(
+                        torch.accelerator.current_accelerator().type,
+                        torch.accelerator.current_device_index(),
+                    )
+                except Exception:
+                    device = None
+            if device is None:
+                device = V.graph.get_current_device_or_throw()
+
+            ir._CollectiveKernel(
+                ir.NoneLayout(device=device),
+                functional_op.default,
+                tensor_args,
+                non_tensor_args,
+                unflatten_args,
+            )
+
+            return None
+
+        register_lowering(functional_op.default)(_sideeffect_lowering)
+        logger.info(f"Registered side-effect-capable lowering: {base_op_name}")
+
     def register_torchcomms_lowerings():
         from torchcomms.functional import collectives
 
@@ -53,6 +135,8 @@ try:  # noqa: C901
                     _register_with_reinplace_pass(base_op_name, schema)
                     _register_inplace_lowering(base_op_name, schema)
                     _register_functional_lowering(base_op_name, schema)
+                else:
+                    _register_sideeffect_lowering(base_op_name, schema)
 
             # Register lowering for functional wait_tensors
             _register_wait_tensors_lowering()
