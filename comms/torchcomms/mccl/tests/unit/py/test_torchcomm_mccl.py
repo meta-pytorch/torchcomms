@@ -43,7 +43,13 @@ class TestMcclBackend(unittest.TestCase):
     def test_c10d_registration_is_lazy(self) -> None:
         self.assertNotIn("torchcomms._comms_mccl", sys.modules)
         mccl_plugin = importlib.import_module("torchcomms.mccl")
-        self.assertNotIn("torchcomms._comms_mccl", sys.modules)
+        if mccl_plugin._BUILD_INFO_PATH.is_file():
+            # The installed companion must register with TorchComms when its
+            # entry point is loaded, which requires loading the native backend.
+            self.assertIn("torchcomms._comms_mccl", sys.modules)
+        else:
+            # Internal source-tree imports remain lazy until c10d registration.
+            self.assertNotIn("torchcomms._comms_mccl", sys.modules)
 
         process_group = MagicMock()
         process_group.bound_device_id = torch.device("cuda:3")

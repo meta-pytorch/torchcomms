@@ -1,5 +1,0 @@
-Metadata-Version: 2.1
-Name: torchcomms-mccl-fb
-Version: 0.1.0.dev0+fb
-Summary: TorchComms MCCL backend registration metadata
-Requires-Python: >=3.9

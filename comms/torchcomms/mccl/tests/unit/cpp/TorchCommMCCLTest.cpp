@@ -80,7 +80,7 @@ class TorchCommMCCLTest : public ::testing::Test {
     }
   }
 
-  torch::comms::ReconfigureOptions makeDefaultOpts(uint64_t uuid = 42) {
+  torch::comms::ReconfigureOptions makeDefaultOpts(int64_t uuid = 42) {
     torch::comms::ReconfigureOptions opts;
     opts.uuid = uuid;
     opts.handles = std::vector<torch::comms::InitHandle>{"url0", "url1"};
@@ -606,6 +606,7 @@ TEST_F(TorchCommMCCLTest, CpuBroadcastDoesNotQueryCudaGraphCaptureAndWaitsCpu) {
 }
 
 TEST_F(TorchCommMCCLTest, ReconfigureSuccessMarksInitialized) {
+  constexpr int64_t kUuid = int64_t{1} << 62;
   auto mccl = std::make_shared<TorchCommMCCL>(
       std::move(mock_comm_), 0, 2, std::make_shared<NiceMock<MockCudaApi>>());
 
@@ -615,13 +616,17 @@ TEST_F(TorchCommMCCLTest, ReconfigureSuccessMarksInitialized) {
       .WillRepeatedly(Return(
           std::optional<mccl::Result>(mccl::Result{.code = commSuccess})));
 
-  EXPECT_CALL(*mock_comm_ptr_, reconfigure(_))
+  EXPECT_CALL(
+      *mock_comm_ptr_,
+      reconfigure(::testing::Truly([](const ::mccl::InitOpts& opts) {
+        return opts.uuid == std::to_string(kUuid);
+      })))
       .WillOnce(Return(::testing::ByMove(std::move(mock_work))));
   EXPECT_CALL(*mock_comm_ptr_, getInitURL()).WillOnce(Return("url0"));
   EXPECT_CALL(*mock_comm_ptr_, getRankAssignment())
       .WillOnce(Return(mccl::RankAssignment({"url0", "url1"})));
 
-  torch::comms::ReconfigureOptions opts = makeDefaultOpts(42);
+  torch::comms::ReconfigureOptions opts = makeDefaultOpts(kUuid);
 
   mccl->reconfigure(opts);
 
@@ -629,7 +634,7 @@ TEST_F(TorchCommMCCLTest, ReconfigureSuccessMarksInitialized) {
   EXPECT_TRUE(mccl->isInitialized());
   EXPECT_EQ(mccl->getRank(), 0);
   EXPECT_EQ(mccl->getSize(), 2);
-  EXPECT_EQ(mccl->getUuid(), "42");
+  EXPECT_EQ(mccl->getUuid(), std::to_string(kUuid));
 }
 
 TEST_F(TorchCommMCCLTest, ReconfigureFailureDoesNotMarkInitialized) {
