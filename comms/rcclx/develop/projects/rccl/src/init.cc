@@ -78,6 +78,7 @@
 #include "meta/relay/sharded_relay_oneshot.h"
 #include "meta/relay/relay_control.h"
 #include "meta/relay/registered_allreduce.h"
+#include "meta/relay/registered_alltoall.h"
 #include "meta/relay/sharded_relay_lp_arena.h"
 // [/RCCL]
 
@@ -4040,7 +4041,15 @@ ncclResult_t ncclCommDestroy_impl(ncclComm_t comm) {
         comm->rank);
     return ncclInvalidUsage;
   }
+  if (rcclx::relay::registeredAllToAllCommHasLiveRequests(comm)) {
+    WARN(
+        "comm %p rank %d still owns registered all-to-all requests; finalize them before ncclCommDestroy",
+        comm,
+        comm->rank);
+    return ncclInvalidUsage;
+  }
   rcclx::relay::registeredAllReduceReleaseComm(comm);
+  rcclx::relay::registeredAllToAllReleaseComm(comm);
 
 #ifdef ENABLE_ROCSHMEM
   if (comm->enableRocshmem) {
@@ -4261,6 +4270,7 @@ ncclResult_t ncclCommAbort_impl(ncclComm_t comm) {
   // Ask anything that might still be running on the device to quit.
   NCCLCHECK(setCommAbortFlags(comm, 1));
   rcclx::relay::registeredAllReduceAbandonComm(comm);
+  rcclx::relay::registeredAllToAllAbandonComm(comm);
   comm->destroyFlag = 1;
   /* init thread must be joined before we destroy the comm,
    * and we should ignore the init error here. */
