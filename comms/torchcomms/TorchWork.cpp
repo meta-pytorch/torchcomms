@@ -1,12 +1,23 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
-#include <ATen/ATen.h>
 #include <ATen/core/ivalue.h> // @manual=//caffe2:ATen-core
 #include <c10/core/DeviceGuard.h> // @manual=//caffe2:c10
 
 namespace torch::comms {
+
+void TorchWork::runLifecycleHook(WorkHook& hook) noexcept {
+  try {
+    hook();
+  } catch (const std::exception& error) {
+    TC_LOG(ERROR) << "TorchWork lifecycle hook failed: " << error.what();
+  } catch (...) {
+    TC_LOG(ERROR)
+        << "TorchWork lifecycle hook failed with an unknown exception";
+  }
+}
 
 void TorchWork::markCompleted(
     c10::intrusive_ptr<c10::ivalue::Future> future_,

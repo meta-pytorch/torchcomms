@@ -1706,7 +1706,9 @@ class GlooRegistration {
  public:
   GlooRegistration() {
     TorchCommFactory::get().register_backend(
-        "gloo", []() { return std::make_shared<TorchCommGloo>(); });
+        "gloo",
+        []() { return std::make_shared<TorchCommGloo>(); },
+        TORCHCOMM_BACKEND_ABI_VERSION);
   }
 };
 

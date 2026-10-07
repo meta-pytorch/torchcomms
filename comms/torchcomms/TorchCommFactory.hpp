@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include <c10/core/Allocator.h>
@@ -31,6 +32,11 @@ class TorchCommFactory {
       const std::string& backend,
       const std::function<std::shared_ptr<TorchCommBackend>()>& factory);
 
+  void register_backend(
+      const std::string& backend,
+      const std::function<std::shared_ptr<TorchCommBackend>()>& factory,
+      std::string_view backendAbiVersion);
+
   // Allocator factory methods
   std::shared_ptr<c10::Allocator> get_allocator(const std::string& backend);
 
@@ -41,14 +47,18 @@ class TorchCommFactory {
   bool is_backend_registered(const std::string& backend) const;
 
  private:
+  using BackendFactory = std::function<std::shared_ptr<TorchCommBackend>()>;
+
+  struct BackendRegistration {
+    BackendFactory factory;
+    std::string abiVersion;
+  };
+
   std::shared_ptr<TorchCommBackend> create_generic_backend(
       const std::string& backend);
 
   mutable std::mutex mutex_;
-  std::unordered_map<
-      std::string,
-      std::function<std::shared_ptr<TorchCommBackend>()>>
-      backends_;
+  std::unordered_map<std::string, BackendRegistration> backends_;
   std::unordered_map<
       std::string,
       std::function<std::shared_ptr<c10::Allocator>()>>
