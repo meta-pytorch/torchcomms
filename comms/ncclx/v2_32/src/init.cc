@@ -47,6 +47,7 @@
 #include "tuning.h"
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/SkipDestroyUtil.h"
 #include "meta/wrapper/MetaFactory.h"
 
@@ -301,6 +302,20 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
   comm->destructorHead = dtor;
 }
 
+// [META] SlabAllocator's constructor throws when cuMem VMM is unavailable; report that as an NCCL error.
+static ncclResult_t ncclxCreateSlabAllocator(std::unique_ptr<ncclx::memory::SlabAllocator>& slab) {
+  try {
+    slab = std::make_unique<ncclx::memory::SlabAllocator>();
+  } catch (const ctran::utils::Exception& e) {
+    WARN("Failed to create slab allocator: %s", e.what());
+    return metaCommToNccl(e.result());
+  } catch (const std::bad_alloc&) {
+    WARN("Failed to allocate slab allocator");
+    return ncclSystemError;
+  }
+  return ncclSuccess;
+}
+
 // [META:PER_COMM_CONFIG] Release the canonical ncclx::Config owned by the comm.
 static void ncclxCommFree(ncclComm_t comm) {
   if (comm->config.ncclxConfig != nullptr) {
@@ -426,6 +441,11 @@ static ncclResult_t commFree(ncclComm_t comm) {
 
   // Release the shared NVLS MC group only after the registration cache is cleaned.
   NCCLCHECK(ncclNvlsFree(comm));
+
+  // [META] ncclComm is calloc'd and free()d, so destructors of its C++ members never run on their own. rings is
+  // otherwise released only once lazy setup has initialized every collective channel.
+  comm->slabAllocator.reset();
+  comm->rings.reset();
 
   // Destroy dynamic memory manager only after all device memory has been released.
   NCCLCHECK(ncclMemManagerDestroy(comm));
@@ -2266,8 +2286,12 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->logMetaData.rank = comm->rank;
   comm->logMetaData.nRanks = comm->nRanks;
 
-  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
-    comm->slabAllocator = std::make_unique<ncclx::memory::SlabAllocator>();
+  // [META] Comms that share resources, including ones that may lend them to split/shrink children later
+  // (shareResources is only set at split time), have channel metadata that outlives any single comm, so they keep
+  // upstream allocation.
+  if (NCCL_MEM_USE_SLAB_ALLOCATOR && comm->sharedRes->owner == comm && !comm->config.splitShare &&
+      !comm->config.shrinkShare) {
+    NCCLCHECKGOTO(ncclxCreateSlabAllocator(comm->slabAllocator), res, fail);
   }
   comm->channelMetadataOnHost =
       NCCL_CHANNEL_METADATA_LOCATION == NCCL_CHANNEL_METADATA_LOCATION::host ||
