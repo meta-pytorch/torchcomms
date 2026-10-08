@@ -10,8 +10,15 @@ on:
       - build_rccl.sh
       - comms/torchcomms/scripts/run_tests_integration_rccl_py.sh
       - comms/torchcomms/rccl/**
+  pull_request_target:
+    types: [labeled, synchronize]
+    paths:
+      - .github/workflows/build_test_rccl.yaml
+      - build_rccl.sh
+      - comms/torchcomms/scripts/run_tests_integration_rccl_py.sh
+      - comms/torchcomms/rccl/**
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -19,7 +26,32 @@ permissions:
       contents: read
 
 jobs:
+  clear-stale-export-trust:
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'synchronize' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'meta-exported')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Clear export trust after a fork update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr edit "${PR_NUMBER}" --remove-label meta-exported
+
   build:
+    # Fork PRs cannot obtain OIDC credentials on pull_request. Meta-exported
+    # forks run the base workflow after the exporter applies both trust labels.
+    # Updating the fork clears meta-exported, so it authorizes one head SHA.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'labeled' &&
+      github.event.label.name == 'meta-exported' && github.event.pull_request.head.repo.full_name != github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'CLA Signed') && contains(github.event.pull_request.labels.*.name, 'meta-exported'))
     strategy:
       fail-fast: false
       matrix:
@@ -37,8 +69,16 @@ jobs:
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       job-name: RCCL ROCm ${{ matrix.gpu-arch-version }}
+      ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.sha || github.sha }}
       script: |
         set -ex
+        expected_sha="${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.sha || github.sha }}"
+        actual_sha="$(git rev-parse HEAD)"
+        if [ "${actual_sha}" != "${expected_sha}" ]; then
+          echo "Checked out ${actual_sha}, expected ${expected_sha}" >&2
+          exit 1
+        fi
+
         # use faster libmamba solver
         conda config --set solver libmamba
 
