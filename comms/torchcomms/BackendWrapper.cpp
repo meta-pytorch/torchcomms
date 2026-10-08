@@ -5,11 +5,15 @@
 #include "comms/torchcomms/utils/Logging.hpp"
 
 #include <c10/core/DeviceGuard.h> // @manual=//caffe2:c10
+#include <c10/core/thread_pool.h> // @manual=//caffe2/c10:thread_pool
+#include <c10/util/Exception.h> // @manual=//caffe2:c10
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <string>
 
 namespace torch::comms {
 
@@ -220,10 +224,92 @@ void completeFutureOnce(
   if (claimed == nullptr) {
     return;
   }
-  if (!claimed->exchange(true) && !future->completed()) {
+  if (!claimed->exchange(true)) {
     future->markCompleted(c10::IValue(tensors));
   } else if (blockIfLost) {
     future->wait();
+  }
+}
+
+c10::ThreadPool& workWrapperCompletionExecutor() {
+  // Keep Future callbacks out of TorchWork transition locks. Tasks scheduled
+  // here must not synchronously wait for another task on this fixed-size pool.
+  static auto* const executor = new c10::ThreadPool(/*pool_size=*/2);
+  return *executor;
+}
+
+bool isTerminal(TorchWork::WorkStatus status) {
+  return status == TorchWork::WorkStatus::COMPLETED ||
+      status == TorchWork::WorkStatus::ERROR ||
+      status == TorchWork::WorkStatus::TIMEDOUT;
+}
+
+std::optional<c10d::WorkResult> toC10dWorkResult(TorchWork::WorkStatus status) {
+  switch (status) {
+    case TorchWork::WorkStatus::COMPLETED:
+      return c10d::WorkResult::SUCCESS;
+    case TorchWork::WorkStatus::TIMEDOUT:
+      return c10d::WorkResult::TIMEOUT;
+    case TorchWork::WorkStatus::ERROR:
+      return c10d::WorkResult::COMM_ERROR;
+    case TorchWork::WorkStatus::NOT_STARTED:
+    case TorchWork::WorkStatus::INPROGRESS:
+      return std::nullopt;
+  }
+  return c10d::WorkResult::UNKNOWN;
+}
+
+std::exception_ptr exceptionForStatus(TorchWork::WorkStatus status) {
+  if (status == TorchWork::WorkStatus::TIMEDOUT) {
+    return std::make_exception_ptr(
+        C10_BUILD_ERROR(DistBackendError, "TorchComms work timed out"));
+  }
+  if (status == TorchWork::WorkStatus::ERROR) {
+    return std::make_exception_ptr(
+        C10_BUILD_ERROR(DistBackendError, "TorchComms work failed"));
+  }
+  return nullptr;
+}
+
+void completeFutureResultOnce(
+    const std::shared_ptr<std::atomic<bool>>& claimed,
+    const c10::intrusive_ptr<c10::ivalue::Future>& future,
+    c10d::WorkResult result,
+    bool blockIfLost) {
+  if (!claimed->exchange(true)) {
+    future->markCompleted(c10::IValue(static_cast<uint8_t>(result)));
+  } else if (blockIfLost) {
+    future->wait();
+  }
+}
+
+bool completeFutureResultForStatus(
+    const std::shared_ptr<std::atomic<bool>>& claimed,
+    const c10::intrusive_ptr<c10::ivalue::Future>& future,
+    TorchWork::WorkStatus status,
+    bool blockIfLost) {
+  const auto result = toC10dWorkResult(status);
+  if (!result.has_value()) {
+    return false;
+  }
+  completeFutureResultOnce(claimed, future, *result, blockIfLost);
+  return true;
+}
+
+std::exception_ptr asDistBackendError(std::exception_ptr exception) {
+  try {
+    std::rethrow_exception(exception);
+  } catch (const c10::DistBackendError&) {
+    return exception;
+  } catch (const std::exception& error) {
+    return std::make_exception_ptr(C10_BUILD_ERROR(
+        DistBackendError,
+        std::string("TorchComms work synchronization failed: ") +
+            error.what()));
+  } catch (...) {
+    return std::make_exception_ptr(C10_BUILD_ERROR(
+        DistBackendError,
+        "TorchComms work synchronization failed with an unknown exception"));
   }
 }
 
@@ -234,8 +320,11 @@ WorkWrapper::WorkWrapper(
     std::vector<at::Tensor> outputTensors,
     bool hostBlocking)
     : work_(std::move(work)),
+      futureResultCompletionClaimed_(
+          std::make_shared<std::atomic<bool>>(false)),
       outputTensors_(std::move(outputTensors)),
       hostBlocking_(hostBlocking) {
+  TORCH_CHECK(work_ != nullptr, "TorchComms returned a null work object");
   std::vector<c10::Device> devices;
   // CPU needs to wait for the TorchWork to complete before marking Future
   // as completed
@@ -261,20 +350,116 @@ WorkWrapper::WorkWrapper(
     // For other device types (CPU) async: register end hook so
     // future completes when setStatus fires.
     futureCompletionClaimed_ = std::make_shared<std::atomic<bool>>(false);
+    auto* const executor = &workWrapperCompletionExecutor();
     work_->registerWorkEndHook([claimed = futureCompletionClaimed_,
                                 future = future_,
-                                tensors = outputTensors_]() {
-      completeFutureOnce(claimed, future, tensors, /*blockIfLost=*/false);
+                                tensors = outputTensors_,
+                                executor]() {
+      executor->run([claimed, future, tensors]() {
+        completeFutureOnce(claimed, future, tensors, /*blockIfLost=*/false);
+      });
     });
+  }
+
+  futureWorkResult_ =
+      c10::make_intrusive<c10::ivalue::Future>(c10::AnyEnumType::get());
+}
+
+bool WorkWrapper::isCompleted() {
+  return completedOutcome().has_value() || isTerminal(work_->status());
+}
+
+bool WorkWrapper::isSuccess() const {
+  if (const auto outcome = completedOutcome()) {
+    return *outcome == nullptr;
+  }
+  const auto status = work_->status();
+  return status != TorchWork::WorkStatus::ERROR &&
+      status != TorchWork::WorkStatus::TIMEDOUT;
+}
+
+std::exception_ptr WorkWrapper::exception() const {
+  if (const auto outcome = completedOutcome()) {
+    return *outcome;
+  }
+  return exceptionForStatus(work_->status());
+}
+
+std::optional<std::exception_ptr> WorkWrapper::completedOutcome() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!completed_) {
+    return std::nullopt;
+  }
+  return exception_;
+}
+
+void WorkWrapper::finishOnce(std::exception_ptr exception) {
+  // NOLINTNEXTLINE(facebook-hte-std::call_once)
+  std::call_once(finishOnceFlag_, [this, exception = std::move(exception)]() {
+    finish(exception);
+  });
+}
+
+void WorkWrapper::rethrowCompletedFailure() const {
+  if (const auto outcome = completedOutcome(); outcome && *outcome) {
+    std::rethrow_exception(*outcome);
   }
 }
 
+[[noreturn]] void WorkWrapper::handleSynchronizationFailure(
+    std::exception_ptr exception) {
+  const auto status = work_->status();
+  if (!completeFutureResultForStatus(
+          futureResultCompletionClaimed_,
+          futureWorkResult_,
+          status,
+          /*blockIfLost=*/true) &&
+      !work_->hasTerminalStatusProducer()) {
+    completeFutureResultOnce(
+        futureResultCompletionClaimed_,
+        futureWorkResult_,
+        c10d::WorkResult::COMM_ERROR,
+        /*blockIfLost=*/true);
+  }
+
+  const auto wrappedException = asDistBackendError(std::move(exception));
+  finishOnce(wrappedException);
+  if (const auto outcome = completedOutcome(); outcome && *outcome) {
+    std::rethrow_exception(*outcome);
+  }
+  std::rethrow_exception(wrappedException);
+}
+
+void WorkWrapper::completeSuccessfulSynchronization() {
+  completeFutureOnce(
+      futureCompletionClaimed_, future_, outputTensors_, /*blockIfLost=*/true);
+
+  const auto status = work_->status();
+  completeFutureResultForStatus(
+      futureResultCompletionClaimed_,
+      futureWorkResult_,
+      status,
+      /*blockIfLost=*/true);
+  if (auto statusException = exceptionForStatus(status)) {
+    finishOnce(statusException);
+    if (const auto outcome = completedOutcome(); outcome && *outcome) {
+      std::rethrow_exception(*outcome);
+    }
+    std::rethrow_exception(statusException);
+  }
+  if (status == TorchWork::WorkStatus::COMPLETED) {
+    finishOnce();
+  }
+
+  // Another waiter may have published an error while this caller established
+  // its stream dependency. Never report success after that failure wins.
+  rethrowCompletedFailure();
+}
+
 bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
+  rethrowCompletedFailure();
   if (timeout != kNoTimeout) {
-    auto ex = std::make_exception_ptr(
-        std::runtime_error("wait timeout not supported"));
-    finish(ex);
-    std::rethrow_exception(ex);
+    throw std::runtime_error("wait timeout not supported");
   }
   try {
     work_->wait();
@@ -282,33 +467,84 @@ bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
       work_->hostSynchronize();
     }
   } catch (...) {
-    finish(std::current_exception());
-    throw;
+    handleSynchronizationFailure(std::current_exception());
   }
-  completeFutureOnce(
-      futureCompletionClaimed_, future_, outputTensors_, /*blockIfLost=*/true);
-  finish();
+  completeSuccessfulSynchronization();
   return true;
 }
+
 void WorkWrapper::synchronize() {
+  rethrowCompletedFailure();
   try {
     work_->wait();
     if (hostBlocking_) {
       work_->hostSynchronize();
     }
   } catch (...) {
-    finish(std::current_exception());
-    throw;
+    handleSynchronizationFailure(std::current_exception());
   }
-  completeFutureOnce(
-      futureCompletionClaimed_, future_, outputTensors_, /*blockIfLost=*/true);
-  finish();
+  completeSuccessfulSynchronization();
 }
 std::vector<at::Tensor> WorkWrapper::result() {
   return outputTensors_;
 }
 c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFuture() {
   return future_;
+}
+
+void WorkWrapper::ensureFutureResultHook() {
+  // NOLINTNEXTLINE(facebook-hte-std::call_once)
+  std::call_once(futureResultHookOnce_, [this]() {
+    auto* const executor = &workWrapperCompletionExecutor();
+    auto weakWork = c10::weak_intrusive_ptr<TorchWork>(work_);
+    work_->registerWorkEndHook([claimed = futureResultCompletionClaimed_,
+                                future = futureWorkResult_,
+                                weakWork = std::move(weakWork),
+                                executor]() {
+      const auto work = weakWork.lock();
+      if (!work) {
+        return;
+      }
+      const auto status = work->status();
+      if (!isTerminal(status)) {
+        return;
+      }
+      executor->run([claimed, future, status]() {
+        completeFutureResultForStatus(
+            claimed, future, status, /*blockIfLost=*/false);
+      });
+    });
+  });
+}
+
+c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFutureResult() {
+  if (futureWorkResult_->completed()) {
+    return futureWorkResult_;
+  }
+
+  const auto initialStatus = work_->status();
+  if (isTerminal(initialStatus)) {
+    completeFutureResultForStatus(
+        futureResultCompletionClaimed_,
+        futureWorkResult_,
+        initialStatus,
+        /*blockIfLost=*/true);
+    return futureWorkResult_;
+  }
+
+  TORCH_CHECK(
+      work_->hasTerminalStatusProducer(),
+      "getFutureResult() is unsupported for pending TorchComms work without an autonomous one-shot terminal-status producer");
+  ensureFutureResultHook();
+
+  // Cover a terminal transition racing with hook installation. TorchWork's
+  // registration contract guarantees that the hook also runs at most once.
+  completeFutureResultForStatus(
+      futureResultCompletionClaimed_,
+      futureWorkResult_,
+      work_->status(),
+      /*blockIfLost=*/true);
+  return futureWorkResult_;
 }
 
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)

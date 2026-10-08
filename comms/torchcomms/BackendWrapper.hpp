@@ -15,7 +15,9 @@
 #include "comms/torchcomms/TorchWork.hpp"
 
 #include <atomic>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 namespace torch::comms {
@@ -28,16 +30,33 @@ class WorkWrapper : public c10d::Work {
       bool hostBlocking = false);
   ~WorkWrapper() override = default;
 
+  bool isCompleted() override;
+  bool isSuccess() const override;
+  std::exception_ptr exception() const override;
   void synchronize() override;
   bool wait(std::chrono::milliseconds timeout) override;
   std::vector<at::Tensor> result() override;
   c10::intrusive_ptr<c10::ivalue::Future> getFuture() override;
+  c10::intrusive_ptr<c10::ivalue::Future> getFutureResult() override;
 
  private:
   friend class BackendWrapper;
+  std::optional<std::exception_ptr> completedOutcome() const;
+  void finishOnce(std::exception_ptr exception = nullptr);
+  void rethrowCompletedFailure() const;
+  [[noreturn]] void handleSynchronizationFailure(std::exception_ptr exception);
+  void completeSuccessfulSynchronization();
+  void ensureFutureResultHook();
+
   c10::intrusive_ptr<TorchWork> work_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
   std::shared_ptr<std::atomic<bool>> futureCompletionClaimed_;
+  c10::intrusive_ptr<c10::ivalue::Future> futureWorkResult_;
+  std::shared_ptr<std::atomic<bool>> futureResultCompletionClaimed_;
+  // NOLINTNEXTLINE(facebook-hte-std::once_flag)
+  std::once_flag finishOnceFlag_;
+  // NOLINTNEXTLINE(facebook-hte-std::once_flag)
+  std::once_flag futureResultHookOnce_;
   std::vector<at::Tensor> outputTensors_;
   // When set (synchronous barrier), wait()/synchronize() also host-block via
   // work_->hostSynchronize() after the stream-ordered wait().
