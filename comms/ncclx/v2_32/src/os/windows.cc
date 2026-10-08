@@ -271,6 +271,36 @@ fail:
   goto exit;
 }
 
+ncclResult_t ncclOsSocketSetNetworkOptions(struct ncclSocket* sock) {
+  ncclResult_t ret = ncclSuccess;
+  if (!ncclOsSocketIsValid(sock)) {
+    WARN("ncclOsSocketSetNetworkOptions: invalid socket");
+    return ncclInvalidArgument;
+  }
+  if (sock->bindToDevice) {
+    WARN("NCCL_CLIENT_SOCKET_IFNAME is not supported on Windows");
+    return ncclInvalidUsage;
+  }
+  if (sock->tosConfig != -1) {
+    if (sock->addr.sa.sa_family == AF_INET6) {
+#ifdef IPV6_TCLASS
+      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, IPPROTO_IPV6, IPV6_TCLASS, (char*)&sock->tosConfig, sizeof(int)),
+                   "setsockopt IPV6_TCLASS", ret, fail);
+#else
+      WARN("IPV6_TCLASS is not supported by this Windows SDK");
+      return ncclInvalidUsage;
+#endif
+    } else {
+      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, IPPROTO_IP, IP_TOS, (char*)&sock->tosConfig, sizeof(int)),
+                   "setsockopt IP_TOS", ret, fail);
+    }
+  }
+exit:
+  return ret;
+fail:
+  goto exit;
+}
+
 void ncclOsSocketResetAccept(struct ncclSocket* sock) {
   // Close the accepted peer and return to listening for another connection (see socketFinalizeAccept logging).
   (void)closesocket(sock->socketDescriptor);
@@ -282,6 +312,8 @@ void ncclOsSocketResetAccept(struct ncclSocket* sock) {
 ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
   ncclResult_t ret = ncclSuccess;
   SOCKET newSocket = INVALID_SOCKET;
+  const SOCKET oldSocket = sock->socketDescriptor;
+  const int oldSocketBlockingMode = sock->socketBlockingMode;
 
   newSocket = socket(sock->addr.sa.sa_family, SOCK_STREAM, 0);
   if (newSocket == INVALID_SOCKET) {
@@ -291,16 +323,21 @@ ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
     goto cleanup;
   }
 
-  // if socket is valid, close it and replace with new socket
-  if (ncclOsSocketIsValid(sock)) {
-    (void)closesocket(sock->socketDescriptor);
-  }
+  // Configure the replacement before installing it so a setup failure leaves the old descriptor untouched.
   sock->socketDescriptor = newSocket;
-  NCCLCHECKGOTO(ncclOsSocketSetFlags(sock), ret, exit);
+  NCCLCHECKGOTO(ncclOsSocketSetFlags(sock), ret, rollback);
+  NCCLCHECKGOTO(ncclOsSocketSetNetworkOptions(sock), ret, rollback);
+
+  if (ncclOsSocketDescriptorIsValid(oldSocket)) {
+    (void)closesocket(oldSocket);
+  }
+  newSocket = INVALID_SOCKET;
 exit:
   return ret;
+rollback:
+  sock->socketDescriptor = oldSocket;
+  sock->socketBlockingMode = oldSocketBlockingMode;
 cleanup:
-  // cleanup socket, leave sock->socketDescriptor untouched
   if (newSocket != INVALID_SOCKET) {
     (void)closesocket(newSocket);
   }

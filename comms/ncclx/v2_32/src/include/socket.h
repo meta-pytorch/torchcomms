@@ -27,6 +27,8 @@
 #define MAX_IF_NAME_SIZE 16
 #elif NCCL_OS_WINDOWS
 #define MAX_IF_NAME_SIZE 64
+#else
+#define MAX_IF_NAME_SIZE 64
 #endif
 #if defined(__CUDA_ARCH__) || (!defined(NCCL_OS_WINDOWS) && !defined(NCCL_OS_LINUX))
 /* Device compilation or stub build (no OS): no system socket headers; use placeholder for union size. */
@@ -103,6 +105,9 @@ struct ncclSocket {
   int customRetry;
   int finalizeCounter; // Used to keep track of initial handshake for async sockets.
   char finalizeBuffer[NCCL_SOCKET_PLAIN_HELLO_BYTES]; // Used to keep track of initial handshake for async sockets.
+  char localIfName[MAX_IF_NAME_SIZE];
+  int bindToDevice;
+  int tosConfig;
   struct ncclSocketCrypto* crypto;
 #ifdef NCCL_OS_WINDOWS
   int socketBlockingMode; // 0 - blocking mode; 1 - non-blocking mode
@@ -135,7 +140,7 @@ void ncclSocketMove(struct ncclSocket* dst, struct ncclSocket* src);
 ncclResult_t ncclSocketListen(struct ncclSocket* sock);
 ncclResult_t ncclSocketGetAddr(struct ncclSocket* sock, union ncclSocketAddress* addr);
 // Connect to sock->addr. sock->socketDescriptor is set after a successful call.
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock);
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName = nullptr);
 // Return socket connection state.
 ncclResult_t ncclSocketReady(struct ncclSocket* sock, int* running);
 // Accept an incoming connection from listenSock->socketDescriptor and keep the file descriptor in
