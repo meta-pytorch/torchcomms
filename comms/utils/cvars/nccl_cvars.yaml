@@ -3723,14 +3723,6 @@ cvars:
      For example, setting MCCL_SCUBA_LOG_LEVEL=HIGH means only HIGH and
      CRITICAL priority logs will be forwarded to Scuba.
 
- - name        : MCCL_CTRAN_GPE_PROFILING_LOGGING
-   type        : bool
-   default     : true
-   description : |-
-     Enable construction of the MCCL GPE profiler reporter. When enabled,
-     the reporter can write GPE per-tracepoint rows to mccl_operation_trace
-     with mcclop="GPE_PROFILING". This does not control the CTRAN algorithm
-     profiler.
 
  - name        : MCCL_FORCE_SMALL_MSG_AR_RING
    type        : bool
@@ -3744,29 +3736,7 @@ cvars:
      are reduced independently across ranks and discarded. Default: false
      (small messages fall back to ctdirect as before).
 
- - name        : MCCL_FILTER_PROFILER_LOGGING_BY_RANKS
-   type        : stringlist
-   default     : "0"
-   description : |-
-     Comma-separated list of global ranks allowed to write profiler
-     operation data to filter logs (mccl_operation_trace). This filter applies
-     to algorithm profiler construction and healthy GPE profiler rows; aborted
-     GPE rows bypass it. Other log types are not affected. When this list is
-     non-empty, only the specified ranks will have their profiler samples
-     written; all other ranks are silently skipped.
-     Default: "0" (only rank 0 logs). Set to an empty string to allow
-     all ranks to log.
 
- - name        : MCCL_PROFILER_STEP_LOGGING_INTERVAL
-   type        : int
-   default     : 113
-   description : |-
-     Controls step-based profiler logging at the MCCL level. When the
-     training step (from AllReduceOpts kvPairs["step"]) is a multiple of this
-     interval, all allreduce profiler data for that step is logged,
-     bypassing the per-op NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT filter.
-     Rank filtering (MCCL_FILTER_PROFILER_LOGGING_BY_RANKS) still applies.
-     Set to 0 or negative to disable step-based logging.
 
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
