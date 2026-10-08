@@ -1190,27 +1190,55 @@ ncclResult_t pncclRegisteredAllReduceInit(
     ncclComm_t comm, void** request);
 /*! @endcond */
 
+/*! @brief      Optional gated-residual-norm epilogue for @ref ncclRegisteredAllReduceExec.
+    @details    The reduced BF16 tensor is viewed as rows of hiddenSize elements. For every row:
+                  normed      = bf16(reduced * rsqrt(mean(reduced^2) + postNormEpsilon) * postNormWeight)
+                  residualOut = gateAlpha * residualIn + gateBeta * normed           (FP32)
+                  recvbuff    = bf16(p * rsqrt(mean(p^2) + preNormEpsilon) * preNormWeight),
+                                where p = bf16(residualOut)
+                  routerOut   = recvbuff widened to FP32 (optional)
+                Row sums use a fixed reduction order and FP32 multiply-adds are fused only where
+                the formulas above show them, so results are reproducible bit for bit. All buffers
+                are rank-local and 16-byte aligned; residualOut may alias residualIn. */
+typedef struct {
+  const float* residualIn;     /*!< [in] count FP32 residual-stream elements */
+  float* residualOut;          /*!< [out] count FP32 updated residual-stream elements */
+  float* routerOut;            /*!< [out] count FP32 copies of recvbuff, or NULL */
+  const void* postNormWeight;  /*!< [in] hiddenSize BF16 post-norm weights */
+  const void* preNormWeight;   /*!< [in] hiddenSize BF16 pre-norm weights */
+  const float* gateAlpha;      /*!< [in] hiddenSize FP32 residual-stream coefficients */
+  const float* gateBeta;       /*!< [in] hiddenSize FP32 branch coefficients */
+  size_t hiddenSize;           /*!< Elements per row */
+  float postNormEpsilon;       /*!< Post-norm epsilon */
+  float preNormEpsilon;        /*!< Pre-norm epsilon */
+} ncclRegisteredAllReduceGatedResidualNorm;
+
 /*! @brief      Execute a registered all-reduce request on stream.
     @details    sendbuff and recvbuff must exactly match the pointers supplied to Init. Every rank
                 must execute the same count sequence and graph replay count/order, with all calls
                 for a request ordered on one stream. Supports BF16 SUM at any payload that is a
                 positive multiple of 16 bytes within the registered capacity, reduced in rank
-                order; payload sizes may be interleaved on one request. Unsupported combinations
-                fail before launch.
+                order; unsupported combinations fail before launch. With norm (four ranks only),
+                recvbuff receives the epilogue's normalized rows instead of the plain sum; the
+                supported shape is 64 rows of 8192 elements (1 MiB). Payload sizes, and plain and
+                epilogue executions, may be interleaved on one request.
     @param[in]  sendbuff   Fixed input buffer supplied to Init
     @param[out] recvbuff   Fixed output buffer supplied to Init
     @param[in]  count      Element count for datatype
     @param[in]  datatype   Element datatype
     @param[in]  op         Reduction operation
+    @param[in]  norm       Optional gated-residual-norm epilogue, or NULL for a plain all-reduce
     @param[in]  stream     HIP stream for execution
     @param[in]  request    Opaque request handle returned by Init */
 ncclResult_t  ncclRegisteredAllReduceExec(
     const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request);
+    ncclDataType_t datatype, ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm, hipStream_t stream, void* request);
 /*! @cond       include_hidden */
 ncclResult_t pncclRegisteredAllReduceExec(
     const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request);
+    ncclDataType_t datatype, ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm, hipStream_t stream, void* request);
 /*! @endcond */
 
 /*! @brief      Finalize and destroy a registered all-reduce request.

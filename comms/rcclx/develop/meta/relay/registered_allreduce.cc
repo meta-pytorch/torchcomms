@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -54,12 +55,99 @@ bool isAligned16(const void* ptr) {
   return (reinterpret_cast<uintptr_t>(ptr) & 15u) == 0;
 }
 
+struct ByteRange {
+  const void* begin;
+  size_t bytes;
+};
+
+bool overlaps(const ByteRange& first, const ByteRange& second) {
+  const auto a = reinterpret_cast<uintptr_t>(first.begin);
+  const auto b = reinterpret_cast<uintptr_t>(second.begin);
+  return a < b + second.bytes && b < a + first.bytes;
+}
+
 bool validCapacity(size_t capacityBytes) {
   return capacityBytes > 0 && capacityBytes % 16 == 0;
 }
 
 bool supportedComm(ncclComm_t comm) {
   return comm != nullptr && isRegisteredAllReduceRankCount(comm->nRanks);
+}
+
+bool validEpsilon(float epsilon) {
+  return std::isfinite(epsilon) && epsilon >= 0.0f;
+}
+
+// Validates the optional gated-residual-norm epilogue. Every written buffer
+// (output, residualOut, routerOut) must not overlap any other operand, except
+// that residualOut may alias residualIn exactly.
+ncclResult_t toGatedResidualNormArgs(
+    const void* input,
+    const void* output,
+    size_t count,
+    const ncclRegisteredAllReduceGatedResidualNorm& norm,
+    RegisteredAllReduceGatedResidualNormArgs& args) {
+  constexpr size_t kNormCount = static_cast<size_t>(kRegisteredAllReduceRows) *
+      kRegisteredAllReduceNormHidden;
+  if (count != kNormCount ||
+      norm.hiddenSize != kRegisteredAllReduceNormHidden) {
+    return ncclInvalidArgument;
+  }
+  if (norm.residualIn == nullptr || norm.residualOut == nullptr ||
+      norm.postNormWeight == nullptr || norm.preNormWeight == nullptr ||
+      norm.gateAlpha == nullptr || norm.gateBeta == nullptr) {
+    return ncclInvalidArgument;
+  }
+  if (!isAligned16(norm.residualIn) || !isAligned16(norm.residualOut) ||
+      !isAligned16(norm.routerOut) || !isAligned16(norm.postNormWeight) ||
+      !isAligned16(norm.preNormWeight) || !isAligned16(norm.gateAlpha) ||
+      !isAligned16(norm.gateBeta)) {
+    return ncclInvalidArgument;
+  }
+  if (!validEpsilon(norm.postNormEpsilon) ||
+      !validEpsilon(norm.preNormEpsilon)) {
+    return ncclInvalidArgument;
+  }
+  const size_t bf16Bytes = count * sizeof(__nv_bfloat16);
+  const size_t floatBytes = count * sizeof(float);
+  const size_t hidden = norm.hiddenSize;
+  const ByteRange outputRange{output, bf16Bytes};
+  const ByteRange residualOutRange{norm.residualOut, floatBytes};
+  const ByteRange routerRange{norm.routerOut, floatBytes};
+  const ByteRange reads[] = {
+      {input, bf16Bytes},
+      {norm.residualIn, floatBytes},
+      {norm.postNormWeight, hidden * sizeof(__nv_bfloat16)},
+      {norm.preNormWeight, hidden * sizeof(__nv_bfloat16)},
+      {norm.gateAlpha, hidden * sizeof(float)},
+      {norm.gateBeta, hidden * sizeof(float)},
+  };
+  const bool residualInPlace = norm.residualOut == norm.residualIn;
+  for (size_t i = 0; i < std::size(reads); ++i) {
+    const bool isResidualIn = i == 1;
+    if (overlaps(outputRange, reads[i]) ||
+        (norm.routerOut != nullptr && overlaps(routerRange, reads[i])) ||
+        (!(isResidualIn && residualInPlace) &&
+         overlaps(residualOutRange, reads[i]))) {
+      return ncclInvalidArgument;
+    }
+  }
+  if (overlaps(outputRange, residualOutRange) ||
+      (norm.routerOut != nullptr &&
+       (overlaps(routerRange, outputRange) ||
+        overlaps(routerRange, residualOutRange)))) {
+    return ncclInvalidArgument;
+  }
+  args.residualIn = norm.residualIn;
+  args.residualOut = norm.residualOut;
+  args.routerOut = norm.routerOut;
+  args.postNormWeight = static_cast<const __nv_bfloat16*>(norm.postNormWeight);
+  args.preNormWeight = static_cast<const __nv_bfloat16*>(norm.preNormWeight);
+  args.gateAlpha = norm.gateAlpha;
+  args.gateBeta = norm.gateBeta;
+  args.postNormEpsilon = norm.postNormEpsilon;
+  args.preNormEpsilon = norm.preNormEpsilon;
+  return ncclSuccess;
 }
 
 ncclResult_t hipToNccl(hipError_t result, const char* what) {
@@ -249,7 +337,7 @@ ncclResult_t rejectActiveCapture(hipStream_t stream) {
 }
 
 ncclResult_t collectPublicResult(ncclComm_t comm, ncclResult_t localResult) {
-  std::array<uint32_t, kRegisteredAllReduceRanks> results{};
+  std::vector<uint32_t> results(comm->nRanks, 0);
   results[comm->rank] = static_cast<uint32_t>(localResult);
   const ncclResult_t gatherResult =
       bootstrapAllGather(comm->bootstrap, results.data(), sizeof(uint32_t));
@@ -898,6 +986,7 @@ ncclResult_t registeredAllReduceExecute(
     size_t count,
     ncclDataType_t datatype,
     ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm,
     hipStream_t stream) {
   if (request == nullptr || !request->initialized || input == nullptr ||
       output == nullptr) {
@@ -920,9 +1009,20 @@ ncclResult_t registeredAllReduceExecute(
       !validCapacity(count * sizeof(__nv_bfloat16))) {
     return ncclInvalidArgument;
   }
+  if (norm != nullptr && request->nRanks != kRegisteredAllReduceRanks) {
+    return ncclInvalidArgument;
+  }
   const size_t bytes = count * sizeof(__nv_bfloat16);
   if (bytes > request->capacityBytes || bytes > request->peerMinCapacityBytes) {
     return ncclInvalidArgument;
+  }
+  RegisteredAllReduceGatedResidualNormArgs normArgs{};
+  if (norm != nullptr) {
+    const ncclResult_t normResult =
+        toGatedResidualNormArgs(input, output, count, *norm, normArgs);
+    if (normResult != ncclSuccess) {
+      return normResult;
+    }
   }
 
   return hipToNccl(
@@ -932,6 +1032,7 @@ ncclResult_t registeredAllReduceExecute(
           request->stateTable,
           request->rank,
           count,
+          norm == nullptr ? nullptr : &normArgs,
           stream,
           request->nRanks),
       "registered all-reduce kernel launch");
@@ -1058,6 +1159,7 @@ ncclResult_t registeredAllReducePublicExec(
     size_t count,
     ncclDataType_t datatype,
     ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm,
     hipStream_t stream,
     void* request) {
   std::lock_guard<std::mutex> lock(publicRegistryMutex());
@@ -1067,7 +1169,7 @@ ncclResult_t registeredAllReducePublicExec(
     return ncclInvalidArgument;
   }
   return registeredAllReduceExecute(
-      entry->request, sendbuff, recvbuff, count, datatype, op, stream);
+      entry->request, sendbuff, recvbuff, count, datatype, op, norm, stream);
 }
 
 ncclResult_t registeredAllReducePublicFinalize(

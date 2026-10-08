@@ -256,6 +256,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
             countForBytes(bytes),
             ncclBfloat16,
             ncclSum,
+            nullptr,
             stream,
             request),
         ncclSuccess);
@@ -330,6 +331,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
           countForBytes(bytes),
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           request);
       if (captured != ncclSuccess) {
@@ -485,6 +487,7 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB),
           ncclFloat32,
           ncclSum,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
@@ -495,6 +498,7 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB),
           ncclBfloat16,
           ncclProd,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
@@ -505,6 +509,7 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB) - 1,
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
@@ -515,6 +520,7 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB),
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
@@ -525,6 +531,7 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB),
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
@@ -535,6 +542,7 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB),
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
@@ -545,10 +553,101 @@ TEST_F(RegisteredAllReduceTest, InvalidExecArgumentsRejected) {
           countForBytes(kHalfMiB),
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           nullptr),
       ncclInvalidArgument);
 
+  finalizeRequest();
+}
+
+TEST_F(RegisteredAllReduceTest, PublicExecForwardsGatedResidualNorm) {
+  if (!isSupportedTopology() || numRanks != kMaxRanks) {
+    GTEST_SKIP() << "Test requires the four-rank registered topology";
+  }
+  createRequest();
+  constexpr size_t kRows = 64;
+  constexpr size_t kHidden = 8192;
+  constexpr size_t kCount = kRows * kHidden;
+  float* residualIn = nullptr;
+  float* residualOut = nullptr;
+  uint16_t* weights = nullptr;
+  float* gates = nullptr;
+  HIPCHECK_TEST(hipMalloc(&residualIn, kCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&residualOut, kCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&weights, 2 * kHidden * sizeof(uint16_t)));
+  HIPCHECK_TEST(hipMalloc(&gates, 2 * kHidden * sizeof(float)));
+  HIPCHECK_TEST(hipMemsetAsync(residualIn, 0, kCount * sizeof(float), stream));
+  const std::vector<uint16_t> oneBf16(2 * kHidden, 0x3f80);
+  const std::vector<float> oneFloat(2 * kHidden, 1.0f);
+  HIPCHECK_TEST(hipMemcpyAsync(
+      weights,
+      oneBf16.data(),
+      2 * kHidden * sizeof(uint16_t),
+      hipMemcpyHostToDevice,
+      stream));
+  HIPCHECK_TEST(hipMemcpyAsync(
+      gates,
+      oneFloat.data(),
+      2 * kHidden * sizeof(float),
+      hipMemcpyHostToDevice,
+      stream));
+
+  ncclRegisteredAllReduceGatedResidualNorm norm{};
+  norm.residualIn = residualIn;
+  norm.residualOut = residualOut;
+  norm.postNormWeight = weights;
+  norm.preNormWeight = weights + kHidden;
+  norm.gateAlpha = gates;
+  norm.gateBeta = gates + kHidden;
+  norm.hiddenSize = kHidden;
+  norm.postNormEpsilon = 0.0f;
+  norm.preNormEpsilon = 0.0f;
+
+  auto invalid = norm;
+  invalid.hiddenSize = kHidden / 2;
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          kCount,
+          ncclBfloat16,
+          ncclSum,
+          &invalid,
+          stream,
+          request),
+      ncclInvalidArgument);
+
+  // Every rank contributes 1.0: the reduced rows are 4.0 everywhere, so with
+  // unit weights and gates both norms map every element to 1.0.
+  const std::vector<uint16_t> ones(kCount, 0x3f80);
+  HIPCHECK_TEST(hipMemcpyAsync(
+      input,
+      ones.data(),
+      kCount * sizeof(uint16_t),
+      hipMemcpyHostToDevice,
+      stream));
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input, output, kCount, ncclBfloat16, ncclSum, &norm, stream, request),
+      ncclSuccess);
+  syncStream("public epilogue execution");
+  std::vector<uint16_t> normed(kCount);
+  std::vector<float> residual(kCount);
+  HIPCHECK_TEST(hipMemcpy(
+      normed.data(), output, kCount * sizeof(uint16_t), hipMemcpyDeviceToHost));
+  HIPCHECK_TEST(hipMemcpy(
+      residual.data(),
+      residualOut,
+      kCount * sizeof(float),
+      hipMemcpyDeviceToHost));
+  EXPECT_TRUE(
+      allVote(normed == ones && residual == std::vector<float>(kCount, 1.0f)));
+
+  HIPEXPECT_TEST(hipFree(gates));
+  HIPEXPECT_TEST(hipFree(weights));
+  HIPEXPECT_TEST(hipFree(residualOut));
+  HIPEXPECT_TEST(hipFree(residualIn));
   finalizeRequest();
 }
 
@@ -771,6 +870,33 @@ TEST_F(RegisteredAllReduceTest, RepeatedCreateUseFinalizeCleansResources) {
   }
 }
 
+TEST_F(RegisteredAllReduceTest, GatedResidualNormRejectedOnTwoRanks) {
+  if (!isSupportedTopology() || numRanks != 2) {
+    GTEST_SKIP() << "Test requires the two-rank registered topology";
+  }
+  createRequest();
+  ncclRegisteredAllReduceGatedResidualNorm norm{};
+  norm.residualIn = reinterpret_cast<const float*>(snapshotA);
+  norm.residualOut = reinterpret_cast<float*>(snapshotB);
+  norm.postNormWeight = snapshotA;
+  norm.preNormWeight = snapshotA;
+  norm.gateAlpha = reinterpret_cast<const float*>(snapshotA);
+  norm.gateBeta = reinterpret_cast<const float*>(snapshotA);
+  norm.hiddenSize = 8192;
+  EXPECT_EQ(
+      ncclRegisteredAllReduceExec(
+          input,
+          output,
+          countForBytes(kOneMiB),
+          ncclBfloat16,
+          ncclSum,
+          &norm,
+          stream,
+          request),
+      ncclInvalidArgument);
+  finalizeRequest();
+}
+
 // Decode-sized payloads (hidden 4608 at batch 1, 4, 8, 32, 64), the smallest
 // payload, and sizes on either side of the dedicated four-rank kernels.
 constexpr size_t kAlignedSizes[] = {
@@ -879,6 +1005,7 @@ TEST_F(RegisteredAllReduceTest, SmallCapacityBoundsPayloads) {
           countForBytes(2 * kCapacity),
           ncclBfloat16,
           ncclSum,
+          nullptr,
           stream,
           request),
       ncclInvalidArgument);
