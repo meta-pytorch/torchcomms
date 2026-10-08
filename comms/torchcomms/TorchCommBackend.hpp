@@ -28,7 +28,8 @@ inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.5";
 //   output       = bf16(p * rsqrt(mean(p^2) + pre_norm_eps) * pre_norm_weight),
 //                  p = bf16(residual_out)
 //   router_out   = output widened to fp32 (optional)
-// residual_out may alias residual_in.
+// residual_out may alias residual_in. post_norm_weight may be undefined, which
+// omits that factor; the hidden size is pre_norm_weight's length.
 struct RegisteredAllReduceGatedResidualNorm {
   at::Tensor residual_in;
   at::Tensor residual_out;

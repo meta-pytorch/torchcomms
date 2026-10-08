@@ -2876,7 +2876,7 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
           numel,
           " elements on the registered input device");
     };
-    const int64_t hidden = norm.post_norm_weight.numel();
+    const int64_t hidden = norm.pre_norm_weight.numel();
     TORCH_CHECK(
         hidden > 0 && input_.numel() % hidden == 0,
         "RegisteredAllReduce gated residual norm weights must divide the "
@@ -2886,11 +2886,13 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
     if (norm.router_out.has_value()) {
       checkTensor(*norm.router_out, at::kFloat, input_.numel(), "router_out");
     }
-    checkTensor(
-        norm.post_norm_weight,
-        input_.scalar_type(),
-        hidden,
-        "post_norm_weight");
+    if (norm.post_norm_weight.defined()) {
+      checkTensor(
+          norm.post_norm_weight,
+          input_.scalar_type(),
+          hidden,
+          "post_norm_weight");
+    }
     checkTensor(
         norm.pre_norm_weight, input_.scalar_type(), hidden, "pre_norm_weight");
     checkTensor(norm.gate_alpha, at::kFloat, hidden, "gate_alpha");
@@ -2901,7 +2903,9 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
     converted.routerOut = norm.router_out.has_value()
         ? norm.router_out->data_ptr<float>()
         : nullptr;
-    converted.postNormWeight = norm.post_norm_weight.data_ptr();
+    converted.postNormWeight = norm.post_norm_weight.defined()
+        ? norm.post_norm_weight.data_ptr()
+        : nullptr;
     converted.preNormWeight = norm.pre_norm_weight.data_ptr();
     converted.gateAlpha = norm.gate_alpha.data_ptr<float>();
     converted.gateBeta = norm.gate_beta.data_ptr<float>();

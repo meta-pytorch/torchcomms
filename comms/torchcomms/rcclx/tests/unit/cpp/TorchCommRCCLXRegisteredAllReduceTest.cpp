@@ -594,6 +594,51 @@ TEST_F(
 
 TEST_F(
     TorchCommRCCLXRegisteredAllReduceTest,
+    GatedResidualNormWithoutPostNormWeightForwardsNull) {
+  auto comm = createAndInitComm();
+  constexpr int64_t kRows = 8;
+  constexpr int64_t kHidden = 4608;
+  auto input =
+      at::empty({kRows * kHidden}, at::TensorOptions().dtype(at::kBFloat16));
+  auto output = at::empty_like(input);
+  auto registered = comm->registered_all_reduce(input, output);
+  const auto fp32 = at::TensorOptions().dtype(at::kFloat);
+  RegisteredAllReduceGatedResidualNorm norm;
+  norm.residual_in = at::empty({kRows * kHidden}, fp32);
+  norm.residual_out = norm.residual_in;
+  norm.pre_norm_weight =
+      at::empty({kHidden}, at::TensorOptions().dtype(at::kBFloat16));
+  norm.gate_alpha = at::empty({kHidden}, fp32);
+  norm.gate_beta = at::empty({kHidden}, fp32);
+  norm.post_norm_eps = 1e-8;
+  norm.pre_norm_eps = 1e-5;
+
+  EXPECT_CALL(
+      *rcclx_mock_,
+      registeredAllReduceExec(
+          input.data_ptr(),
+          output.data_ptr(),
+          static_cast<size_t>(kRows * kHidden),
+          _,
+          _,
+          Pointee(AllOf(
+              Field(&RcclxGatedResidualNorm::postNormWeight, nullptr),
+              Field(
+                  &RcclxGatedResidualNorm::preNormWeight,
+                  norm.pre_norm_weight.data_ptr()),
+              Field(
+                  &RcclxGatedResidualNorm::hiddenSize,
+                  static_cast<size_t>(kHidden)))),
+          _,
+          _))
+      .WillOnce(Return(ncclSuccess));
+  registered->all_reduce(input, ReduceOp::SUM, output, norm);
+  registered->close();
+  comm->finalize();
+}
+
+TEST_F(
+    TorchCommRCCLXRegisteredAllReduceTest,
     GatedResidualNormRejectsInvalidTensors) {
   constexpr int64_t kHidden = 4096;
   auto comm = createAndInitComm();
