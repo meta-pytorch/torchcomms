@@ -97,6 +97,47 @@ ncclResult_t DefaultRcclxApi::registeredAllReduceFinalize(
   return ncclRegisteredAllReduceFinalize(request, stream);
 }
 
+int DefaultRcclxApi::registeredAllToAllAbiVersion() {
+  return ncclRegisteredAllToAllAbiVersion();
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllToAllInit(
+    const void* sendbuff,
+    void* recvbuff,
+    const RcclxAllToAllLayout& layout,
+    const RcclxAllToAllConfig& config,
+    ncclComm_t comm,
+    void** request) {
+  const ncclRegisteredAllToAllLayout ncclLayout{
+      layout.rows,
+      layout.rowBytes,
+      layout.sendRowStride,
+      layout.sendPeerStride,
+      layout.recvRowStride,
+      layout.recvPeerStride};
+  const ncclRegisteredAllToAllConfig ncclConfig{
+      config.relayFraction,
+      config.chunkRows,
+      config.directCtasPerPeer,
+      config.relayCtasPerPath};
+  return ncclRegisteredAllToAllInit(
+      sendbuff, recvbuff, &ncclLayout, &ncclConfig, comm, request);
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllToAllExec(
+    const void* sendbuff,
+    void* recvbuff,
+    hipStream_t stream,
+    void* request) {
+  return ncclRegisteredAllToAllExec(sendbuff, recvbuff, stream, request);
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllToAllFinalize(
+    void* request,
+    hipStream_t stream) {
+  return ncclRegisteredAllToAllFinalize(request, stream);
+}
+
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
     const void* const* sendBuffs,
     void* const* recvBuffs,
