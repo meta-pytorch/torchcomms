@@ -1269,6 +1269,7 @@ Epilogue applied to the all-reduced rows of a RegisteredAllReduce execution.
 
 For every row of hidden-size elements:
     normed       = bf16(reduced * rsqrt(mean(reduced^2) + post_norm_eps) * post_norm_weight)
+                   (post_norm_weight may be None, which omits that factor)
     residual_out = gate_alpha * residual_in + gate_beta * normed   (fp32)
     out          = bf16(p * rsqrt(mean(p^2) + pre_norm_eps) * pre_norm_weight),
                    where p = bf16(residual_out)
@@ -1279,7 +1280,7 @@ residual_out may be residual_in (in-place update).
       .def(
           py::init([](at::Tensor residual_in,
                       at::Tensor residual_out,
-                      at::Tensor post_norm_weight,
+                      std::optional<at::Tensor> post_norm_weight,
                       at::Tensor pre_norm_weight,
                       at::Tensor gate_alpha,
                       at::Tensor gate_beta,
@@ -1290,7 +1291,7 @@ residual_out may be residual_in (in-place update).
                 std::move(residual_in),
                 std::move(residual_out),
                 std::move(router_out),
-                std::move(post_norm_weight),
+                post_norm_weight.value_or(at::Tensor()),
                 std::move(pre_norm_weight),
                 std::move(gate_alpha),
                 std::move(gate_beta),

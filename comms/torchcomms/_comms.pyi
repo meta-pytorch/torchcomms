@@ -452,7 +452,7 @@ class RegisteredAllReduceGatedResidualNorm:
         self,
         residual_in: Any,
         residual_out: Any,
-        post_norm_weight: Any,
+        post_norm_weight: Any | None,
         pre_norm_weight: Any,
         gate_alpha: Any,
         gate_beta: Any,

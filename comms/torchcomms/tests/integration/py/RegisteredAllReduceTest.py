@@ -327,5 +327,94 @@ class RegisteredAllReduceTest(unittest.TestCase):
         request.close()
 
 
+class RegisteredAllReduceTP2RelayTest(unittest.TestCase):
+    """Two-rank requests large enough for the relay route, which sends part of
+    each payload through the node's other GPUs (RCCLX picks it internally)."""
+
+    def setUp(self) -> None:
+        self.requests = []
+        os.environ.setdefault("TEST_BACKEND", "rcclx")
+        self.wrapper = TorchCommTestWrapper()
+        self.comm = self.wrapper.get_torchcomm()
+        self.rank = self.comm.get_rank()
+        if self.comm.get_size() != 2:
+            self.skipTest("the relay route needs a 2-rank communicator")
+        device_count = torch.cuda.device_count()
+        if device_count < 3:
+            self.skipTest("the relay route needs GPUs outside the pair")
+        self.device = torch.device(f"cuda:{self.rank % device_count}")
+        torch.cuda.set_device(self.device)
+
+    def tearDown(self) -> None:
+        for request in reversed(self.requests):
+            if not request.closed:
+                request.close()
+        del self.comm
+        del self.wrapper
+
+    def _request(
+        self, count: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torchcomms.RegisteredAllReduce]:
+        input_tensor = torch.empty(count, dtype=torch.bfloat16, device=self.device)
+        output_tensor = torch.empty_like(input_tensor)
+        request = self.comm.registered_all_reduce(
+            input_tensor, output_tensor, input_tensor.nbytes
+        )
+        self.requests.append(request)
+        return input_tensor, output_tensor, request
+
+    def _fill(self, count: int, rank: int, salt: int) -> torch.Tensor:
+        gen = torch.Generator(device=self.device).manual_seed(1000 * salt + rank)
+        return torch.randn(count, generator=gen, device=self.device).to(torch.bfloat16)
+
+    def _want(self, count: int, salt: int) -> torch.Tensor:
+        total = self._fill(count, 0, salt).float() + self._fill(count, 1, salt).float()
+        return total.to(torch.bfloat16)
+
+    def test_prefill_sizes_match_rank_order_sum(self) -> None:
+        for mib, salt in ((72, 1), (144, 2)):
+            count = mib * 1024 * 1024 // 2
+            input_tensor, output_tensor, request = self._request(count)
+            input_tensor.copy_(self._fill(count, self.rank, salt))
+            request.all_reduce(input_tensor, out=output_tensor, registered_input=True)
+            torch.cuda.synchronize()
+            self.assertTrue(
+                torch.equal(output_tensor, self._want(count, salt)), f"{mib} MiB"
+            )
+            request.close()
+
+    def test_decode_and_prefill_requests_interleave(self) -> None:
+        decode = self._request(294912 // 2)
+        prefill = self._request(36 * 1024 * 1024 // 2)
+        for salt, (input_tensor, output_tensor, request) in enumerate(
+            (decode, prefill, decode, prefill), start=3
+        ):
+            count = input_tensor.numel()
+            input_tensor.copy_(self._fill(count, self.rank, salt))
+            request.all_reduce(input_tensor, out=output_tensor, registered_input=True)
+            torch.cuda.synchronize()
+            self.assertTrue(torch.equal(output_tensor, self._want(count, salt)))
+
+    def test_relay_sized_graph_replay(self) -> None:
+        count = 72 * 1024 * 1024 // 2
+        input_tensor, output_tensor, request = self._request(count)
+        staged = torch.empty_like(input_tensor)
+        stream = torch.cuda.Stream(device=self.device)
+        stream.wait_stream(torch.cuda.current_stream(self.device))
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            input_tensor.copy_(staged)
+            request.all_reduce(input_tensor, out=output_tensor, registered_input=True)
+        for salt in (7, 8):
+            staged.copy_(self._fill(count, self.rank, salt))
+            stream.wait_stream(torch.cuda.current_stream(self.device))
+            with torch.cuda.stream(stream):
+                graph.replay()
+            stream.synchronize()
+            self.assertTrue(torch.equal(output_tensor, self._want(count, salt)))
+        graph.reset()
+        request.close()
+
+
 if __name__ == "__main__":
     unittest.main()
