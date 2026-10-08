@@ -1307,6 +1307,31 @@ residual_out may be residual_in (in-place update).
           py::arg("pre_norm_eps"),
           py::arg("router_out") = std::nullopt);
 
+  py_opaque_class<RegisteredAllToAll, std::shared_ptr<RegisteredAllToAll>>(
+      m, "RegisteredAllToAll")
+      .def(
+          "all_to_all",
+          &RegisteredAllToAll::all_to_all,
+          R"(
+Execute the registered all-to-all on the current stream.
+
+Every rank of the communicator must call this once per exchange, in the same
+order, including graph replays. May be captured into a CUDA graph. Returns
+None; the operation is enqueued without a TorchWork.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "close",
+          &RegisteredAllToAll::close,
+          "Finalize on the request stream after destroying captured graphs.",
+          py::call_guard<py::gil_scoped_release>())
+      .def_property_readonly(
+          "closed", &RegisteredAllToAll::isClosed, "Whether close() ran.")
+      .def_property_readonly(
+          "send", &RegisteredAllToAll::send, "The registered send tensor.")
+      .def_property_readonly(
+          "recv", &RegisteredAllToAll::recv, "The registered receive tensor.");
+
   py_opaque_class<RegisteredAllReduce, std::shared_ptr<RegisteredAllReduce>>(
       m, "RegisteredAllReduce")
       .def(
@@ -2411,6 +2436,82 @@ Note:
           py::arg("capacity_bytes") = std::nullopt,
           py::arg("hints") = std::nullopt,
           py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "registered_all_to_all",
+          [](TorchComm& self,
+             const at::Tensor& send,
+             const at::Tensor& recv,
+             size_t rows,
+             size_t row_bytes,
+             size_t send_row_stride,
+             size_t send_peer_stride,
+             size_t recv_row_stride,
+             size_t recv_peer_stride,
+             float relay_fraction,
+             int chunk_rows,
+             int direct_ctas_per_peer,
+             int relay_ctas_per_path) {
+            const RegisteredAllToAllLayout layout{
+                rows,
+                row_bytes,
+                send_row_stride,
+                send_peer_stride,
+                recv_row_stride,
+                recv_peer_stride};
+            RegisteredAllToAllOptions opts;
+            opts.relay_fraction = relay_fraction;
+            opts.chunk_rows = chunk_rows;
+            opts.direct_ctas_per_peer = direct_ctas_per_peer;
+            opts.relay_ctas_per_path = relay_ctas_per_path;
+            return self.registered_all_to_all(send, recv, layout, opts);
+          },
+          R"(
+Register fixed buffers for a persistent all-to-all among the four ranks of
+this communicator, optionally relaying part of every pair's rows through the
+node's other GPUs (staging the ranks allocate in those GPUs' HBM; nothing runs
+there).
+
+Row t of the (source s, destination d) pair is read at
+send(s) + d * send_peer_stride + t * send_row_stride and written to
+recv(d) + s * recv_peer_stride + t * recv_row_stride (all in bytes, multiples
+of 16). Every argument other than the tensors must match on every rank.
+Register tensors that stay allocated for the process lifetime; registration
+verifies every peer mapping and fails on all ranks if one is stale.
+
+Args:
+    send: Fixed send tensor.
+    recv: Fixed receive tensor.
+    rows: Rows exchanged by every (source, destination) pair.
+    row_bytes: Bytes per row.
+    send_row_stride: Byte stride between rows of the send tensor.
+    send_peer_stride: Byte stride between destinations in the send tensor.
+    recv_row_stride: Byte stride between rows of the receive tensor.
+    recv_peer_stride: Byte stride between sources in the receive tensor.
+    relay_fraction: Share of each pair's rows relayed through the other GPUs,
+        in [0, 1). 0 exchanges everything directly.
+    chunk_rows: Rows per relay chunk; 0 selects the RCCLX default.
+    direct_ctas_per_peer: CTAs per peer for direct copies; 0 selects the RCCLX
+        default.
+    relay_ctas_per_path: CTAs per relay path; 0 selects the RCCLX default.
+
+Returns:
+    RegisteredAllToAll: Request object. Call close() explicitly before
+    destroying the communicator.
+          )",
+          py::arg("send"),
+          py::arg("recv"),
+          py::kw_only(),
+          py::arg("rows"),
+          py::arg("row_bytes"),
+          py::arg("send_row_stride"),
+          py::arg("send_peer_stride"),
+          py::arg("recv_row_stride"),
+          py::arg("recv_peer_stride"),
+          py::arg("relay_fraction") = 0.0f,
+          py::arg("chunk_rows") = 0,
+          py::arg("direct_ctas_per_peer") = 0,
+          py::arg("relay_ctas_per_path") = 0,
           py::call_guard<py::gil_scoped_release>())
 
       // Persistent AllGather operations

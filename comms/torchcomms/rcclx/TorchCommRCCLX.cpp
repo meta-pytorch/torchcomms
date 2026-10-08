@@ -2957,6 +2957,189 @@ class TorchCommRCCLXRegisteredAllReduce final : public RegisteredAllReduce {
   bool closed_{false};
 };
 
+class TorchCommRCCLXRegisteredAllToAll final : public RegisteredAllToAll {
+ public:
+  TorchCommRCCLXRegisteredAllToAll(
+      std::shared_ptr<TorchCommRCCLX> comm,
+      const at::Tensor& send,
+      const at::Tensor& recv,
+      const RegisteredAllToAllLayout& layout,
+      const RegisteredAllToAllOptions& options)
+      : comm_(std::move(comm)), send_(send), recv_(recv) {
+    TORCH_CHECK(comm_ != nullptr, "RegisteredAllToAll requires a communicator");
+    comm_->checkInitialized();
+    comm_->checkAndAbortIfTimedOutOrError();
+    const int abiVersion = comm_->rcclx_api_->registeredAllToAllAbiVersion();
+    TORCH_CHECK(
+        abiVersion == 1,
+        "RCCLX registered all-to-all ABI version 1 is required, got ",
+        abiVersion);
+
+    std::exception_ptr localValidationError;
+    try {
+      validateLocal(layout, options);
+    } catch (...) {
+      localValidationError = std::current_exception();
+    }
+    const bool locallyValid = localValidationError == nullptr;
+    const RcclxAllToAllLayout rcclxLayout{
+        layout.rows,
+        layout.row_bytes,
+        layout.send_row_stride,
+        layout.send_peer_stride,
+        layout.recv_row_stride,
+        layout.recv_peer_stride};
+    const RcclxAllToAllConfig rcclxConfig{
+        options.relay_fraction,
+        options.chunk_rows,
+        options.direct_ctas_per_peer,
+        options.relay_ctas_per_path};
+    const ncclResult_t initResult = comm_->rcclx_api_->registeredAllToAllInit(
+        locallyValid ? send_.data_ptr() : nullptr,
+        locallyValid ? recv_.data_ptr() : nullptr,
+        locallyValid ? rcclxLayout : RcclxAllToAllLayout{},
+        rcclxConfig,
+        comm_->nccl_comm_,
+        &request_);
+    if (localValidationError != nullptr) {
+      std::rethrow_exception(localValidationError);
+    }
+    if (initResult != ncclSuccess) {
+      throw RCCLXException(
+          *comm_->rcclx_api_,
+          "RCCLX registeredAllToAllInit failed",
+          initResult,
+          comm_->nccl_comm_);
+    }
+    TORCH_CHECK(
+        request_ != nullptr,
+        "RCCLX registeredAllToAllInit returned a null request");
+  }
+
+  ~TorchCommRCCLXRegisteredAllToAll() override {
+    if (!closed_) {
+      LOG(ERROR) << "[TC] RegisteredAllToAll was destroyed without close(). "
+                 << "Call close() explicitly after destroying captured graphs "
+                 << "and before finalizing the communicator.";
+    }
+  }
+
+  void all_to_all() override {
+    TORCH_CHECK(!closed_, "RegisteredAllToAll has already been closed");
+    comm_->checkInitialized();
+    comm_->checkAndAbortIfTimedOutOrErrorNoCleanup();
+    const hipStream_t stream =
+        comm_->hip_api_->getCurrentCUDAStream(comm_->device_.index());
+    TORCH_CHECK(
+        !executionStream_.has_value() || *executionStream_ == stream,
+        "RegisteredAllToAll executions and graph replays must use one stream");
+    executionStream_ = stream;
+    RCCLX_CHECK(
+        comm_->rcclx_api_,
+        comm_->nccl_comm_,
+        comm_->rcclx_api_->registeredAllToAllExec(
+            send_.data_ptr(), recv_.data_ptr(), stream, request_),
+        "RCCLX registeredAllToAllExec failed");
+  }
+
+  void close() override {
+    if (closed_) {
+      return;
+    }
+    comm_->checkInitialized();
+    comm_->checkAndAbortIfTimedOutOrError();
+    const hipStream_t stream = executionStream_.has_value()
+        ? *executionStream_
+        : comm_->hip_api_->getCurrentCUDAStream(comm_->device_.index());
+    RCCLX_CHECK(
+        comm_->rcclx_api_,
+        comm_->nccl_comm_,
+        comm_->rcclx_api_->registeredAllToAllFinalize(request_, stream),
+        "RCCLX registeredAllToAllFinalize failed");
+    request_ = nullptr;
+    closed_ = true;
+  }
+
+  bool isClosed() const override {
+    return closed_;
+  }
+
+  const at::Tensor& send() const override {
+    return send_;
+  }
+
+  const at::Tensor& recv() const override {
+    return recv_;
+  }
+
+ private:
+  static constexpr int kActiveRanks = 4;
+
+  // Bytes a pair-strided tensor must hold from its data pointer.
+  static size_t
+  spanBytes(size_t rows, size_t rowBytes, size_t rowStride, size_t peerStride) {
+    return (kActiveRanks - 1) * peerStride + (rows - 1) * rowStride + rowBytes;
+  }
+
+  void validateLocal(
+      const RegisteredAllToAllLayout& layout,
+      const RegisteredAllToAllOptions& options) const {
+    TORCH_CHECK(
+        options.hints.empty(),
+        "RegisteredAllToAll does not support backend hints");
+    TORCH_CHECK(
+        options.timeout == kNoTimeout,
+        "RegisteredAllToAll does not support per-request timeouts");
+    TORCH_CHECK(
+        comm_->getSize() == kActiveRanks,
+        "RegisteredAllToAll requires a ",
+        kActiveRanks,
+        "-rank communicator, got ",
+        comm_->getSize());
+    TORCH_CHECK(
+        layout.rows > 0 && layout.row_bytes > 0,
+        "RegisteredAllToAll layout needs rows and row_bytes");
+    TORCH_CHECK(
+        send_.defined() && recv_.defined(),
+        "RegisteredAllToAll needs send and recv tensors");
+    for (const at::Tensor* tensor : {&send_, &recv_}) {
+      comm_->ensureTensorContiguous(*tensor);
+      comm_->checkTensorDevice(*tensor);
+      TORCH_CHECK(
+          tensor->data_ptr() != nullptr,
+          "RegisteredAllToAll tensors must have storage");
+    }
+    TORCH_CHECK(
+        !byteRangesOverlap(
+            send_.data_ptr(),
+            tensorNBytes(send_),
+            recv_.data_ptr(),
+            tensorNBytes(recv_)),
+        "RegisteredAllToAll send and recv storage must not overlap");
+    TORCH_CHECK(
+        tensorNBytes(send_) >= spanBytes(
+                                   layout.rows,
+                                   layout.row_bytes,
+                                   layout.send_row_stride,
+                                   layout.send_peer_stride),
+        "RegisteredAllToAll send tensor is smaller than its layout");
+    TORCH_CHECK(
+        tensorNBytes(recv_) >= spanBytes(
+                                   layout.rows,
+                                   layout.row_bytes,
+                                   layout.recv_row_stride,
+                                   layout.recv_peer_stride),
+        "RegisteredAllToAll recv tensor is smaller than its layout");
+  }
+
+  std::shared_ptr<TorchCommRCCLX> comm_;
+  at::Tensor send_;
+  at::Tensor recv_;
+  void* request_{nullptr};
+  std::optional<hipStream_t> executionStream_;
+  bool closed_{false};
+};
+
 std::shared_ptr<RegisteredAllReduce> TorchCommRCCLX::registered_all_reduce(
     const at::Tensor& input,
     const at::Tensor& output,
@@ -2967,6 +3150,18 @@ std::shared_ptr<RegisteredAllReduce> TorchCommRCCLX::registered_all_reduce(
       "RegisteredAllReduce does not support reconfigurable communicators");
   return std::make_shared<TorchCommRCCLXRegisteredAllReduce>(
       shared_from_this(), input, output, capacity_bytes, options);
+}
+
+std::shared_ptr<RegisteredAllToAll> TorchCommRCCLX::registered_all_to_all(
+    const at::Tensor& send,
+    const at::Tensor& recv,
+    const RegisteredAllToAllLayout& layout,
+    const RegisteredAllToAllOptions& options) {
+  TORCH_CHECK(
+      !options_.enable_reconfigure,
+      "RegisteredAllToAll does not support reconfigurable communicators");
+  return std::make_shared<TorchCommRCCLXRegisteredAllToAll>(
+      shared_from_this(), send, recv, layout, options);
 }
 
 std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(

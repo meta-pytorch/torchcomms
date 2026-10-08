@@ -87,4 +87,27 @@ struct AllGatherPInitOptions : OptionsBase<AllGatherPInitOptions> {};
 struct AllGatherPExecOptions : OptionsBase<AllGatherPExecOptions> {};
 struct RegisteredAllReduceOptions : OptionsBase<RegisteredAllReduceOptions> {};
 
+// Row geometry of a registered all-to-all, in bytes. Row t of the (source s,
+// destination d) pair is read at send(s) + d * send_peer_stride +
+// t * send_row_stride and written to recv(d) + s * recv_peer_stride +
+// t * recv_row_stride.
+struct RegisteredAllToAllLayout {
+  size_t rows{0};
+  size_t row_bytes{0};
+  size_t send_row_stride{0};
+  size_t send_peer_stride{0};
+  size_t recv_row_stride{0};
+  size_t recv_peer_stride{0};
+};
+
+// relay_fraction is the share of every pair's rows relayed through the node's
+// other GPUs (0 exchanges everything directly). Zero-valued kernel sizes select
+// the RCCLX defaults.
+struct RegisteredAllToAllOptions : OptionsBase<RegisteredAllToAllOptions> {
+  float relay_fraction{0.0f};
+  int chunk_rows{0};
+  int direct_ctas_per_peer{0};
+  int relay_ctas_per_path{0};
+};
+
 } // namespace torch::comms

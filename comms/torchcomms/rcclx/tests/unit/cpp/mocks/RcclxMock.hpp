@@ -318,6 +318,29 @@ class RcclxMock : public RcclxApi {
       (void* request, hipStream_t stream),
       (override));
 
+  // Registered AllToAll operations
+  MOCK_METHOD(int, registeredAllToAllAbiVersion, (), (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      registeredAllToAllInit,
+      (const void* sendbuff,
+       void* recvbuff,
+       const RcclxAllToAllLayout& layout,
+       const RcclxAllToAllConfig& config,
+       ncclComm_t comm,
+       void** request),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      registeredAllToAllExec,
+      (const void* sendbuff, void* recvbuff, hipStream_t stream, void* request),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      registeredAllToAllFinalize,
+      (void* request, hipStream_t stream),
+      (override));
+
   // Memory allocation
   MOCK_METHOD(ncclResult_t, memAlloc, (void** ptr, size_t size), (override));
   MOCK_METHOD(ncclResult_t, memFree, (void* ptr), (override));

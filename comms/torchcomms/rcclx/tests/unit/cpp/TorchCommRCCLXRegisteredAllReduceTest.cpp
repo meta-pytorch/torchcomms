@@ -147,6 +147,16 @@ class TorchCommRCCLXRegisteredAllReduceTest : public ::testing::Test {
         .WillByDefault(Return(ncclSuccess));
     ON_CALL(*rcclx_mock_, registeredAllReduceFinalize(_, _))
         .WillByDefault(Return(ncclSuccess));
+    ON_CALL(*rcclx_mock_, registeredAllToAllAbiVersion())
+        .WillByDefault(Return(1));
+    ON_CALL(*rcclx_mock_, registeredAllToAllInit(_, _, _, _, _, _))
+        .WillByDefault(DoAll(
+            SetArgPointee<5>(reinterpret_cast<void*>(0x9000)),
+            Return(ncclSuccess)));
+    ON_CALL(*rcclx_mock_, registeredAllToAllExec(_, _, _, _))
+        .WillByDefault(Return(ncclSuccess));
+    ON_CALL(*rcclx_mock_, registeredAllToAllFinalize(_, _))
+        .WillByDefault(Return(ncclSuccess));
   }
 
   std::shared_ptr<TestableTorchCommRCCLX> createAndInitComm() {
@@ -635,6 +645,138 @@ TEST_F(
   EXPECT_THROW(run([](auto& n) { n.gate_alpha = at::Tensor(); }), c10::Error);
 
   request->close();
+  comm->finalize();
+}
+
+RegisteredAllToAllLayout gatherLayout(size_t rows) {
+  RegisteredAllToAllLayout layout;
+  layout.rows = rows;
+  layout.row_bytes = 4096;
+  layout.send_row_stride = 4096;
+  layout.send_peer_stride = rows * 4096;
+  layout.recv_row_stride = 4 * 4096;
+  layout.recv_peer_stride = 4096;
+  return layout;
+}
+
+TEST_F(TorchCommRCCLXRegisteredAllReduceTest, AllToAllForwardsLayoutAndConfig) {
+  auto comm = createAndInitComm();
+  constexpr size_t kRows = 32;
+  auto send = at::empty(
+      {static_cast<int64_t>(4 * kRows * 2048)},
+      at::TensorOptions().dtype(at::kBFloat16));
+  auto recv = at::empty_like(send);
+  RegisteredAllToAllOptions options;
+  options.relay_fraction = 0.35f;
+  options.relay_ctas_per_path = 4;
+  void* const request = reinterpret_cast<void*>(0x9100);
+
+  EXPECT_CALL(
+      *rcclx_mock_,
+      registeredAllToAllInit(
+          send.data_ptr(),
+          recv.data_ptr(),
+          AllOf(
+              Field(&RcclxAllToAllLayout::rows, kRows),
+              Field(&RcclxAllToAllLayout::rowBytes, 4096u),
+              Field(&RcclxAllToAllLayout::sendPeerStride, kRows * 4096),
+              Field(&RcclxAllToAllLayout::recvRowStride, 4u * 4096)),
+          AllOf(
+              Field(&RcclxAllToAllConfig::relayFraction, 0.35f),
+              Field(&RcclxAllToAllConfig::relayCtasPerPath, 4),
+              Field(&RcclxAllToAllConfig::chunkRows, 0)),
+          _,
+          _))
+      .WillOnce(DoAll(SetArgPointee<5>(request), Return(ncclSuccess)));
+  auto a2a =
+      comm->registered_all_to_all(send, recv, gatherLayout(kRows), options);
+
+  EXPECT_CALL(
+      *rcclx_mock_,
+      registeredAllToAllExec(
+          send.data_ptr(), recv.data_ptr(), current_stream_, request))
+      .Times(2)
+      .WillRepeatedly(Return(ncclSuccess));
+  a2a->all_to_all();
+  a2a->all_to_all();
+  EXPECT_EQ(comm->createWorkCalls(), 0);
+
+  EXPECT_CALL(
+      *rcclx_mock_, registeredAllToAllFinalize(request, current_stream_))
+      .WillOnce(Return(ncclSuccess));
+  a2a->close();
+  EXPECT_TRUE(a2a->isClosed());
+  comm->finalize();
+}
+
+TEST_F(TorchCommRCCLXRegisteredAllReduceTest, AllToAllRequiresFourRanks) {
+  setenv("TORCHCOMM_SIZE", "8", 1);
+  ON_CALL(*rcclx_mock_, commCount(_, _))
+      .WillByDefault(DoAll(SetArgPointee<1>(8), Return(ncclSuccess)));
+  auto comm = createAndInitComm();
+  auto send =
+      at::empty({4 * 32 * 2048}, at::TensorOptions().dtype(at::kBFloat16));
+  auto recv = at::empty_like(send);
+  // Init is still entered (collectively) with null buffers, then fails.
+  EXPECT_CALL(
+      *rcclx_mock_, registeredAllToAllInit(nullptr, nullptr, _, _, _, _));
+  EXPECT_THROW(
+      comm->registered_all_to_all(send, recv, gatherLayout(32)), c10::Error);
+  comm->finalize();
+}
+
+TEST_F(TorchCommRCCLXRegisteredAllReduceTest, AllToAllRequiresAbiVersion1) {
+  ON_CALL(*rcclx_mock_, registeredAllToAllAbiVersion())
+      .WillByDefault(Return(2));
+  auto comm = createAndInitComm();
+  auto send =
+      at::empty({4 * 32 * 2048}, at::TensorOptions().dtype(at::kBFloat16));
+  auto recv = at::empty_like(send);
+  EXPECT_CALL(*rcclx_mock_, registeredAllToAllInit(_, _, _, _, _, _)).Times(0);
+  EXPECT_THROW(
+      comm->registered_all_to_all(send, recv, gatherLayout(32)), c10::Error);
+  comm->finalize();
+}
+
+TEST_F(TorchCommRCCLXRegisteredAllReduceTest, AllToAllRejectsBadTensors) {
+  auto comm = createAndInitComm();
+  constexpr size_t kRows = 32;
+  auto send = at::empty(
+      {static_cast<int64_t>(4 * kRows * 2048)},
+      at::TensorOptions().dtype(at::kBFloat16));
+  auto recv = at::empty_like(send);
+  auto small = at::empty(
+      {static_cast<int64_t>(kRows * 2048)},
+      at::TensorOptions().dtype(at::kBFloat16));
+
+  EXPECT_THROW(
+      comm->registered_all_to_all(send, at::Tensor(), gatherLayout(kRows)),
+      c10::Error);
+  EXPECT_THROW(
+      comm->registered_all_to_all(send, send, gatherLayout(kRows)), c10::Error);
+  EXPECT_THROW(
+      comm->registered_all_to_all(small, recv, gatherLayout(kRows)),
+      c10::Error);
+  EXPECT_THROW(
+      comm->registered_all_to_all(send, small, gatherLayout(kRows)),
+      c10::Error);
+  comm->finalize();
+}
+
+TEST_F(TorchCommRCCLXRegisteredAllReduceTest, AllToAllStreamSwitchRejected) {
+  auto comm = createAndInitComm();
+  auto send =
+      at::empty({4 * 32 * 2048}, at::TensorOptions().dtype(at::kBFloat16));
+  auto recv = at::empty_like(send);
+  auto a2a = comm->registered_all_to_all(send, recv, gatherLayout(32));
+  a2a->all_to_all();
+  const hipStream_t otherStream = reinterpret_cast<hipStream_t>(0x7000);
+  ON_CALL(*hip_mock_, getCurrentCUDAStream(_))
+      .WillByDefault(Return(otherStream));
+  EXPECT_CALL(*rcclx_mock_, registeredAllToAllExec(_, _, otherStream, _))
+      .Times(0);
+  EXPECT_THROW(a2a->all_to_all(), c10::Error);
+  a2a->close();
   comm->finalize();
 }
 

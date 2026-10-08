@@ -503,6 +503,14 @@ std::shared_ptr<RegisteredAllReduce> TorchComm::registered_all_reduce(
   return impl_->registered_all_reduce(input, output, capacity_bytes, options);
 }
 
+std::shared_ptr<RegisteredAllToAll> TorchComm::registered_all_to_all(
+    const at::Tensor& send,
+    const at::Tensor& recv,
+    const RegisteredAllToAllLayout& layout,
+    const RegisteredAllToAllOptions& options) {
+  return impl_->registered_all_to_all(send, recv, layout, options);
+}
+
 // Fault Tolerance API
 InitHandle TorchComm::getInitHandle() const {
   return impl_->getInitHandle();
