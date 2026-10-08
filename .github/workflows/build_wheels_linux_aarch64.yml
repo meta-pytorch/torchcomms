@@ -56,7 +56,9 @@ jobs:
       repository: meta-pytorch/torchcomms
       ref: ""
       pre-script: ""
-      post-script: ""
+      # Post-script only: resource + sccache stats after the build. The
+      # aarch64 legs are otherwise blind to whether the cache did anything.
+      post-script: "scripts/ci_log_resources_post.sh"
       build-platform: "python-build-package"
       build-command: "scripts/_build_wheel.sh"
       smoke-test-script: "scripts/smoke_test.py"
