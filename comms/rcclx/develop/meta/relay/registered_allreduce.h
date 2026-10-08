@@ -10,6 +10,7 @@
 
 #include <hip/hip_runtime.h>
 #include <cstddef>
+#include <cstdint>
 
 #include "nccl.h"
 
@@ -72,8 +73,16 @@ ncclResult_t registeredAllReduceInit(
  * not synchronize the stream; completion and cross-call ordering remain the
  * caller's responsibility until collective finalization.
  *
- * norm is optional and requires four ranks. When set (1 MiB payloads viewed
- * as 64 x 8192 rows), output
+ * Two-rank requests whose capacity reaches NCCL_REGISTERED_AR_RELAY_MIN_BYTES
+ * (default 2 MiB) also get a relay route at registration: payloads of at least
+ * that size, without norm, relay part of their traffic through the node's
+ * other GPUs (staging rings the two ranks allocate in those GPUs' HBM; nothing
+ * runs there). It is bitwise identical to the one-shot result and can be
+ * captured like every other execution.
+ *
+ * norm is optional. It serves 1 MiB payloads viewed as 64 x 8192 rows on four
+ * ranks, and 1 to 64 rows of 4608 elements on two or four ranks (the post-norm
+ * weight may then be null). When set, output
  * receives the gated-residual-norm epilogue's normalized rows instead of the
  * plain sum; see ncclRegisteredAllReduceGatedResidualNorm. Plain and epilogue
  * executions may be interleaved on one request.
@@ -145,6 +154,15 @@ size_t registeredAllReduceLiveStateAllocationsForTest();
 // Communicator-lifetime imports of peers' pooled state regions.
 size_t registeredAllReducePooledStateImportsForTest();
 void registeredAllReduceSetIpcOpenFailureRankForTest(int rank);
+// Relay helper GPUs of a public request (0 when it has no relay route, -1 for
+// an unknown handle), and relay-route launches so far in this process.
+int registeredAllReduceRelayHelpersForTest(void* request);
+uint64_t registeredAllReduceRelayLaunchesForTest();
+// Starts a public request's relay sequence counters at `sequence` (see
+// registeredRelaySetSequenceForTest).
+ncclResult_t registeredAllReduceSetRelaySequenceForTest(
+    void* request,
+    uint32_t sequence);
 // Makes `reader`'s mapping probe see stale data in `owner`'s input from byte
 // 2 MiB on; -1, -1 clears it.
 void registeredAllReduceSetStaleMappingForTest(int reader, int owner);

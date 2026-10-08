@@ -1356,23 +1356,36 @@ TEST_F(RegisteredAllReduceTest, StateRegionsPooledPerCommunicator) {
   EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 2u);
   EXPECT_GE(
       rcclx::relay::registeredAllReducePooledStateImportsForTest(), imports);
-  // Alternate executions between the two live requests on one stream; each
-  // owns its state region, so neither disturbs the other.
+  // Alternate plain and epilogue executions between the two live requests on
+  // one stream; each owns its state region, so neither disturbs the other.
+  allocateNormBuffers();
+  const auto descriptor = normDescriptor();
   rcclx::relay::RegisteredAllReduce* const firstRequest = request;
   uint16_t* const firstIn = input;
   uint16_t* const firstOut = output;
   std::vector<uint16_t> host;
   for (int step = 0; step < 8; ++step) {
     const bool useSecond = step % 2 == 1;
+    const bool withEpilogue = step % 4 >= 2;
     request = useSecond ? second : firstRequest;
     input = useSecond ? secondIn : firstIn;
     output = useSecond ? secondOut : firstOut;
     const int generation = 90 + step;
     fillInputAsync(kOneMiB, generation, host);
     clearOutputAsync(kOneMiB);
-    execute(kOneMiB);
-    syncStream("two live requests");
-    expectOutput(kOneMiB, generation, "two live requests");
+    if (withEpilogue) {
+      fillNormOperandsAsync(static_cast<uint32_t>(generation));
+      computeNormReferenceAsync(generation);
+      execute(kOneMiB, &descriptor);
+      syncStream("two live requests, epilogue");
+      EXPECT_TRUE(allVote(normOutputsMatch(
+          true, norm.residualOut, "two live requests, epilogue")))
+          << "step " << step;
+    } else {
+      execute(kOneMiB);
+      syncStream("two live requests, plain");
+      expectOutput(kOneMiB, generation, "two live requests, plain");
+    }
   }
   request = firstRequest;
   input = firstIn;
@@ -1383,6 +1396,53 @@ TEST_F(RegisteredAllReduceTest, StateRegionsPooledPerCommunicator) {
   HIPCHECK_TEST(hipFree(secondOut));
   HIPCHECK_TEST(hipFree(secondIn));
   finalizeRequest();
+  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
+}
+
+// The fused epilogue ([redacted]'s decode path, where the freed-state
+// corruption was first seen) on requests registered over freshly allocated
+// input, output and epilogue buffers, finalized and freed every round: outputs
+// must match the reference bit for bit each time.
+TEST_F(RegisteredAllReduceTest, ReRegistrationEpilogueOnFreshBuffers) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  for (int iteration = 0; iteration < 12; ++iteration) {
+    uint16_t* freshIn = nullptr;
+    uint16_t* freshOut = nullptr;
+    HIPCHECK_TEST(hipMalloc(&freshIn, kOneMiB));
+    HIPCHECK_TEST(hipMalloc(&freshOut, kOneMiB));
+    input = freshIn;
+    output = freshOut;
+    allocateNormBuffers();
+    createRequest();
+    const int generation = 120 + iteration;
+    std::vector<uint16_t> host;
+    fillInputAsync(kOneMiB, generation, host);
+    fillNormOperandsAsync(static_cast<uint32_t>(generation));
+    computeNormReferenceAsync(generation);
+    clearOutputAsync(kOneMiB);
+    const auto descriptor = normDescriptor(iteration % 2 == 0);
+    execute(kOneMiB, &descriptor);
+    syncStream("re-registration epilogue");
+    EXPECT_TRUE(allVote(normOutputsMatch(
+        iteration % 2 == 0, norm.residualOut, "re-registration epilogue")))
+        << "iteration " << iteration;
+    fillInputAsync(kHalfMiB, generation + 1, host);
+    clearOutputAsync(kHalfMiB);
+    execute(kHalfMiB);
+    syncStream("re-registration plain after epilogue");
+    expectOutput(
+        kHalfMiB, generation + 1, "re-registration plain after epilogue");
+    finalizeRequest();
+    freeNormBuffers();
+    HIPCHECK_TEST(hipFree(freshOut));
+    HIPCHECK_TEST(hipFree(freshIn));
+    input = fixtureIn;
+    output = fixtureOut;
+  }
   EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
 }
 

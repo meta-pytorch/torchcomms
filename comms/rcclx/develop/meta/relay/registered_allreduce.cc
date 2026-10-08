@@ -25,6 +25,7 @@
 #include "comm.h"
 #include "debug.h"
 #include "meta/relay/registered_allreduce_kernels.h"
+#include "meta/relay/registered_allreduce_relay.h"
 
 namespace rcclx::relay {
 
@@ -78,6 +79,27 @@ bool validEpsilon(float epsilon) {
   return std::isfinite(epsilon) && epsilon >= 0.0f;
 }
 
+// Epilogue shapes: 64 rows of 8192 on four ranks with a post-norm weight, or
+// 1 to 64 rows of 4608 on two or four ranks with an optional post-norm weight.
+bool supportedNormShape(
+    size_t count,
+    const ncclRegisteredAllReduceGatedResidualNorm& norm,
+    int nRanks) {
+  if (norm.hiddenSize == kRegisteredAllReduceNormHidden) {
+    return nRanks == kRegisteredAllReduceRanks &&
+        count ==
+        static_cast<size_t>(kRegisteredAllReduceRows) *
+            kRegisteredAllReduceNormHidden &&
+        norm.postNormWeight != nullptr;
+  }
+  if (norm.hiddenSize == kRegisteredAllReduceWideNormHidden) {
+    const size_t rows = count / kRegisteredAllReduceWideNormHidden;
+    return count % kRegisteredAllReduceWideNormHidden == 0 && rows > 0 &&
+        rows <= kRegisteredAllReduceWideNormMaxRows;
+  }
+  return false;
+}
+
 // Validates the optional gated-residual-norm epilogue. Every written buffer
 // (output, residualOut, routerOut) must not overlap any other operand, except
 // that residualOut may alias residualIn exactly.
@@ -85,17 +107,15 @@ ncclResult_t toGatedResidualNormArgs(
     const void* input,
     const void* output,
     size_t count,
+    int nRanks,
     const ncclRegisteredAllReduceGatedResidualNorm& norm,
     RegisteredAllReduceGatedResidualNormArgs& args) {
-  constexpr size_t kNormCount = static_cast<size_t>(kRegisteredAllReduceRows) *
-      kRegisteredAllReduceNormHidden;
-  if (count != kNormCount ||
-      norm.hiddenSize != kRegisteredAllReduceNormHidden) {
+  if (!supportedNormShape(count, norm, nRanks)) {
     return ncclInvalidArgument;
   }
   if (norm.residualIn == nullptr || norm.residualOut == nullptr ||
-      norm.postNormWeight == nullptr || norm.preNormWeight == nullptr ||
-      norm.gateAlpha == nullptr || norm.gateBeta == nullptr) {
+      norm.preNormWeight == nullptr || norm.gateAlpha == nullptr ||
+      norm.gateBeta == nullptr) {
     return ncclInvalidArgument;
   }
   if (!isAligned16(norm.residualIn) || !isAligned16(norm.residualOut) ||
@@ -111,13 +131,15 @@ ncclResult_t toGatedResidualNormArgs(
   const size_t bf16Bytes = count * sizeof(__nv_bfloat16);
   const size_t floatBytes = count * sizeof(float);
   const size_t hidden = norm.hiddenSize;
+  const size_t postWeightBytes =
+      norm.postNormWeight == nullptr ? 0 : hidden * sizeof(__nv_bfloat16);
   const ByteRange outputRange{output, bf16Bytes};
   const ByteRange residualOutRange{norm.residualOut, floatBytes};
   const ByteRange routerRange{norm.routerOut, floatBytes};
   const ByteRange reads[] = {
       {input, bf16Bytes},
       {norm.residualIn, floatBytes},
-      {norm.postNormWeight, hidden * sizeof(__nv_bfloat16)},
+      {norm.postNormWeight, postWeightBytes},
       {norm.preNormWeight, hidden * sizeof(__nv_bfloat16)},
       {norm.gateAlpha, hidden * sizeof(float)},
       {norm.gateBeta, hidden * sizeof(float)},
@@ -233,6 +255,8 @@ struct RegisteredAllReduce {
   void* mappedInput[kRegisteredAllReduceRanks]{};
   RegisteredAllReduceInputTable inputTable{};
   RegisteredAllReduceStateTable stateTable{};
+  // Large-message route for two-rank requests; null when it does not apply.
+  RegisteredRelay* relay{nullptr};
   bool mappingsMayExist{false};
   bool initialized{false};
 };
@@ -383,6 +407,8 @@ ncclResult_t closePeerMappings(RegisteredAllReduce& request) {
 }
 
 ncclResult_t releaseLocalState(RegisteredAllReduce& request) {
+  registeredRelayRelease(request.relay);
+  request.relay = nullptr;
   if (request.localState != nullptr) {
     request.pool->slots[request.slot].busy = false;
     request.localState = nullptr;
@@ -974,6 +1000,13 @@ ncclResult_t registeredAllReduceInit(
     return cleanupResult == ncclSuccess ? result : cleanupResult;
   }
 
+  result = registeredRelaySetup(
+      request->comm, request->capacityBytes, &request->relay);
+  if (result != ncclSuccess) {
+    const ncclResult_t cleanupResult = closeMappingsCollectively(*request);
+    return cleanupResult == ncclSuccess ? result : cleanupResult;
+  }
+
   request->peerMinCapacityBytes = peerMinCapacityBytes;
   request->initialized = true;
   return ncclSuccess;
@@ -1009,17 +1042,25 @@ ncclResult_t registeredAllReduceExecute(
       !validCapacity(count * sizeof(__nv_bfloat16))) {
     return ncclInvalidArgument;
   }
-  if (norm != nullptr && request->nRanks != kRegisteredAllReduceRanks) {
-    return ncclInvalidArgument;
-  }
   const size_t bytes = count * sizeof(__nv_bfloat16);
   if (bytes > request->capacityBytes || bytes > request->peerMinCapacityBytes) {
     return ncclInvalidArgument;
   }
+  if (norm == nullptr && registeredRelayServes(request->relay, bytes)) {
+    return hipToNccl(
+        registeredRelayLaunch(
+            request->relay,
+            input,
+            request->inputTable.input[1 - request->rank],
+            output,
+            bytes,
+            stream),
+        "registered all-reduce relay launch");
+  }
   RegisteredAllReduceGatedResidualNormArgs normArgs{};
   if (norm != nullptr) {
-    const ncclResult_t normResult =
-        toGatedResidualNormArgs(input, output, count, *norm, normArgs);
+    const ncclResult_t normResult = toGatedResidualNormArgs(
+        input, output, count, request->nRanks, *norm, normArgs);
     if (normResult != ncclSuccess) {
       return normResult;
     }
@@ -1034,7 +1075,8 @@ ncclResult_t registeredAllReduceExecute(
           count,
           norm == nullptr ? nullptr : &normArgs,
           stream,
-          request->nRanks),
+          request->nRanks,
+          norm == nullptr ? kRegisteredAllReduceNormHidden : norm->hiddenSize),
       "registered all-reduce kernel launch");
 }
 
@@ -1073,6 +1115,7 @@ ncclResult_t registeredAllReduceFinalize(
 }
 
 void registeredAllReduceReleaseComm(ncclComm_t comm) {
+  registeredRelayReleaseComm(comm);
   std::unique_ptr<StatePool> pool;
   {
     std::lock_guard<std::mutex> lock(statePoolMutex());
@@ -1230,6 +1273,7 @@ void registeredAllReduceAbandonComm(ncclComm_t comm) {
     return;
   }
 
+  registeredRelayAbandonComm(comm);
   {
     // Device work may still reference the pool's regions; leak them.
     std::lock_guard<std::mutex> poolLock(statePoolMutex());
@@ -1285,6 +1329,30 @@ void registeredAllReduceSetStaleMappingForTest(int reader, int owner) {
 
 void registeredAllReduceSetIpcOpenFailureRankForTest(int rank) {
   gFailIpcOpenRankForTest.store(rank, std::memory_order_relaxed);
+}
+
+int registeredAllReduceRelayHelpersForTest(void* request) {
+  std::lock_guard<std::mutex> lock(publicRegistryMutex());
+  RegisteredAllReducePublicRequest* entry = findPublicRequestLocked(request);
+  if (entry == nullptr || entry->request == nullptr) {
+    return -1;
+  }
+  return registeredRelayHelperCount(entry->request->relay);
+}
+
+uint64_t registeredAllReduceRelayLaunchesForTest() {
+  return registeredRelayLaunchesForTest();
+}
+
+ncclResult_t registeredAllReduceSetRelaySequenceForTest(
+    void* request,
+    uint32_t sequence) {
+  std::lock_guard<std::mutex> lock(publicRegistryMutex());
+  RegisteredAllReducePublicRequest* entry = findPublicRequestLocked(request);
+  if (entry == nullptr || entry->request == nullptr) {
+    return ncclInvalidArgument;
+  }
+  return registeredRelaySetSequenceForTest(entry->request->relay, sequence);
 }
 
 } // namespace rcclx::relay
