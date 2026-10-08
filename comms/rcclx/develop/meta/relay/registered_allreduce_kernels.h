@@ -50,6 +50,16 @@ constexpr int kRegisteredAllReduceRowsPerRank =
 constexpr int kRegisteredAllReduceNormHidden = 8192;
 constexpr int kRegisteredAllReduceNormThreads = 1024;
 
+// The wide-row epilogue serves 4608-element rows on two or four ranks, 1 to 64
+// rows, one 512-thread CTA per row: thread t owns elements [8t, 8t + 8) and,
+// for the first 64 threads, [4096 + 8t, 4096 + 8t + 8). The post-norm weight
+// is optional.
+constexpr int kRegisteredAllReduceWideNormHidden = 4608;
+constexpr int kRegisteredAllReduceWideNormThreads = 512;
+constexpr int kRegisteredAllReduceWideNormMaxRows = 64;
+static_assert(
+    kRegisteredAllReduceWideNormMaxRows <= kRegisteredAllReduceOneMiBBlocks);
+
 // Protocol words of one epilogue row CTA, on their own 256-byte line. The row
 // owner collects start epochs from the other ranks and publishes the midpoint
 // epoch once the reduced row is in its scratch.
@@ -103,7 +113,8 @@ hipError_t launchRegisteredAllReduceKernel(
     size_t count,
     const RegisteredAllReduceGatedResidualNormArgs* norm,
     hipStream_t stream,
-    int nRanks = kRegisteredAllReduceRanks);
+    int nRanks = kRegisteredAllReduceRanks,
+    size_t hiddenSize = kRegisteredAllReduceNormHidden);
 
 // Reads 16 bytes at each of `count` addresses (a device array) into out[2i],
 // out[2i + 1] with plain 16-byte loads, the way the kernels read peer inputs.

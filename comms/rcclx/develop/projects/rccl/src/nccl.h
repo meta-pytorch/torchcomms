@@ -1193,6 +1193,7 @@ ncclResult_t pncclRegisteredAllReduceInit(
 /*! @brief      Optional gated-residual-norm epilogue for @ref ncclRegisteredAllReduceExec.
     @details    The reduced BF16 tensor is viewed as rows of hiddenSize elements. For every row:
                   normed      = bf16(reduced * rsqrt(mean(reduced^2) + postNormEpsilon) * postNormWeight)
+                                (the weight factor is omitted when postNormWeight is NULL)
                   residualOut = gateAlpha * residualIn + gateBeta * normed           (FP32)
                   recvbuff    = bf16(p * rsqrt(mean(p^2) + preNormEpsilon) * preNormWeight),
                                 where p = bf16(residualOut)
@@ -1204,7 +1205,7 @@ typedef struct {
   const float* residualIn;     /*!< [in] count FP32 residual-stream elements */
   float* residualOut;          /*!< [out] count FP32 updated residual-stream elements */
   float* routerOut;            /*!< [out] count FP32 copies of recvbuff, or NULL */
-  const void* postNormWeight;  /*!< [in] hiddenSize BF16 post-norm weights */
+  const void* postNormWeight;  /*!< [in] hiddenSize BF16 post-norm weights, or NULL (4608 only) */
   const void* preNormWeight;   /*!< [in] hiddenSize BF16 pre-norm weights */
   const float* gateAlpha;      /*!< [in] hiddenSize FP32 residual-stream coefficients */
   const float* gateBeta;       /*!< [in] hiddenSize FP32 branch coefficients */
@@ -1218,10 +1219,17 @@ typedef struct {
                 must execute the same count sequence and graph replay count/order, with all calls
                 for a request ordered on one stream. Supports BF16 SUM at any payload that is a
                 positive multiple of 16 bytes within the registered capacity, reduced in rank
-                order; unsupported combinations fail before launch. With norm (four ranks only),
-                recvbuff receives the epilogue's normalized rows instead of the plain sum; the
-                supported shape is 64 rows of 8192 elements (1 MiB). Payload sizes, and plain and
-                epilogue executions, may be interleaved on one request.
+                order; unsupported combinations fail before launch. On two ranks, requests whose
+                capacity reaches NCCL_REGISTERED_AR_RELAY_MIN_BYTES (default 2 MiB) relay payloads
+                of at least that size partly through the node's other GPUs (staging the ranks
+                allocate in those GPUs' HBM; nothing runs there), with bitwise-identical results;
+                NCCL_RELAY_HELPER_DEVICES / NCCL_RELAY_MAX_HELPERS select those GPUs. With norm,
+                recvbuff receives the epilogue's normalized rows instead of the plain sum;
+                supported shapes are 64 rows of 8192 elements (1 MiB) on four ranks, and 1 to 64
+                rows of 4608 elements on
+                two or four ranks, where postNormWeight may be NULL to skip the post-norm weight.
+                Payload sizes, and plain and epilogue executions, may be interleaved on one
+                request.
     @param[in]  sendbuff   Fixed input buffer supplied to Init
     @param[out] recvbuff   Fixed output buffer supplied to Init
     @param[in]  count      Element count for datatype
