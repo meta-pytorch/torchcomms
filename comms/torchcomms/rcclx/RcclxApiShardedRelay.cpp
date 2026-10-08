@@ -69,10 +69,26 @@ ncclResult_t DefaultRcclxApi::registeredAllReduceExec(
     size_t count,
     ncclDataType_t datatype,
     ncclRedOp_t op,
+    const RcclxGatedResidualNorm* norm,
     hipStream_t stream,
     void* request) {
+  if (norm == nullptr) {
+    return ncclRegisteredAllReduceExec(
+        sendbuff, recvbuff, count, datatype, op, nullptr, stream, request);
+  }
+  const ncclRegisteredAllReduceGatedResidualNorm converted{
+      norm->residualIn,
+      norm->residualOut,
+      norm->routerOut,
+      norm->postNormWeight,
+      norm->preNormWeight,
+      norm->gateAlpha,
+      norm->gateBeta,
+      norm->hiddenSize,
+      norm->postNormEpsilon,
+      norm->preNormEpsilon};
   return ncclRegisteredAllReduceExec(
-      sendbuff, recvbuff, count, datatype, op, nullptr, stream, request);
+      sendbuff, recvbuff, count, datatype, op, &converted, stream, request);
 }
 
 ncclResult_t DefaultRcclxApi::registeredAllReduceFinalize(

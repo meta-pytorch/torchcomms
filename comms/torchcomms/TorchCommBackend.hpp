@@ -21,6 +21,26 @@ namespace torch::comms {
 
 inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.5";
 
+// Epilogue applied to the all-reduced rows (one row per hidden-size slice):
+//   normed       = bf16(reduced * rsqrt(mean(reduced^2) + post_norm_eps) *
+//                       post_norm_weight)
+//   residual_out = gate_alpha * residual_in + gate_beta * normed      (fp32)
+//   output       = bf16(p * rsqrt(mean(p^2) + pre_norm_eps) * pre_norm_weight),
+//                  p = bf16(residual_out)
+//   router_out   = output widened to fp32 (optional)
+// residual_out may alias residual_in.
+struct RegisteredAllReduceGatedResidualNorm {
+  at::Tensor residual_in;
+  at::Tensor residual_out;
+  std::optional<at::Tensor> router_out;
+  at::Tensor post_norm_weight;
+  at::Tensor pre_norm_weight;
+  at::Tensor gate_alpha;
+  at::Tensor gate_beta;
+  double post_norm_eps{0.0};
+  double pre_norm_eps{0.0};
+};
+
 class RegisteredAllReduce {
  public:
   virtual ~RegisteredAllReduce() = default;
@@ -28,7 +48,8 @@ class RegisteredAllReduce {
   virtual void all_reduce(
       const at::Tensor& input,
       const ReduceOp& op,
-      const at::Tensor& output) = 0;
+      const at::Tensor& output,
+      const std::optional<RegisteredAllReduceGatedResidualNorm>& norm) = 0;
   virtual void close() = 0;
   virtual bool isClosed() const = 0;
   virtual const at::Tensor& input() const = 0;

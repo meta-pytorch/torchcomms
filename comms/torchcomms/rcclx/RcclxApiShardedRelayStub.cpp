@@ -61,6 +61,7 @@ ncclResult_t DefaultRcclxApi::registeredAllReduceExec(
     size_t /*count*/,
     ncclDataType_t /*datatype*/,
     ncclRedOp_t /*op*/,
+    const RcclxGatedResidualNorm* /*norm*/,
     hipStream_t /*stream*/,
     void* /*request*/) {
   return ncclInternalError;

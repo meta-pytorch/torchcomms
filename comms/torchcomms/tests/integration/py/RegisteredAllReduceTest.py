@@ -236,6 +236,96 @@ class RegisteredAllReduceTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.comm.registered_all_reduce(too_small, too_small_out, too_small.nbytes)
 
+    def test_gated_residual_norm_epilogue_interleaves_with_plain(self) -> None:
+        rows = 64
+        hidden = 8192
+        elements = rows * hidden
+        input_tensor = torch.full(
+            (elements,), float(self.rank + 1), dtype=torch.bfloat16, device=self.device
+        )
+        output_tensor = torch.empty_like(input_tensor)
+        request = self.comm.registered_all_reduce(
+            input_tensor, output_tensor, input_tensor.nbytes
+        )
+        self.requests.append(request)
+        generator = torch.Generator(device=self.device).manual_seed(11)
+
+        def rand(*shape: int) -> torch.Tensor:
+            return torch.randn(*shape, generator=generator, device=self.device)
+
+        post_weight = (1.0 + 0.2 * rand(hidden)).to(torch.bfloat16)
+        pre_weight = (1.0 + 0.2 * rand(hidden)).to(torch.bfloat16)
+        gate = rand(hidden) / 0.3
+        gate_beta = torch.sigmoid(gate)
+        gate_alpha = torch.sqrt(
+            torch.clamp(torch.sigmoid(-gate) * (1.0 + gate_beta), min=1e-3)
+        )
+        residual_in = rand(elements)
+        residual_out = torch.empty_like(residual_in)
+        router_out = torch.empty_like(residual_in)
+        norm = torchcomms.RegisteredAllReduceGatedResidualNorm(
+            residual_in,
+            residual_out,
+            post_weight,
+            pre_weight,
+            gate_alpha,
+            gate_beta,
+            1e-8,
+            1e-5,
+            router_out=router_out,
+        )
+
+        request.all_reduce(input_tensor, out=output_tensor, registered_input=True)
+        torch.cuda.synchronize()
+        expected_sum = float(self.size * (self.size + 1) // 2)
+        torch.testing.assert_close(
+            output_tensor, torch.full_like(output_tensor, expected_sum), rtol=0, atol=0
+        )
+
+        request.all_reduce(
+            input_tensor,
+            out=output_tensor,
+            registered_input=True,
+            gated_residual_norm=norm,
+        )
+        torch.cuda.synchronize()
+
+        def rms_scale(x: torch.Tensor, eps: float) -> torch.Tensor:
+            mean = x.double().pow(2).mean(dim=1, keepdim=True)
+            return torch.rsqrt(mean + eps).float()
+
+        branch = torch.full((rows, hidden), expected_sum, device=self.device)
+        normed = (branch * rms_scale(branch, 1e-8) * post_weight.float()).to(
+            torch.bfloat16
+        )
+        stream = (
+            gate_alpha * residual_in.view(rows, hidden) + gate_beta * normed.float()
+        )
+        pre = stream.to(torch.bfloat16).float()
+        expected = (pre * rms_scale(pre, 1e-5) * pre_weight.float()).to(torch.bfloat16)
+        torch.testing.assert_close(
+            residual_out.view(rows, hidden), stream, rtol=1e-6, atol=1e-6
+        )
+
+        def ordered(values: torch.Tensor) -> torch.Tensor:
+            bits = values.contiguous().view(torch.int16).int()
+            return torch.where(bits < 0, -(bits & 0x7FFF), bits)
+
+        ulp = (ordered(output_tensor.view(rows, hidden)) - ordered(expected)).abs()
+        self.assertLessEqual(int(ulp.max()), 1)
+        self.assertTrue(
+            torch.equal(
+                router_out.view(rows, hidden), output_tensor.view(rows, hidden).float()
+            )
+        )
+
+        request.all_reduce(input_tensor, out=output_tensor, registered_input=True)
+        torch.cuda.synchronize()
+        torch.testing.assert_close(
+            output_tensor, torch.full_like(output_tensor, expected_sum), rtol=0, atol=0
+        )
+        request.close()
+
 
 if __name__ == "__main__":
     unittest.main()
