@@ -16,6 +16,8 @@
 #include <time.h>
 #include <mutex>
 
+#include "comms/utils/cvars/nccl_cvars.h"
+
 NCCL_PARAM(RetryCnt, "SOCKET_RETRY_CNT", 34);
 NCCL_PARAM(RetryTimeOut, "SOCKET_RETRY_SLEEP_MSEC", 100);
 NCCL_PARAM(PollTimeOut, "SOCKET_POLL_TIMEOUT_MSEC", 0);
@@ -43,6 +45,19 @@ uint64_t ncclSocketDefaultMagic(void) {
          fromEnv ? "NCCL_SOCKET_MAGIC" : "built-in default");
   });
   return cached;
+}
+
+static ncclResult_t socketSetLocalIfName(struct ncclSocket* sock, const char* localIfName) {
+  if (localIfName == nullptr) {
+    return ncclSuccess;
+  }
+  if (strlen(localIfName) >= sizeof(sock->localIfName)) {
+    WARN("ncclSocketConnect: interface name '%s' exceeds the %zu-byte limit", localIfName,
+         sizeof(sock->localIfName) - 1);
+    return ncclInvalidArgument;
+  }
+  snprintf(sock->localIfName, sizeof(sock->localIfName), "%s", localIfName);
+  return ncclSuccess;
 }
 
 void ncclSocketMove(struct ncclSocket* dst, struct ncclSocket* src) {
@@ -428,7 +443,7 @@ ncclResult_t ncclSocketReady(struct ncclSocket* sock, int* running) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName) {
 #ifdef ENABLE_TRACE
   char line[SOCKET_NAME_MAXLEN + 1];
 #endif
@@ -449,6 +464,9 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
   }
   TRACE(NCCL_INIT | NCCL_NET, "Connecting to socket %s", ncclSocketToString(&sock->addr, line));
 
+  NCCLCHECK(socketSetLocalIfName(sock, localIfName));
+  sock->bindToDevice = sock->localIfName[0] != '\0';
+  NCCLCHECK(ncclOsSocketSetNetworkOptions(sock));
   NCCLCHECK(ncclCryptStartConnect(sock));
 
   sock->state = ncclSocketStateConnecting;
@@ -547,10 +565,15 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
   sock->acceptSocketDescriptor = NCCL_INVALID_SOCKET;
   sock->customRetry = customRetry;
   sock->finalizeCounter = 0;
+  sock->localIfName[0] = '\0';
+  sock->bindToDevice = 0;
+  sock->tosConfig = NCCL_SOCKET_TOS_CONFIG;
   sock->crypto = nullptr;
 #ifdef NCCL_OS_WINDOWS
   sock->socketBlockingMode = 1;
 #endif
+
+  NCCLCHECKGOTO(socketSetLocalIfName(sock, NCCL_CLIENT_SOCKET_IFNAME.c_str()), ret, fail);
 
   if (addr) {
     /* IPv4/IPv6 support */

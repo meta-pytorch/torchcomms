@@ -29,6 +29,7 @@
 #include "utils.h"
 #include "checks.h"
 #include "param.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -249,6 +250,36 @@ fail:
   goto exit;
 }
 
+ncclResult_t ncclOsSocketSetNetworkOptions(struct ncclSocket* sock) {
+  ncclResult_t ret = ncclSuccess;
+  if (!ncclOsSocketIsValid(sock)) {
+    WARN("ncclOsSocketSetNetworkOptions: invalid socket");
+    return ncclInvalidArgument;
+  }
+
+  if (sock->bindToDevice) {
+    SYSCHECKGOTO(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, sock->localIfName,
+                           strlen(sock->localIfName) + 1),
+                 "setsockopt SO_BINDTODEVICE", ret, fail);
+    INFO(NCCL_INIT, "ncclSocketConnect bound to interface %s", sock->localIfName);
+  }
+
+  if (sock->tosConfig != -1) {
+    if (sock->addr.sa.sa_family == AF_INET6) {
+      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, IPPROTO_IPV6, IPV6_TCLASS, (char*)&sock->tosConfig, sizeof(int)),
+                   "setsockopt IPV6_TCLASS", ret, fail);
+    } else {
+      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, IPPROTO_IP, IP_TOS, (char*)&sock->tosConfig, sizeof(int)),
+                   "setsockopt IP_TOS", ret, fail);
+    }
+  }
+
+exit:
+  return ret;
+fail:
+  goto exit;
+}
+
 void ncclOsSocketResetAccept(struct ncclSocket* sock) {
   // Close the accepted peer and return to listening for another connection (see socketFinalizeAccept logging).
   (void)close(sock->socketDescriptor);
@@ -259,39 +290,47 @@ void ncclOsSocketResetAccept(struct ncclSocket* sock) {
 
 ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
   ncclResult_t ret = ncclSuccess;
-  int socketDescriptor = NCCL_INVALID_SOCKET;
-  SYSCHECKGOTO(socketDescriptor = socket(sock->addr.sa.sa_family, SOCK_STREAM, 0), "socket", ret, cleanup);
-  // if sock->socketDescriptor is valid, reuse its file descriptor number
-  if (ncclOsSocketIsValid(sock)) {
+  int newSocketDescriptor = NCCL_INVALID_SOCKET;
+  const int oldSocketDescriptor = sock->socketDescriptor;
+  SYSCHECKGOTO(newSocketDescriptor = socket(sock->addr.sa.sa_family, SOCK_STREAM, 0), "socket", ret, cleanup);
+
+  // Configure the replacement before installing it so a setup failure leaves the old descriptor untouched.
+  sock->socketDescriptor = newSocketDescriptor;
+  NCCLCHECKGOTO(ncclOsSocketSetFlags(sock), ret, rollback);
+
+  if (ncclOsSocketDescriptorIsValid(oldSocketDescriptor)) {
     // [META] Preserve the interface and traffic class; see meta/baseline_modification_docs/socket_retry_binding.md.
     char ifName[IFNAMSIZ] = {};
     socklen_t ifNameLen = sizeof(ifName);
-    SYSCHECKGOTO(getsockopt(sock->socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, ifName, &ifNameLen),
-                 "getsockopt SO_BINDTODEVICE", ret, cleanup);
+    SYSCHECKGOTO(getsockopt(oldSocketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, ifName, &ifNameLen),
+                 "getsockopt SO_BINDTODEVICE", ret, rollback);
     if (ifNameLen > 0) {
-      SYSCHECKGOTO(setsockopt(socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, ifName, ifNameLen),
-                   "setsockopt SO_BINDTODEVICE", ret, cleanup);
+      SYSCHECKGOTO(setsockopt(newSocketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, ifName, ifNameLen),
+                   "setsockopt SO_BINDTODEVICE", ret, rollback);
     }
     const int level = sock->addr.sa.sa_family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
     const int option = sock->addr.sa.sa_family == AF_INET6 ? IPV6_TCLASS : IP_TOS;
     int trafficClass = 0;
     socklen_t trafficClassLen = sizeof(trafficClass);
-    SYSCHECKGOTO(getsockopt(sock->socketDescriptor, level, option, &trafficClass, &trafficClassLen),
-                 "getsockopt traffic class", ret, cleanup);
-    SYSCHECKGOTO(setsockopt(socketDescriptor, level, option, &trafficClass, sizeof(trafficClass)),
-                 "setsockopt traffic class", ret, cleanup);
-    SYSCHECKGOTO(dup2(socketDescriptor, sock->socketDescriptor), "dup2", ret, cleanup);
-    SYSCHECKGOTO(close(socketDescriptor), "close", ret, cleanup);
+    SYSCHECKGOTO(getsockopt(oldSocketDescriptor, level, option, &trafficClass, &trafficClassLen),
+                 "getsockopt traffic class", ret, rollback);
+    SYSCHECKGOTO(setsockopt(newSocketDescriptor, level, option, &trafficClass, sizeof(trafficClass)),
+                 "setsockopt traffic class", ret, rollback);
+
+    sock->socketDescriptor = oldSocketDescriptor;
+    SYSCHECKGOTO(dup2(newSocketDescriptor, oldSocketDescriptor), "dup2", ret, cleanup);
+    (void)close(newSocketDescriptor);
   } else {
-    sock->socketDescriptor = socketDescriptor;
+    NCCLCHECKGOTO(ncclOsSocketSetNetworkOptions(sock), ret, rollback);
   }
-  NCCLCHECKGOTO(ncclOsSocketSetFlags(sock), ret, exit);
+  newSocketDescriptor = NCCL_INVALID_SOCKET;
 exit:
   return ret;
+rollback:
+  sock->socketDescriptor = oldSocketDescriptor;
 cleanup:
-  // cleanup socketDescriptor, leave sock->socketDescriptor untouched
-  if (socketDescriptor != NCCL_INVALID_SOCKET) {
-    (void)close(socketDescriptor);
+  if (newSocketDescriptor != NCCL_INVALID_SOCKET) {
+    (void)close(newSocketDescriptor);
   }
   goto exit;
 }
@@ -398,6 +437,29 @@ ncclResult_t ncclOsSocketProgressOpt(int op, struct ncclSocket* sock, void* ptr,
   return ncclSuccess;
 }
 
+static bool socketAddressMatchesPrefix(const struct sockaddr* addr, const std::string& prefix) {
+  char host[NI_MAXHOST] = {0};
+  const void* address;
+  if (addr->sa_family == AF_INET) {
+    address = &reinterpret_cast<const struct sockaddr_in*>(addr)->sin_addr;
+  } else if (addr->sa_family == AF_INET6) {
+    address = &reinterpret_cast<const struct sockaddr_in6*>(addr)->sin6_addr;
+  } else {
+    return false;
+  }
+  if (inet_ntop(addr->sa_family, address, host, sizeof(host)) == nullptr) {
+    return false;
+  }
+  const size_t hostLength = strlen(host);
+  if (prefix.size() > hostLength || strncmp(host, prefix.c_str(), prefix.size()) != 0) {
+    return false;
+  }
+  if (addr->sa_family != AF_INET || prefix.empty() || prefix.back() == '.' || prefix.size() == hostLength) {
+    return true;
+  }
+  return host[prefix.size()] == '.';
+}
+
 ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncclSocketAddress* addrs, int sock_family,
                                   int maxIfNameSize, int maxIfs, int* found) {
 #ifdef ENABLE_TRACE
@@ -438,6 +500,14 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
     // check against user specified interfaces
     if (!(matchIfList(interface->ifa_name, -1, userIfs, nUserIfs, searchExact) ^ searchNot)) {
       continue;
+    }
+
+    if (!NCCL_SOCKET_IPADDR_PREFIX.empty()) {
+      if (!socketAddressMatchesPrefix(interface->ifa_addr, NCCL_SOCKET_IPADDR_PREFIX)) {
+        continue;
+      }
+      TRACE(NCCL_INIT, "NCCL_SOCKET_IPADDR_PREFIX %s matched interface %s", NCCL_SOCKET_IPADDR_PREFIX.c_str(),
+            interface->ifa_name);
     }
 
     // Check that this interface has not already been saved

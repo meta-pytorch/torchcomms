@@ -62,6 +62,7 @@ void ncclOsPollSocket(ncclSocketDescriptor sock, int op);
 ncclResult_t ncclOsSocketPollConnect(struct ncclSocket* sock);
 ncclResult_t ncclOsSocketStartConnect(struct ncclSocket* sock);
 ncclResult_t ncclOsSocketSetFlags(struct ncclSocket* sock);
+ncclResult_t ncclOsSocketSetNetworkOptions(struct ncclSocket* sock);
 ncclResult_t ncclOsSocketProgressOpt(int op, struct ncclSocket* sock, void* ptr, int size, int* offset, int block,
                                      int* closed);
 ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock);
