@@ -423,6 +423,10 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
 //     - DefaultRcclxApi::allGatherInit
 //     - DefaultRcclxApi::allGatherExec
 //     - DefaultRcclxApi::pFree
+//     - DefaultRcclxApi::registeredAllReduceAbiVersion
+//     - DefaultRcclxApi::registeredAllReduceInit
+//     - DefaultRcclxApi::registeredAllReduceExec
+//     - DefaultRcclxApi::registeredAllReduceFinalize
 //     - DefaultRcclxApi::shardedRelayMultiGroupAllReduce
 //     - DefaultRcclxApi::shardedRelayMultiGroupReduceScatter
 //     - DefaultRcclxApi::shardedRelayMultiGroupAllToAll

@@ -12,13 +12,29 @@
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <vector>
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.4";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.5";
+
+class RegisteredAllReduce {
+ public:
+  virtual ~RegisteredAllReduce() = default;
+
+  virtual void all_reduce(
+      const at::Tensor& input,
+      const ReduceOp& op,
+      const at::Tensor& output) = 0;
+  virtual void close() = 0;
+  virtual bool isClosed() const = 0;
+  virtual const at::Tensor& input() const = 0;
+  virtual const at::Tensor& output() const = 0;
+  virtual size_t capacityBytes() const = 0;
+};
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -427,6 +443,20 @@ class TorchCommBackend {
   virtual void abort(const AbortInfo& info) {
     validateTerminalAbortReason(info.reason);
     abort();
+  }
+
+  // ABI 1.5 additions are appended so existing virtual slots retain their
+  // ordering. RegisteredAllReduce retains its fixed input/output tensors and
+  // must be explicitly closed by the caller.
+  virtual std::shared_ptr<RegisteredAllReduce> registered_all_reduce(
+      const at::Tensor& /* input */,
+      const at::Tensor& /* output */,
+      std::optional<size_t> /* capacity_bytes */ = std::nullopt,
+      const RegisteredAllReduceOptions& /* options */ = {}) {
+    throw std::logic_error(
+        "[TorchCommBackend]: registered_all_reduce not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
   }
 
  protected:

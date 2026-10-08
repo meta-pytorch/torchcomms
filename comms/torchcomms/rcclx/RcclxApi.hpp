@@ -273,6 +273,29 @@ class RcclxApi {
 
   virtual ncclResult_t pFree(void* request) = 0;
 
+  // Registered AllReduce lifecycle operations (public RCCLX ABI)
+  virtual int registeredAllReduceAbiVersion() = 0;
+
+  virtual ncclResult_t registeredAllReduceInit(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t capacityBytes,
+      ncclComm_t comm,
+      void** request) = 0;
+
+  virtual ncclResult_t registeredAllReduceExec(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      hipStream_t stream,
+      void* request) = 0;
+
+  virtual ncclResult_t registeredAllReduceFinalize(
+      void* request,
+      hipStream_t stream) = 0;
+
   // Memory allocation for NCCL-managed buffers
   virtual ncclResult_t memAlloc(void** ptr, size_t size) = 0;
   virtual ncclResult_t memFree(void* ptr) = 0;
@@ -592,6 +615,28 @@ class DefaultRcclxApi : public RcclxApi {
       void* request) override;
 
   ncclResult_t pFree(void* request) override;
+
+  // Registered AllReduce lifecycle operations (public RCCLX ABI)
+  int registeredAllReduceAbiVersion() override;
+
+  ncclResult_t registeredAllReduceInit(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t capacityBytes,
+      ncclComm_t comm,
+      void** request) override;
+
+  ncclResult_t registeredAllReduceExec(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      ncclRedOp_t op,
+      hipStream_t stream,
+      void* request) override;
+
+  ncclResult_t registeredAllReduceFinalize(void* request, hipStream_t stream)
+      override;
 
   // Memory allocation for NCCL-managed buffers
   ncclResult_t memAlloc(void** ptr, size_t size) override;
