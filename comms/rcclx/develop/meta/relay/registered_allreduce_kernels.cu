@@ -709,6 +709,248 @@ __global__ void registeredAllReduceProbeKernel(
   out[2 * i + 1] = (static_cast<uint64_t>(value.w) << 32) | value.z;
 }
 
+// Wide-row gated-residual-norm epilogue. Arithmetic order matches the reference
+// Triton post-norm/gated-residual/pre-norm kernel at its 8-warp configuration
+// for 4608-element rows: each thread sums its first eight squares with the
+// same multiply-add chain as the 8192 epilogue, then adds its (masked) second
+// eight squares one by one; the DPP wave tree is unchanged and the cross-wave
+// butterfly spans 8 waves. The mean is a correctly rounded division by the
+// hidden size, then the epsilon is added. Every rank reduces its rows itself
+// (one-shot), so no scratch and no row owner are involved.
+constexpr int kWideNormWaves = kRegisteredAllReduceWideNormThreads / 64;
+constexpr int kWideNormHeadElements =
+    kRegisteredAllReduceWideNormThreads * kElementsPerVector;
+constexpr int kWideNormTailThreads =
+    (kRegisteredAllReduceWideNormHidden - kWideNormHeadElements) /
+    kElementsPerVector;
+static_assert(kWideNormWaves == 8);
+static_assert(
+    kWideNormTailThreads > 0 &&
+    kWideNormTailThreads <= kRegisteredAllReduceWideNormThreads);
+
+__device__ __forceinline__ float wideRowSum(float value, float* waveSums) {
+  constexpr int kRowShr = 0x110;
+  constexpr int kRowBcast15 = 0x142;
+  constexpr int kRowBcast31 = 0x143;
+  value = value + dppUpdate<kRowShr + 8>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 4>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 2>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 1>(0.0f, value);
+  value = dppUpdate<kRowBcast15, 0xa>(value, value) + value;
+  value = value + dppUpdate<kRowBcast31>(0.0f, value);
+  const float waveTotal = __builtin_bit_cast(
+      float, __builtin_amdgcn_readlane(__builtin_bit_cast(int, value), 63));
+  if (threadIdx.x % 64 == 0) {
+    waveSums[threadIdx.x / 64] = waveTotal;
+  }
+  __syncthreads();
+  float sums[kWideNormWaves];
+#pragma unroll
+  for (int wave = 0; wave < kWideNormWaves; ++wave) {
+    sums[wave] = waveSums[wave];
+  }
+#pragma unroll
+  for (int step = kWideNormWaves / 2; step >= 1; step /= 2) {
+#pragma unroll
+    for (int wave = 0; wave < step; ++wave) {
+      sums[wave] = sums[wave] + sums[wave + step];
+    }
+  }
+  return sums[0];
+}
+
+__device__ __forceinline__ float wideSquareSum(
+    const float (&head)[kElementsPerVector],
+    const float (&tail)[kElementsPerVector],
+    bool hasTail) {
+#pragma clang fp contract(off)
+  float sum = normSquareSum(head);
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    sum = sum + (hasTail ? tail[element] * tail[element] : 0.0f);
+  }
+  return sum;
+}
+
+__device__ __forceinline__ float wideNormScale(float sum, float epsilon) {
+#pragma clang fp contract(off)
+  constexpr float kHidden = kRegisteredAllReduceWideNormHidden;
+  return __builtin_amdgcn_rsqf(__fdiv_rn(sum, kHidden) + epsilon);
+}
+
+// One eight-element slice of a row: its reduction, operands, and results.
+struct WideSlice {
+  size_t offset;
+  int channel;
+  Vec reduced;
+  float branch[kElementsPerVector];
+  float residual[kElementsPerVector];
+  float preInput[kElementsPerVector];
+  float gateAlpha[kElementsPerVector];
+  float gateBeta[kElementsPerVector];
+  float residualIn[kElementsPerVector];
+  Vec postNormWeight;
+  Vec preNormWeight;
+};
+
+template <bool PostWeight>
+__device__ __forceinline__ void loadWideOperands(
+    WideSlice& slice,
+    const RegisteredAllReduceGatedResidualNormArgs& norm) {
+  loadFloats(slice.residualIn, norm.residualIn + slice.offset);
+  loadFloats(slice.gateAlpha, norm.gateAlpha + slice.channel);
+  loadFloats(slice.gateBeta, norm.gateBeta + slice.channel);
+  slice.preNormWeight =
+      *reinterpret_cast<const Vec*>(norm.preNormWeight + slice.channel);
+  if constexpr (PostWeight) {
+    slice.postNormWeight =
+        *reinterpret_cast<const Vec*>(norm.postNormWeight + slice.channel);
+  }
+}
+
+template <bool PostWeight>
+__device__ __forceinline__ void wideResidual(
+    WideSlice& slice,
+    float postScale) {
+#pragma clang fp contract(off)
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    float scaled = slice.branch[element] * postScale;
+    if constexpr (PostWeight) {
+      scaled = scaled * static_cast<float>(slice.postNormWeight[element]);
+    }
+    const float normedBranch = roundToBf16(scaled);
+    slice.residual[element] = __builtin_fmaf(
+        slice.gateBeta[element],
+        normedBranch,
+        slice.gateAlpha[element] * slice.residualIn[element]);
+    slice.preInput[element] = roundToBf16(slice.residual[element]);
+  }
+}
+
+__device__ __forceinline__ void wideStore(
+    const WideSlice& slice,
+    float preScale,
+    __nv_bfloat16* __restrict__ output,
+    const RegisteredAllReduceGatedResidualNormArgs& norm) {
+#pragma clang fp contract(off)
+  storeFloats(norm.residualOut + slice.offset, slice.residual);
+  Vec normed;
+  float normedFloat[kElementsPerVector];
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    normedFloat[element] = roundToBf16(
+        slice.preInput[element] * preScale *
+        static_cast<float>(slice.preNormWeight[element]));
+    normed[element] = static_cast<__bf16>(normedFloat[element]);
+  }
+  *reinterpret_cast<Vec*>(output + slice.offset) = normed;
+  if (norm.routerOut != nullptr) {
+    storeFloats(norm.routerOut + slice.offset, normedFloat);
+  }
+}
+
+template <int NRanks, bool PostWeight>
+__global__ void __launch_bounds__(kRegisteredAllReduceWideNormThreads)
+    registeredAllReduceWideGatedResidualNormKernel(
+        __nv_bfloat16* __restrict__ output,
+        int rank,
+        RegisteredAllReduceInputTable inputs,
+        RegisteredAllReduceStateTable states,
+        RegisteredAllReduceGatedResidualNormArgs norm) {
+  __shared__ uint32_t targetEpochs[kRegisteredAllReduceRanks];
+  __shared__ uint32_t sourceEpochs[kRegisteredAllReduceRanks];
+  __shared__ float postSums[kWideNormWaves];
+  __shared__ float preSums[kWideNormWaves];
+  const bool hasTail = threadIdx.x < kWideNormTailThreads;
+  const size_t rowOffset =
+      static_cast<size_t>(blockIdx.x) * kRegisteredAllReduceWideNormHidden;
+  WideSlice head;
+  WideSlice tail;
+  head.channel = threadIdx.x * kElementsPerVector;
+  head.offset = rowOffset + head.channel;
+  tail.channel = kWideNormHeadElements + head.channel;
+  tail.offset = rowOffset + tail.channel;
+  const Vec* own = reinterpret_cast<const Vec*>(inputs.input[rank]);
+  const Vec headOwn = own[head.offset / kElementsPerVector];
+  Vec tailOwn;
+  loadWideOperands<PostWeight>(head, norm);
+  if (hasTail) {
+    tailOwn = own[tail.offset / kElementsPerVector];
+    loadWideOperands<PostWeight>(tail, norm);
+  }
+
+  genericStartHandshake<NRanks>(rank, states, targetEpochs, sourceEpochs);
+  head.reduced = reduceVectorGeneric<NRanks>(
+      inputs, rank, headOwn, head.offset / kElementsPerVector);
+  if (hasTail) {
+    tail.reduced = reduceVectorGeneric<NRanks>(
+        inputs, rank, tailOwn, tail.offset / kElementsPerVector);
+  }
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    head.branch[element] = static_cast<float>(head.reduced[element]);
+    tail.branch[element] =
+        hasTail ? static_cast<float>(tail.reduced[element]) : 0.0f;
+  }
+
+  const float postScale = wideNormScale(
+      wideRowSum(wideSquareSum(head.branch, tail.branch, hasTail), postSums),
+      norm.postNormEpsilon);
+  wideResidual<PostWeight>(head, postScale);
+  if (hasTail) {
+    wideResidual<PostWeight>(tail, postScale);
+  }
+  const float preScale = wideNormScale(
+      wideRowSum(wideSquareSum(head.preInput, tail.preInput, hasTail), preSums),
+      norm.preNormEpsilon);
+  wideStore(head, preScale, output, norm);
+  if (hasTail) {
+    wideStore(tail, preScale, output, norm);
+  }
+  genericDoneHandshake<NRanks>(rank, states, targetEpochs, sourceEpochs);
+}
+
+template <int NRanks, bool PostWeight>
+void launchWideNorm(
+    __nv_bfloat16* output,
+    int rank,
+    const RegisteredAllReduceInputTable& inputs,
+    const RegisteredAllReduceStateTable& states,
+    const RegisteredAllReduceGatedResidualNormArgs& norm,
+    int rows,
+    hipStream_t stream) {
+  hipLaunchKernelGGL(
+      (registeredAllReduceWideGatedResidualNormKernel<NRanks, PostWeight>),
+      dim3(rows),
+      dim3(kRegisteredAllReduceWideNormThreads),
+      0,
+      stream,
+      output,
+      rank,
+      inputs,
+      states,
+      norm);
+}
+
+template <int NRanks>
+void launchWideNormRanks(
+    __nv_bfloat16* output,
+    int rank,
+    const RegisteredAllReduceInputTable& inputs,
+    const RegisteredAllReduceStateTable& states,
+    const RegisteredAllReduceGatedResidualNormArgs& norm,
+    int rows,
+    hipStream_t stream) {
+  if (norm.postNormWeight != nullptr) {
+    launchWideNorm<NRanks, true>(
+        output, rank, inputs, states, norm, rows, stream);
+  } else {
+    launchWideNorm<NRanks, false>(
+        output, rank, inputs, states, norm, rows, stream);
+  }
+}
+
 } // namespace
 
 hipError_t launchRegisteredAllReduceProbe(
@@ -737,14 +979,43 @@ hipError_t launchRegisteredAllReduceKernel(
     size_t count,
     const RegisteredAllReduceGatedResidualNormArgs* norm,
     hipStream_t stream,
-    int nRanks) {
+    int nRanks,
+    size_t hiddenSize) {
   const size_t bytes = count * sizeof(__nv_bfloat16);
   if (!isRegisteredAllReduceRankCount(nRanks) || rank < 0 || rank >= nRanks) {
     return hipErrorInvalidValue;
   }
   const bool fourRanks = nRanks == kRegisteredAllReduceRanks;
-  if (norm != nullptr) {
-    if (!fourRanks || bytes != kRegisteredAllReduceOneMiBBytes) {
+  if (norm != nullptr && hiddenSize == kRegisteredAllReduceWideNormHidden) {
+    const size_t rows = count / kRegisteredAllReduceWideNormHidden;
+    if (count % kRegisteredAllReduceWideNormHidden != 0 || rows == 0 ||
+        rows > kRegisteredAllReduceWideNormMaxRows ||
+        norm->preNormWeight == nullptr) {
+      return hipErrorInvalidValue;
+    }
+    auto* const typedOutput = reinterpret_cast<__nv_bfloat16*>(output);
+    if (fourRanks) {
+      launchWideNormRanks<kRegisteredAllReduceRanks>(
+          typedOutput,
+          rank,
+          inputs,
+          states,
+          *norm,
+          static_cast<int>(rows),
+          stream);
+    } else {
+      launchWideNormRanks<2>(
+          typedOutput,
+          rank,
+          inputs,
+          states,
+          *norm,
+          static_cast<int>(rows),
+          stream);
+    }
+  } else if (norm != nullptr) {
+    if (!fourRanks || bytes != kRegisteredAllReduceOneMiBBytes ||
+        hiddenSize != kRegisteredAllReduceNormHidden) {
       return hipErrorInvalidValue;
     }
     hipLaunchKernelGGL(
