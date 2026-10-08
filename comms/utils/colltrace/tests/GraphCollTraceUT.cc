@@ -89,7 +89,7 @@ class GraphRingLifetimeTestAccessor {
  public:
   static std::weak_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
   ring(const CollTrace& colltrace) {
-    return colltrace.ringBuffer_;
+    return colltrace.ringBuffer_.copy();
   }
 };
 
@@ -345,16 +345,33 @@ class GraphColltraceProgressingTest : public ::testing::Test {
 
     // Enable cudagraph tracing for these tests.
     cvarGuard_.emplace(NCCL_COLLTRACE_TRACE_CUDA_GRAPH, true);
+    // Bool cvars read false until ncclCvarInit(), which these tests skip.
+    asyncWarmupGuard_.emplace(NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP, true);
 
     hrdw_ring_buffer::GlobaltimerCalibration::get();
 
     createCollTrace(nullptr);
   }
 
-  // Replaces colltrace_ (and progressPlugin_) with a fresh instance. The hook
-  // lets a test stop the poll thread between its cancellation sweep and its
-  // ring dispatch.
-  void createCollTrace(std::function<void()> afterGraphSweepHook) {
+  static constexpr std::chrono::seconds kWarmupDeadline{30};
+
+  static meta::comms::CommsMaybeVoid setDeviceAndThreadLocalCapture() {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaSetDevice(0);
+    auto mode = cudaStreamCaptureModeThreadLocal;
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaThreadExchangeStreamCaptureMode(&mode);
+    return folly::unit;
+  }
+
+  // Replaces colltrace_ (and progressPlugin_) with a fresh instance. The sweep
+  // hook lets a test stop the poll thread between its cancellation sweep and
+  // its ring dispatch; the warmup hook gates background graph bring-up.
+  void createCollTrace(
+      std::function<void()> afterGraphSweepHook,
+      std::function<void()> beforeGraphWarmupHook = nullptr,
+      std::function<meta::comms::CommsMaybeVoid()> threadSetupFunc =
+          setDeviceAndThreadLocalCapture) {
     auto progressPlugin = std::make_unique<ProgressTrackingPlugin>();
     progressPlugin_ = progressPlugin.get();
 
@@ -372,17 +389,99 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     colltrace_ = std::make_shared<CollTrace>(
         CollTraceConfig{
             .maxCheckCancelInterval = std::chrono::milliseconds{1},
-            .afterGraphSweepHook = std::move(afterGraphSweepHook)},
+            .afterGraphSweepHook = std::move(afterGraphSweepHook),
+            .beforeGraphWarmupHook = std::move(beforeGraphWarmupHook)},
         logData,
-        []() -> meta::comms::CommsMaybeVoid {
-          // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-          cudaSetDevice(0);
-          auto mode = cudaStreamCaptureModeThreadLocal;
-          // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
-          cudaThreadExchangeStreamCaptureMode(&mode);
-          return folly::unit;
-        },
+        std::move(threadSetupFunc),
         std::move(plugins));
+  }
+
+  // Gates background warmup, then records a graph collective on a worker
+  // thread inside a global-mode capture and releases the gate while that
+  // capture is open, so warmup's CUDA calls overlap it. Verifies construction
+  // returns while warmup is gated, the record blocks until warmup completes,
+  // and the capture stays valid. With warmupKeepsGlobalCaptureMode, the setup
+  // function leaves the warmup thread in global mode, so only
+  // warmupGraphTracing's own capture-mode guard keeps the capture valid.
+  void expectWarmupOverlapsCaptureCleanly(bool warmupKeepsGlobalCaptureMode) {
+    auto gate = std::make_shared<std::promise<void>>();
+    auto gateFuture = gate->get_future().share();
+    auto enteredPromise = std::make_shared<std::promise<void>>();
+    auto enteredFuture = enteredPromise->get_future();
+    auto warmupThreadId = std::make_shared<std::atomic<std::thread::id>>();
+    createCollTrace(
+        nullptr,
+        [gateFuture, enteredPromise, warmupThreadId]() {
+          warmupThreadId->store(std::this_thread::get_id());
+          enteredPromise->set_value();
+          if (gateFuture.wait_for(kWarmupDeadline) !=
+              std::future_status::ready) {
+            ADD_FAILURE() << "warmup gate never released; construction "
+                             "likely blocked on warmup";
+          }
+        },
+        [warmupKeepsGlobalCaptureMode,
+         warmupThreadId]() -> meta::comms::CommsMaybeVoid {
+          if (warmupKeepsGlobalCaptureMode &&
+              warmupThreadId->load() == std::this_thread::get_id()) {
+            // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+            cudaSetDevice(0);
+            return folly::unit;
+          }
+          return setDeviceAndThreadLocalCapture();
+        });
+
+    ASSERT_EQ(
+        enteredFuture.wait_for(kWarmupDeadline), std::future_status::ready)
+        << "background graph warmup did not start";
+    // Construction returned while warmup is still gated: nothing published.
+    EXPECT_TRUE(
+        meta::comms::colltrace::GraphRingLifetimeTestAccessor::ring(*colltrace_)
+            .expired());
+
+    // A broken gate would either fail fast on the null ring or record before
+    // warmup published one.
+    auto recordFuture = std::async(std::launch::async, [this]() {
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaSetDevice(0);
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      auto beginErr =
+          cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
+      auto result = colltrace_->recordCollective(
+          std::make_unique<SimpleMetadata>(),
+          std::make_unique<GraphCudaWaitEvent>(stream_));
+      cudaGraph_t graph = nullptr;
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      auto endErr = cudaStreamEndCapture(stream_, &graph);
+      return std::tuple{beginErr, std::move(result), endErr, graph};
+    });
+
+    // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_NE(
+        recordFuture.wait_for(std::chrono::seconds(0)),
+        std::future_status::ready)
+        << "graph record should block until warmup completes";
+
+    gate->set_value();
+    ASSERT_EQ(recordFuture.wait_for(kWarmupDeadline), std::future_status::ready)
+        << "graph record did not return after warmup was released";
+    auto [beginErr, result, endErr, graph] = recordFuture.get();
+    EXPECT_EQ(beginErr, cudaSuccess);
+    std::string err;
+    if (result.hasError()) {
+      err = result.error().message;
+    }
+    ASSERT_TRUE(result.hasValue()) << err;
+    EXPECT_NE(result.value(), nullptr);
+    // Warmup's ring allocation ran while the capture was open; the capture
+    // survives only if that thread was out of global capture mode.
+    EXPECT_EQ(endErr, cudaSuccess);
+    EXPECT_NE(graph, nullptr);
+    if (graph != nullptr) {
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaGraphDestroy(graph);
+    }
   }
 
   void TearDown() override {
@@ -486,6 +585,7 @@ class GraphColltraceProgressingTest : public ::testing::Test {
 
   cudaStream_t stream_{nullptr};
   std::optional<EnvRAII<bool>> cvarGuard_;
+  std::optional<EnvRAII<bool>> asyncWarmupGuard_;
   std::shared_ptr<CollTrace> colltrace_;
   ProgressTrackingPlugin* progressPlugin_{nullptr};
   meta::comms::colltrace::LifecycleEventFeedPlugin* feedPlugin_{nullptr};
@@ -525,6 +625,35 @@ TEST_F(GraphColltraceProgressingTest, DetectsInFlightCollective) {
   auto completedIds = progressPlugin_->getCompletedCollIds();
   EXPECT_EQ(completedIds.size(), kNumColls)
       << "All collectives should be marked completed after stream sync";
+}
+
+// Graph bring-up (calibration + ring) runs on a background thread so
+// construction never pays the process-cold CUDA cost.
+TEST_F(GraphColltraceProgressingTest, GraphWarmupDoesNotBlockConstruction) {
+  expectWarmupOverlapsCaptureCleanly(/*warmupKeepsGlobalCaptureMode=*/false);
+}
+
+// The setup function does not switch the warmup thread out of global capture
+// mode, so warmupGraphTracing must guard its own CUDA calls.
+TEST_F(
+    GraphColltraceProgressingTest,
+    GraphWarmupKeepsCaptureValidWithoutSetupCaptureMode) {
+  expectWarmupOverlapsCaptureCleanly(/*warmupKeepsGlobalCaptureMode=*/true);
+}
+
+// With async warmup disabled, bring-up finishes on the constructing thread
+// before construction returns.
+TEST_F(GraphColltraceProgressingTest, SyncGraphWarmupPublishesRingInCtor) {
+  EnvRAII<bool> asyncWarmup(NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP, false);
+  std::thread::id warmupThreadId;
+  createCollTrace(nullptr, [&warmupThreadId]() {
+    warmupThreadId = std::this_thread::get_id();
+  });
+
+  EXPECT_EQ(warmupThreadId, std::this_thread::get_id());
+  EXPECT_FALSE(
+      meta::comms::colltrace::GraphRingLifetimeTestAccessor::ring(*colltrace_)
+          .expired());
 }
 
 TEST_F(GraphColltraceProgressingTest, CancelledCaptureIgnoresReplayEvents) {
