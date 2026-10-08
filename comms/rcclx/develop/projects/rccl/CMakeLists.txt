@@ -135,6 +135,8 @@ set(CONDA_LIB_DIR "$ENV{CONDA_LIB_DIR}" CACHE PATH "Path to conda lib directory"
 set(FBCODE_DIR "${CMAKE_SOURCE_DIR}/../../../../..")
 get_filename_component(FBCODE_DIR "${FBCODE_DIR}" ABSOLUTE)
 option(ENABLE_WARP_SPEED                       "Enable WARP_SPEED optimizations"               OFF)
+option(ENABLE_RCCL_EP_TESTS                    "Build rccl_ep multi-GPU tests; needs ENABLE_MPI_TESTS and a runtime with working cuMem symmetric memory" OFF)
+option(ENABLE_RCCL_EP_IN_LIBRCCL               "Compile rccl_ep into librccl.so instead of the standalone librccl_ep.so; gfx9 only" OFF)
 
 # Default GPU architectures to build
 #==================================================================================================
