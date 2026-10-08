@@ -101,12 +101,8 @@ else
 endif
 $(info NVCC_GENCODE is ${NVCC_GENCODE})
 
-# CUDA 13.0 requires c++17
-ifeq ($(shell test "0$(CUDA_MAJOR)" -ge 13; echo $$?),0)
-  CXXSTD ?= -std=c++17
-else
-  CXXSTD ?= -std=c++14
-endif
+# The shared CTran sources require C++20.
+CXXSTD ?= -std=c++20
 
 CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisibility=hidden \
               -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter \
@@ -116,7 +112,7 @@ CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisi
 # Maxrregcount needs to be set accordingly to NCCL_MAX_NTHREADS (otherwise it will cause kernel launch errors)
 # 512 : 120, 640 : 96, 768 : 80, 1024 : 60
 # We would not have to set this if we used __launch_bounds__, but this only works on kernels, not on functions.
-NVCUFLAGS  := -ccbin $(CXX) $(NVCC_GENCODE) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrregcount=96 -Xfatbin -compress-all
+NVCUFLAGS  := -ccbin $(CXX) $(NVCC_GENCODE) $(CXXSTD) --expt-extended-lambda --expt-relaxed-constexpr -Xptxas -maxrregcount=96 -Xfatbin -compress-all
 # Pass OS define to NVCC (must be after NVCUFLAGS := or it would be overwritten)
 ifeq ($(NCCL_OS_LINUX), 1)
   NVCUFLAGS += -DNCCL_OS_LINUX
@@ -127,7 +123,18 @@ endif
 # Use addprefix so that we can specify more than one path
 NVLDFLAGS  := -L${CUDA_LIB} -lcudart -lrt
 
+# Shared colltrace and trainer-context sources use 128-bit atomics.
+LDFLAGS   += -latomic
+
 NVCUFLAGS_SYM :=
+
+# CUDA 13 changed the visibility and linkage of device entities and global
+# template stubs. CTran launches kernels across translation units, so preserve
+# the CUDA 12 behavior for those symbols.
+ifeq ($(shell test "0$(CUDA_MAJOR)" -ge 13; echo $$?),0)
+  NVCUFLAGS += --device-entity-has-hidden-visibility=false -static-global-template-stub=false
+  NVCUFLAGS_SYM += --device-entity-has-hidden-visibility=false -static-global-template-stub=false
+endif
 
 ########## GCOV ##########
 GCOV ?= 0 # disable by default.

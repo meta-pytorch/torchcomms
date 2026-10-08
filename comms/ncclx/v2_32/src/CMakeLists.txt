@@ -236,6 +236,9 @@ target_link_libraries(nccl
     CUDA::cudart
     ${EXTRA_LIBS}
 )
+if(NCCL_OS_LINUX)
+    target_link_libraries(nccl PRIVATE atomic)
+endif()
 
 # Add version script for symbol visibility control on linkers that support it.
 if(NOT NCCL_OS_WINDOWS)
@@ -355,6 +358,9 @@ target_link_libraries(nccl_static
     CUDA::cudart
     ${EXTRA_LIBS}
 )
+if(NCCL_OS_LINUX)
+    target_link_libraries(nccl_static PUBLIC atomic)
+endif()
 
 # Set CUDA specific flags (match nccl shared library for consistency).
 set_target_properties(nccl_static PROPERTIES
