@@ -33,6 +33,7 @@
 #include "meta/relay/sharded_relay_all_gather.h"
 #include "meta/relay/relay_control.h"
 #include "meta/relay/registered_allreduce.h"
+#include "meta/relay/registered_alltoall.h"
 
 #include <cstddef>
 #include <cstring>
@@ -1086,6 +1087,61 @@ ncclResult_t ncclRegisteredAllReduceFinalize_impl(
 ncclResult_t ncclRegisteredAllReduceFinalize(
     void* request, hipStream_t stream) {
   return ncclRegisteredAllReduceFinalize_impl(request, stream);
+}
+
+NCCL_API(int, ncclRegisteredAllToAllAbiVersion, void);
+
+int ncclRegisteredAllToAllAbiVersion_impl(void) {
+  return NCCL_REGISTERED_ALL_TO_ALL_ABI_VERSION;
+}
+
+int ncclRegisteredAllToAllAbiVersion(void) {
+  return ncclRegisteredAllToAllAbiVersion_impl();
+}
+
+NCCL_API(ncclResult_t, ncclRegisteredAllToAllInit,
+    const void* sendbuff, void* recvbuff, const ncclRegisteredAllToAllLayout* layout,
+    const ncclRegisteredAllToAllConfig* config, ncclComm_t comm, void** request);
+
+ncclResult_t ncclRegisteredAllToAllInit_impl(
+    const void* sendbuff, void* recvbuff, const ncclRegisteredAllToAllLayout* layout,
+    const ncclRegisteredAllToAllConfig* config, ncclComm_t comm, void** request) {
+  return rcclx::relay::registeredAllToAllPublicInit(
+      sendbuff, recvbuff, layout, config, comm, request);
+}
+
+ncclResult_t ncclRegisteredAllToAllInit(
+    const void* sendbuff, void* recvbuff, const ncclRegisteredAllToAllLayout* layout,
+    const ncclRegisteredAllToAllConfig* config, ncclComm_t comm, void** request) {
+  return ncclRegisteredAllToAllInit_impl(
+      sendbuff, recvbuff, layout, config, comm, request);
+}
+
+NCCL_API(ncclResult_t, ncclRegisteredAllToAllExec,
+    const void* sendbuff, void* recvbuff, hipStream_t stream, void* request);
+
+ncclResult_t ncclRegisteredAllToAllExec_impl(
+    const void* sendbuff, void* recvbuff, hipStream_t stream, void* request) {
+  return rcclx::relay::registeredAllToAllPublicExec(
+      sendbuff, recvbuff, stream, request);
+}
+
+ncclResult_t ncclRegisteredAllToAllExec(
+    const void* sendbuff, void* recvbuff, hipStream_t stream, void* request) {
+  return ncclRegisteredAllToAllExec_impl(sendbuff, recvbuff, stream, request);
+}
+
+NCCL_API(ncclResult_t, ncclRegisteredAllToAllFinalize,
+    void* request, hipStream_t stream);
+
+ncclResult_t ncclRegisteredAllToAllFinalize_impl(
+    void* request, hipStream_t stream) {
+  return rcclx::relay::registeredAllToAllPublicFinalize(request, stream);
+}
+
+ncclResult_t ncclRegisteredAllToAllFinalize(
+    void* request, hipStream_t stream) {
+  return ncclRegisteredAllToAllFinalize_impl(request, stream);
 }
 
 // Host control plane for the relay collectives. Two functions and one struct is

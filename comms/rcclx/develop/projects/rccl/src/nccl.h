@@ -1254,6 +1254,97 @@ ncclResult_t  ncclRegisteredAllReduceFinalize(void* request, hipStream_t stream)
 ncclResult_t pncclRegisteredAllReduceFinalize(void* request, hipStream_t stream);
 /*! @endcond */
 
+/*! @brief ABI revision of the registered all-to-all lifecycle entry points. */
+#define NCCL_REGISTERED_ALL_TO_ALL_ABI_VERSION 1
+
+/*! @brief      ABI revision of the registered all-to-all entry points.
+    @return     The value of @ref NCCL_REGISTERED_ALL_TO_ALL_ABI_VERSION this library was built with. */
+int  ncclRegisteredAllToAllAbiVersion(void);
+/*! @cond       include_hidden */
+int pncclRegisteredAllToAllAbiVersion(void);
+/*! @endcond */
+
+/*! @brief      Row geometry of a registered all-to-all, in bytes.
+    @details    Every (source s, destination d) pair moves rows rows of rowBytes. Row t of the pair
+                is read at sendbuff(s) + d * sendPeerStride + t * sendRowStride and written to
+                recvbuff(d) + s * recvPeerStride + t * recvRowStride. Strides and rowBytes must be
+                multiples of 16. */
+typedef struct {
+  size_t rows;            /*!< Rows per (source, destination) pair */
+  size_t rowBytes;        /*!< Bytes per row */
+  size_t sendRowStride;   /*!< Bytes between consecutive rows in the send buffer */
+  size_t sendPeerStride;  /*!< Bytes between destinations' row blocks in the send buffer */
+  size_t recvRowStride;   /*!< Bytes between consecutive rows in the receive buffer */
+  size_t recvPeerStride;  /*!< Bytes between sources' row blocks in the receive buffer */
+} ncclRegisteredAllToAllLayout;
+
+/*! @brief      Tuning of a registered all-to-all. Zero-initialize for defaults.
+    @details    relayFraction is the share of every pair's rows relayed through the node's other
+                GPUs (split evenly across them); 0 sends everything directly. With no reachable
+                helper GPU the exchange is direct regardless. The remaining fields size the
+                kernels; 0 selects the default. */
+typedef struct {
+  float relayFraction;    /*!< [0, 1) share of rows relayed through helper GPUs */
+  int chunkRows;          /*!< Rows per relay chunk (default 16) */
+  int directCtasPerPeer;  /*!< CTAs per direct source (default 16) */
+  int relayCtasPerPath;   /*!< CTAs per (source, helper) relay path (default 4) */
+} ncclRegisteredAllToAllConfig;
+
+/*! @brief      Register fixed buffers for a persistent all-to-all request.
+    @details    Collective over the four ranks of comm (one node, gfx950, direct all-pairs P2P).
+                Destinations pull their direct rows from the sources' registered send buffers.
+                With relayFraction > 0, each source also copies a share of every pair's rows
+                into staging it allocates in the HBM of the node's other GPUs (visible to every
+                rank; NCCL_RELAY_HELPER_DEVICES / NCCL_RELAY_MAX_HELPERS restrict them, at most
+                4) and the destination pulls them from there. Nothing runs on those GPUs. Exec
+                does not return control of the send buffer until every reader is done with it;
+                the receive buffer is written only by its owner. layout and config must match
+                on every rank. Registration verifies every peer mapping and fails on all ranks
+                with ncclSystemError if one returns stale data; register buffers that stay
+                allocated for the process lifetime. To do so it drains every stream on the
+                device, then temporarily writes 16 bytes at every 2 MiB of sendbuff (and its
+                last 16 bytes) and restores them before returning.
+    @param[in]  sendbuff   Fixed send buffer
+    @param[out] recvbuff   Fixed receive buffer
+    @param[in]  layout     Row geometry shared by all ranks
+    @param[in]  config     Tuning shared by all ranks, or NULL for defaults
+    @param[in]  comm       Four-rank communicator
+    @param[out] request    Opaque request handle */
+ncclResult_t  ncclRegisteredAllToAllInit(
+    const void* sendbuff, void* recvbuff, const ncclRegisteredAllToAllLayout* layout,
+    const ncclRegisteredAllToAllConfig* config, ncclComm_t comm, void** request);
+/*! @cond       include_hidden */
+ncclResult_t pncclRegisteredAllToAllInit(
+    const void* sendbuff, void* recvbuff, const ncclRegisteredAllToAllLayout* layout,
+    const ncclRegisteredAllToAllConfig* config, ncclComm_t comm, void** request);
+/*! @endcond */
+
+/*! @brief      Execute a registered all-to-all request on stream.
+    @details    Every rank must call Exec once per exchange, in the same order, including graph
+                replays. Each call enqueues exactly one kernel, does not synchronize, and may be
+                captured into a CUDA/HIP graph: all per-call state lives on the device.
+                sendbuff and recvbuff must match Init.
+    @param[in]  sendbuff   Send buffer supplied to Init
+    @param[out] recvbuff   Receive buffer supplied to Init
+    @param[in]  stream     HIP stream for execution
+    @param[in]  request    Opaque request handle returned by Init */
+ncclResult_t  ncclRegisteredAllToAllExec(
+    const void* sendbuff, void* recvbuff, hipStream_t stream, void* request);
+/*! @cond       include_hidden */
+ncclResult_t pncclRegisteredAllToAllExec(
+    const void* sendbuff, void* recvbuff, hipStream_t stream, void* request);
+/*! @endcond */
+
+/*! @brief      Finalize and destroy a registered all-to-all request.
+    @details    Collective over every rank. Synchronizes stream, then tears down peer mappings.
+                Graphs that captured Exec must be destroyed first.
+    @param[in]  request  Opaque request handle returned by Init
+    @param[in]  stream   Stream used for the final execution or graph replay */
+ncclResult_t  ncclRegisteredAllToAllFinalize(void* request, hipStream_t stream);
+/*! @cond       include_hidden */
+ncclResult_t pncclRegisteredAllToAllFinalize(void* request, hipStream_t stream);
+/*! @endcond */
+
 /*! @brief      Reduce-Scatter
     @details    Reduces data in *sendbuff* using *op* operation and leaves reduced result
                 scattered over the devices so that *recvbuff* on rank i will contain the i-th

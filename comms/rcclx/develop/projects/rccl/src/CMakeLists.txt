@@ -672,6 +672,12 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/relay/registered_allreduce.h
   comms/rcclx/develop/meta/relay/registered_allreduce_kernels.cu
   comms/rcclx/develop/meta/relay/registered_allreduce_kernels.h
+  comms/rcclx/develop/meta/relay/registered_alltoall.cc
+  comms/rcclx/develop/meta/relay/registered_alltoall.h
+  comms/rcclx/develop/meta/relay/registered_alltoall_kernels.cu
+  comms/rcclx/develop/meta/relay/registered_alltoall_kernels.h
+  comms/rcclx/develop/meta/relay/relay_helper_devices.cc
+  comms/rcclx/develop/meta/relay/relay_helper_devices.h
   comms/rcclx/develop/meta/relay/relay_control.cc
   comms/rcclx/develop/meta/relay/relay_control.h
   comms/rcclx/develop/meta/relay/sharded_relay_all_gather.cc
@@ -1315,6 +1321,7 @@ if(ENABLE_DEVICE_LINKER)
     comms/ctran/algos/SendRecv/SendRecv.cu.cpp
     comms/rcclx/develop/meta/lpcoll/low_precision_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/registered_allreduce_kernels.cu.cpp
+    comms/rcclx/develop/meta/relay/registered_alltoall_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.cu.cpp
     comms/utils/colltrace/HRDWRingBufferInstantiations.cu.cpp
