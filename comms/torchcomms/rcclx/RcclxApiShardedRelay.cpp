@@ -72,7 +72,7 @@ ncclResult_t DefaultRcclxApi::registeredAllReduceExec(
     hipStream_t stream,
     void* request) {
   return ncclRegisteredAllReduceExec(
-      sendbuff, recvbuff, count, datatype, op, stream, request);
+      sendbuff, recvbuff, count, datatype, op, nullptr, stream, request);
 }
 
 ncclResult_t DefaultRcclxApi::registeredAllReduceFinalize(

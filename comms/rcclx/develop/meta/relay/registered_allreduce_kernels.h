@@ -42,9 +42,27 @@ struct alignas(256) RegisteredAllReduceBlockState {
   uint32_t seen[kRegisteredAllReduceRanks];
 };
 
+// The gated-residual-norm epilogue runs on 1 MiB payloads viewed as 64 rows of
+// 8192 elements, one 1024-thread CTA per row (one 16-byte vector per thread).
+constexpr int kRegisteredAllReduceRows = 64;
+constexpr int kRegisteredAllReduceRowsPerRank =
+    kRegisteredAllReduceRows / kRegisteredAllReduceRanks;
+constexpr int kRegisteredAllReduceNormHidden = 8192;
+constexpr int kRegisteredAllReduceNormThreads = 1024;
+
+// Protocol words of one epilogue row CTA, on their own 256-byte line. The row
+// owner collects start epochs from the other ranks and publishes the midpoint
+// epoch once the reduced row is in its scratch.
+struct alignas(256) RegisteredAllReduceRowState {
+  uint32_t start[kRegisteredAllReduceRanks];
+  uint32_t midpoint;
+  uint32_t calls;
+};
+
 struct alignas(256) RegisteredAllReduceStateRegion {
   alignas(16) unsigned char scratch[kRegisteredAllReduceMaxScratchBytes];
   RegisteredAllReduceBlockState block[kRegisteredAllReduceMaxBlocks];
+  RegisteredAllReduceRowState row[kRegisteredAllReduceRows];
   uint64_t sentinel;
 };
 
@@ -56,16 +74,34 @@ struct RegisteredAllReduceStateTable {
   RegisteredAllReduceStateRegion* state[kRegisteredAllReduceRanks];
 };
 
+// Rank-local operands of the gated-residual-norm epilogue (see
+// ncclRegisteredAllReduceGatedResidualNorm). residualOut may alias residualIn;
+// routerOut may be null.
+struct RegisteredAllReduceGatedResidualNormArgs {
+  const float* residualIn;
+  float* residualOut;
+  float* routerOut;
+  const __nv_bfloat16* postNormWeight;
+  const __nv_bfloat16* preNormWeight;
+  const float* gateAlpha;
+  const float* gateBeta;
+  float postNormEpsilon;
+  float preNormEpsilon;
+};
+
 // Enqueues exactly one payload-specific kernel and never synchronizes stream.
 // The request lifecycle owns cross-call ordering and final stream quiescence.
-// nRanks is 2 or 4. Four-rank 0.5/1 MiB payloads keep their dedicated
-// two-stage kernels.
+// With norm, output receives the pre-norm output of the epilogue instead of
+// the plain sum.
+// nRanks is 2 or 4. Four-rank 0.5/1 MiB payloads and the epilogue keep their
+// dedicated kernels; the epilogue requires four ranks.
 hipError_t launchRegisteredAllReduceKernel(
     void* output,
     RegisteredAllReduceInputTable inputs,
     RegisteredAllReduceStateTable states,
     int rank,
     size_t count,
+    const RegisteredAllReduceGatedResidualNormArgs* norm,
     hipStream_t stream,
     int nRanks = kRegisteredAllReduceRanks);
 

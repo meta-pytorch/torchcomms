@@ -1053,20 +1053,26 @@ ncclResult_t ncclRegisteredAllReduceInit(
 
 NCCL_API(ncclResult_t, ncclRegisteredAllReduceExec,
     const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request);
+    ncclDataType_t datatype, ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm, hipStream_t stream,
+    void* request);
 
 ncclResult_t ncclRegisteredAllReduceExec_impl(
     const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request) {
+    ncclDataType_t datatype, ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm, hipStream_t stream,
+    void* request) {
   return rcclx::relay::registeredAllReducePublicExec(
-      sendbuff, recvbuff, count, datatype, op, stream, request);
+      sendbuff, recvbuff, count, datatype, op, norm, stream, request);
 }
 
 ncclResult_t ncclRegisteredAllReduceExec(
     const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclRedOp_t op, hipStream_t stream, void* request) {
+    ncclDataType_t datatype, ncclRedOp_t op,
+    const ncclRegisteredAllReduceGatedResidualNorm* norm, hipStream_t stream,
+    void* request) {
   return ncclRegisteredAllReduceExec_impl(
-      sendbuff, recvbuff, count, datatype, op, stream, request);
+      sendbuff, recvbuff, count, datatype, op, norm, stream, request);
 }
 
 NCCL_API(ncclResult_t, ncclRegisteredAllReduceFinalize,
