@@ -125,13 +125,17 @@ bool ncclDevrIsOneLsaTeam(struct ncclComm* comm) {
   return lsaSize == comm->nRanks; // Same as comm->nRanks / comm->devrState.lsaSize == 1
 }
 
+// NCCL_DEVR_INIT=1 opts back in to the device runtime (symmetric memory, LSA teams),
+// which the early return in ncclDevrInitOnce otherwise skips; rccl_ep needs it.
+NCCL_PARAM(DevrInit, "DEVR_INIT", 0);
+
 ncclResult_t ncclDevrInitOnce(struct ncclComm* comm) {
   ncclResult_t ret = ncclSuccess;
   // Skip VA reservation — causes 21% decode regression on 17B MoE FP8 TP=8
   // due to TLB pressure from ~192 GB VA reservation per communicator.
   // CE collectives that depend on this init are not used by inference workloads.
   // See D102486033 for full root cause analysis.
-  return ret;
+  if (!ncclParamDevrInit()) return ret;
 
   struct ncclDevrState* devr = &comm->devrState;
   if (devr->bigSize != 0) return ncclSuccess;
