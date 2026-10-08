@@ -307,6 +307,12 @@ class TorchCommRCCLX : public TorchCommBackend,
       std::optional<size_t> capacity_bytes = std::nullopt,
       const RegisteredAllReduceOptions& options = {}) override;
 
+  std::shared_ptr<RegisteredAllToAll> registered_all_to_all(
+      const at::Tensor& send,
+      const at::Tensor& recv,
+      const RegisteredAllToAllLayout& layout,
+      const RegisteredAllToAllOptions& options = {}) override;
+
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
   // Communicator Management
@@ -319,6 +325,7 @@ class TorchCommRCCLX : public TorchCommBackend,
   friend class TorchWorkRCCLX;
   friend class RcclxCachingAllocatorHookImpl;
   friend class TorchCommRCCLXRegisteredAllReduce;
+  friend class TorchCommRCCLXRegisteredAllToAll;
 
   // Getter for CUDA API (for friend classes)
   HipApi* getHipApi() const {

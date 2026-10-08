@@ -220,6 +220,12 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       std::optional<size_t> capacity_bytes = std::nullopt,
       const RegisteredAllReduceOptions& options = {});
 
+  std::shared_ptr<RegisteredAllToAll> registered_all_to_all(
+      const at::Tensor& send,
+      const at::Tensor& recv,
+      const RegisteredAllToAllLayout& layout,
+      const RegisteredAllToAllOptions& options = {});
+
   // Fault Tolerance API
 
   /**

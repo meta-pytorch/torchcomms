@@ -41,6 +41,23 @@ struct RcclxGatedResidualNorm {
   float postNormEpsilon{0.0f};
   float preNormEpsilon{0.0f};
 };
+// Mirrors `ncclRegisteredAllToAllLayout` / `ncclRegisteredAllToAllConfig` for
+// the same reason as RcclxRelayPlan; converted in RcclxApiShardedRelay.cpp.
+struct RcclxAllToAllLayout {
+  size_t rows{0};
+  size_t rowBytes{0};
+  size_t sendRowStride{0};
+  size_t sendPeerStride{0};
+  size_t recvRowStride{0};
+  size_t recvPeerStride{0};
+};
+
+struct RcclxAllToAllConfig {
+  float relayFraction{0.0f};
+  int chunkRows{0};
+  int directCtasPerPeer{0};
+  int relayCtasPerPath{0};
+};
 
 #ifdef NCCL_RMA_SUPPORTED
 using RcclxWindow = ncclWindow_t;
@@ -309,6 +326,27 @@ class RcclxApi {
       void* request) = 0;
 
   virtual ncclResult_t registeredAllReduceFinalize(
+      void* request,
+      hipStream_t stream) = 0;
+
+  // Registered AllToAll lifecycle operations (public RCCLX ABI)
+  virtual int registeredAllToAllAbiVersion() = 0;
+
+  virtual ncclResult_t registeredAllToAllInit(
+      const void* sendbuff,
+      void* recvbuff,
+      const RcclxAllToAllLayout& layout,
+      const RcclxAllToAllConfig& config,
+      ncclComm_t comm,
+      void** request) = 0;
+
+  virtual ncclResult_t registeredAllToAllExec(
+      const void* sendbuff,
+      void* recvbuff,
+      hipStream_t stream,
+      void* request) = 0;
+
+  virtual ncclResult_t registeredAllToAllFinalize(
       void* request,
       hipStream_t stream) = 0;
 
@@ -653,6 +691,26 @@ class DefaultRcclxApi : public RcclxApi {
       void* request) override;
 
   ncclResult_t registeredAllReduceFinalize(void* request, hipStream_t stream)
+      override;
+
+  // Registered AllToAll lifecycle operations (public RCCLX ABI)
+  int registeredAllToAllAbiVersion() override;
+
+  ncclResult_t registeredAllToAllInit(
+      const void* sendbuff,
+      void* recvbuff,
+      const RcclxAllToAllLayout& layout,
+      const RcclxAllToAllConfig& config,
+      ncclComm_t comm,
+      void** request) override;
+
+  ncclResult_t registeredAllToAllExec(
+      const void* sendbuff,
+      void* recvbuff,
+      hipStream_t stream,
+      void* request) override;
+
+  ncclResult_t registeredAllToAllFinalize(void* request, hipStream_t stream)
       override;
 
   // Memory allocation for NCCL-managed buffers

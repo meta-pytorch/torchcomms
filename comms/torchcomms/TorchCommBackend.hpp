@@ -41,6 +41,21 @@ struct RegisteredAllReduceGatedResidualNorm {
   double pre_norm_eps{0.0};
 };
 
+// Persistent all-to-all among the four ranks of a communicator, optionally
+// relaying part of every pair's rows through the node's other GPUs. Every rank
+// calls all_to_all once per exchange, in the same order, including graph
+// replays.
+class RegisteredAllToAll {
+ public:
+  virtual ~RegisteredAllToAll() = default;
+
+  virtual void all_to_all() = 0;
+  virtual void close() = 0;
+  virtual bool isClosed() const = 0;
+  virtual const at::Tensor& send() const = 0;
+  virtual const at::Tensor& recv() const = 0;
+};
+
 class RegisteredAllReduce {
  public:
   virtual ~RegisteredAllReduce() = default;
@@ -476,6 +491,20 @@ class TorchCommBackend {
       const RegisteredAllReduceOptions& /* options */ = {}) {
     throw std::logic_error(
         "[TorchCommBackend]: registered_all_reduce not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
+  // Every rank of a four-rank communicator passes its fixed send and receive
+  // tensors. The layout and options must match on every rank.
+  // RegisteredAllToAll must be explicitly closed by the caller.
+  virtual std::shared_ptr<RegisteredAllToAll> registered_all_to_all(
+      const at::Tensor& /* send */,
+      const at::Tensor& /* recv */,
+      const RegisteredAllToAllLayout& /* layout */,
+      const RegisteredAllToAllOptions& /* options */ = {}) {
+    throw std::logic_error(
+        "[TorchCommBackend]: registered_all_to_all not implemented for "
         "communicator:" +
         std::string(getCommName()));
   }

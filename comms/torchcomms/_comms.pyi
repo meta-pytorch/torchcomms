@@ -437,6 +437,16 @@ class RegisteredAllReduceOptions:
 # Opaque handle type for persistent AllGather
 AllGatherPHandle = Any
 
+class RegisteredAllToAll:
+    def all_to_all(self) -> None: ...
+    def close(self) -> None: ...
+    @property
+    def closed(self) -> bool: ...
+    @property
+    def send(self) -> Any: ...
+    @property
+    def recv(self) -> Any: ...
+
 class RegisteredAllReduceGatedResidualNorm:
     def __init__(
         self,
@@ -759,6 +769,22 @@ class TorchComm:
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,
     ) -> RegisteredAllReduce: ...
+    def registered_all_to_all(
+        self,
+        send: Any,
+        recv: Any,
+        *,
+        rows: int,
+        row_bytes: int,
+        send_row_stride: int,
+        send_peer_stride: int,
+        recv_row_stride: int,
+        recv_peer_stride: int,
+        relay_fraction: float = 0.0,
+        chunk_rows: int = 0,
+        direct_ctas_per_peer: int = 0,
+        relay_ctas_per_path: int = 0,
+    ) -> RegisteredAllToAll: ...
     def all_gather_p_init(
         self,
         output: Any,

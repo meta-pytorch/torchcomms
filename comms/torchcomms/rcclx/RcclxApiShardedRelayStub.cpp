@@ -73,6 +73,34 @@ ncclResult_t DefaultRcclxApi::registeredAllReduceFinalize(
   return ncclInternalError;
 }
 
+int DefaultRcclxApi::registeredAllToAllAbiVersion() {
+  return 0;
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllToAllInit(
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    const RcclxAllToAllLayout& /*layout*/,
+    const RcclxAllToAllConfig& /*config*/,
+    ncclComm_t /*comm*/,
+    void** /*request*/) {
+  return ncclInternalError;
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllToAllExec(
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    hipStream_t /*stream*/,
+    void* /*request*/) {
+  return ncclInternalError;
+}
+
+ncclResult_t DefaultRcclxApi::registeredAllToAllFinalize(
+    void* /*request*/,
+    hipStream_t /*stream*/) {
+  return ncclInternalError;
+}
+
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
     const void* const* /*sendBuffs*/,
     void* const* /*recvBuffs*/,
