@@ -157,7 +157,8 @@ PYBIND11_MODULE(_core, m) {
       .value("ConnectionFailed", ErrCode::ConnectionFailed)
       .value("MemoryRegistrationError", ErrCode::MemoryRegistrationError)
       .value("Timeout", ErrCode::Timeout)
-      .value("ResourceExhausted", ErrCode::ResourceExhausted);
+      .value("ResourceExhausted", ErrCode::ResourceExhausted)
+      .value("Aborted", ErrCode::Aborted);
 
   py::enum_<MemoryType>(m, "MemoryType", "Type of memory segment.")
       .value("DRAM", MemoryType::DRAM, "Host memory (CPU RAM)")

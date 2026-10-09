@@ -7,8 +7,10 @@
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
-#include <map>
+#include <future>
 #include <queue>
 #include <utility>
 
@@ -23,6 +25,7 @@ static const RdmaTransportConfig kDefaultConfig{};
 constexpr size_t kChunkSize = 512 * 1024;
 // Keep data-path queue-capacity tests small and deterministic.
 constexpr size_t kTestMaxWr = 128;
+constexpr auto kSyncTimeout = std::chrono::seconds{5};
 
 namespace uniflow {
 
@@ -457,6 +460,29 @@ TEST_F(RdmaTransportTest, ConstructorRejectsZeroQps) {
           0,
           config),
       std::invalid_argument);
+}
+
+// Verifies that a configured requestTimeout outside (0, kMaxRequestTimeout]
+// makes every request return InvalidArgument on the caller thread.
+TEST_F(RdmaTransportTest, OutOfRangeRequestTimeoutRejectsRequests) {
+  auto nics = std::make_shared<std::vector<NicResources>>();
+  nics->push_back(makeNic(&fakeDev0_, &fakeCtx0_, &fakePd0_, mockApi_, 0, {}));
+  for (auto timeout :
+       {std::chrono::milliseconds::zero(),
+        kMaxRequestTimeout + std::chrono::milliseconds{1}}) {
+    RdmaTransportConfig config{.requestTimeout = timeout};
+    RdmaTransport transport(
+        mockApi_,
+        mockCudaApi_,
+        nullptr,
+        evbThread_.getEventBase(),
+        nics,
+        0,
+        config);
+    auto status = transport.put({}).get();
+    ASSERT_TRUE(status.hasError());
+    EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+  }
 }
 
 TEST_F(RdmaTransportTest, BindKeepsNicsWhenQpCountIsSmaller) {
@@ -1130,16 +1156,86 @@ TEST_F(RdmaTransportFactoryTest, ConstructorByNameThrowsOnUnknownDevice) {
 
 // --- Data-path unit tests ---
 
+class TestRdmaTransport : public RdmaTransport {
+ public:
+  using RdmaTransport::RdmaTransport;
+
+  void advanceNow(std::chrono::milliseconds duration) {
+    nowTicks_.fetch_add(
+        std::chrono::duration_cast<Clock::duration>(duration).count(),
+        std::memory_order_release);
+  }
+
+  size_t nowCallCount() const {
+    return nowCallCount_.load(std::memory_order_acquire);
+  }
+
+ protected:
+  Clock::time_point now() const override {
+    nowCallCount_.fetch_add(1, std::memory_order_relaxed);
+    return Clock::time_point{
+        Clock::duration{nowTicks_.load(std::memory_order_acquire)}};
+  }
+
+ private:
+  std::atomic<Clock::duration::rep> nowTicks_{0};
+  mutable std::atomic<size_t> nowCallCount_{0};
+};
+
+class EventBaseGate {
+ public:
+  explicit EventBaseGate(EventBase* evb)
+      : state_(std::make_shared<State>()),
+        entered_(state_->enteredPromise.get_future()) {
+    evb->dispatch([state = state_]() noexcept {
+      state->enteredPromise.set_value();
+      state->releaseFuture.wait();
+    });
+  }
+
+  ~EventBaseGate() {
+    release();
+  }
+
+  bool waitUntilEntered() {
+    return entered_.wait_for(kSyncTimeout) == std::future_status::ready;
+  }
+
+  void release() {
+    if (!released_) {
+      released_ = true;
+      state_->releasePromise.set_value();
+    }
+  }
+
+ private:
+  struct State {
+    std::promise<void> enteredPromise;
+    std::promise<void> releasePromise;
+    std::shared_future<void> releaseFuture{releasePromise.get_future().share()};
+  };
+
+  std::shared_ptr<State> state_;
+  std::future<void> entered_;
+  bool released_{false};
+};
+
 // Helper to create a connected RdmaTransport with mocked QPs.
 // Uses ScopedEventBaseThread so dispatched work executes automatically.
 class RdmaTransportDataPathTest : public ::testing::Test {
  protected:
+  explicit RdmaTransportDataPathTest(
+      uint32_t numQps = 1,
+      std::optional<std::chrono::milliseconds> requestTimeout = std::nullopt)
+      : numQps_{numQps}, requestTimeout_{requestTimeout} {}
+
   void SetUp() override {
     mockApi_ = std::make_shared<testing::NiceMock<MockIbvApi>>();
     mockCudaApi_ = std::make_shared<testing::NiceMock<MockCudaApi>>();
     evbThread_ = std::make_unique<ScopedEventBaseThread>();
 
     fakeQp_.qp_num = 100;
+    fakeQp2_.qp_num = 101;
 
     ON_CALL(*mockApi_, regMr(_, _, _, _))
         .WillByDefault(Return(Result<ibv_mr*>(&fakeDataMr_)));
@@ -1155,8 +1251,11 @@ class RdmaTransportDataPathTest : public ::testing::Test {
 
     EXPECT_CALL(*mockApi_, createCq(&fakeCtx_, _, _, _, _))
         .WillOnce(Return(Result<ibv_cq*>(&fakeCq_)));
-    EXPECT_CALL(*mockApi_, createQp(&fakePd_, _))
-        .WillOnce(Return(Result<ibv_qp*>(&fakeQp_)));
+    auto& createQp = EXPECT_CALL(*mockApi_, createQp(&fakePd_, _))
+                         .WillOnce(Return(Result<ibv_qp*>(&fakeQp_)));
+    if (numQps_ == 2) {
+      createQp.WillOnce(Return(Result<ibv_qp*>(&fakeQp2_)));
+    }
     EXPECT_CALL(*mockApi_, modifyQp(_, _, _)).WillRepeatedly(Return(Ok()));
 
     ibv_gid gid{};
@@ -1164,25 +1263,30 @@ class RdmaTransportDataPathTest : public ::testing::Test {
     nics->push_back(
         makeNic(&fakeDev_, &fakeCtx_, &fakePd_, mockApi_, 0x1234, gid));
 
-    RdmaTransportConfig config{};
+    RdmaTransportConfig config{.numQps = numQps_};
     config.maxWr = kTestMaxWr;
-    transport_ = std::make_unique<RdmaTransport>(
+    config.requestTimeout = requestTimeout_;
+    transport_ = std::make_unique<TestRdmaTransport>(
         mockApi_,
         mockCudaApi_,
         nullptr,
         evbThread_->getEventBase(),
         nics,
         kLocalDomainId,
-        config);
+        config,
+        nullptr,
+        counters_);
     transport_->bind();
 
     RdmaTransportInfo remoteInfo;
     remoteInfo.header.version = kRdmaVersion;
-    remoteInfo.header.numQps = 1;
+    remoteInfo.header.numQps = numQps_;
     remoteInfo.header.numNics = 1;
     remoteInfo.header.domainId = kRemoteDomainId;
     remoteInfo.nicInfos = {{.lid = 0x5678}};
-    remoteInfo.qpInfos = {{.qpNum = 200, .psn = 300}};
+    for (uint32_t i = 0; i < numQps_; ++i) {
+      remoteInfo.qpInfos.push_back({.qpNum = 200 + i, .psn = 300 + i});
+    }
     remoteInfo.ctrl.rkeys = {0};
     remoteInfo.slab.rkeys = {0};
     transport_->connect(remoteInfo.serialize());
@@ -1190,9 +1294,15 @@ class RdmaTransportDataPathTest : public ::testing::Test {
 
   void TearDown() override {
     if (transport_) {
+      // Keep failed positive-timeout assertions from stranding shutdown.
+      for (int i = 0; i < 2; ++i) {
+        transport_->advanceNow(std::chrono::hours{24});
+        evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+      }
       transport_->shutdown();
       transport_.reset();
     }
+    testSegments_.clear();
     evbThread_.reset();
   }
 
@@ -1233,9 +1343,11 @@ class RdmaTransportDataPathTest : public ::testing::Test {
                       remoteDomainId))) {}
   };
 
-  std::unique_ptr<TestSegments> makeTestSegments(size_t size = 4096) {
-    return std::make_unique<TestSegments>(
-        size, mockApi_, kLocalDomainId, kRemoteDomainId);
+  TestSegments* makeTestSegments(size_t size = 4096) {
+    testSegments_.push_back(
+        std::make_unique<TestSegments>(
+            size, mockApi_, kLocalDomainId, kRemoteDomainId));
+    return testSegments_.back().get();
   }
 
   static constexpr uint64_t kLocalDomainId = 42;
@@ -1244,15 +1356,484 @@ class RdmaTransportDataPathTest : public ::testing::Test {
   std::shared_ptr<testing::NiceMock<MockIbvApi>> mockApi_;
   std::shared_ptr<testing::NiceMock<MockCudaApi>> mockCudaApi_;
   std::unique_ptr<ScopedEventBaseThread> evbThread_;
-  std::unique_ptr<RdmaTransport> transport_;
+  std::unique_ptr<TestRdmaTransport> transport_;
+  std::vector<std::unique_ptr<TestSegments>> testSegments_;
+  const uint32_t numQps_;
+  const std::optional<std::chrono::milliseconds> requestTimeout_;
+  std::shared_ptr<RdmaCounters> counters_{std::make_shared<RdmaCounters>()};
 
   ibv_device fakeDev_{};
   ibv_context fakeCtx_{.device = &fakeDev_};
   ibv_pd fakePd_{};
   ibv_cq fakeCq_{};
   ibv_qp fakeQp_{};
+  ibv_qp fakeQp2_{};
   ibv_mr fakeDataMr_{};
 };
+
+constexpr std::chrono::milliseconds kTestRequestTimeout{10};
+constexpr auto kPastRequestTimeout =
+    kTestRequestTimeout + std::chrono::milliseconds{1};
+
+class RdmaTransportTimeoutTest : public RdmaTransportDataPathTest {
+ protected:
+  RdmaTransportTimeoutTest()
+      : RdmaTransportDataPathTest(1, kTestRequestTimeout) {}
+};
+
+// Verifies that with requestTimeout set, a request timeout other than unset,
+// 0ms, or the configured value fails before dispatch, and that copy send/recv
+// return NotImplemented, all without a clock read or verbs call.
+TEST_F(RdmaTransportTimeoutTest, ValidatesTimeoutsOnCallerThread) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  std::vector<char> copyBuffer(64);
+  Segment copySegment(copyBuffer.data(), copyBuffer.size(), MemoryType::DRAM);
+  auto copySpan = copySegment.span(0ul, copyBuffer.size());
+  EXPECT_CALL(*mockApi_, postSend(_, _, _)).Times(0);
+  EXPECT_CALL(*mockApi_, pollCq(_, _, _)).Times(0);
+
+  const auto expectError = [](std::future<Status> future, ErrCode code) {
+    auto status = future.get();
+    ASSERT_TRUE(status.hasError());
+    EXPECT_EQ(status.error().code(), code);
+  };
+  const RequestOptions mismatched{.timeout = 2 * kTestRequestTimeout};
+  const RequestOptions negative{.timeout = std::chrono::milliseconds{-1}};
+  const RequestOptions huge{.timeout = std::chrono::milliseconds::max()};
+  expectError(
+      transport_->put({&request, 1}, mismatched), ErrCode::InvalidArgument);
+  expectError(transport_->put({&request, 1}, huge), ErrCode::InvalidArgument);
+  expectError(
+      transport_->get({&request, 1}, negative), ErrCode::InvalidArgument);
+  expectError(transport_->send(copySpan, negative), ErrCode::InvalidArgument);
+  expectError(transport_->recv(copySpan, negative), ErrCode::InvalidArgument);
+  expectError(transport_->send(copySpan), ErrCode::NotImplemented);
+  expectError(transport_->recv(copySpan), ErrCode::NotImplemented);
+  EXPECT_EQ(transport_->nowCallCount(), 0);
+}
+
+// Verifies that without requestTimeout, a positive request timeout is ignored:
+// the put succeeds and no deadline is armed.
+TEST_F(RdmaTransportDataPathTest, RequestTimeoutIgnoredWithoutConfig) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillOnce([](ibv_cq*, int, ibv_wc* wcs) {
+        wcs[0].status = IBV_WC_SUCCESS;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = 1;
+        return Result<int>(1);
+      });
+
+  RequestOptions options{
+      .timeout = std::chrono::milliseconds{1},
+  };
+  auto status = transport_->put({&request, 1}, options).get();
+  EXPECT_FALSE(status.hasError());
+  EXPECT_EQ(transport_->nowCallCount(), 0);
+}
+
+// Verifies that a timeout aborts the other in-flight task and a raced
+// admission, destroys the QP exactly once, and stops all later polling.
+TEST_F(RdmaTransportTimeoutTest, TimeoutAbortsPeerAndRejectsLaterWork) {
+  auto ts = makeTestSegments();
+  // Exactly once: shutdown() must not destroy the QP a second time.
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp_)).WillOnce(Return(Ok()));
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  // Mock actions run on the EventBase and may outlive a failed assertion in
+  // the test body, so their state is shared rather than captured by reference.
+  struct MockState {
+    std::promise<void> bothPosted;
+    std::atomic<size_t> postCount{0};
+    std::atomic<size_t> pollCount{0};
+  };
+  auto state = std::make_shared<MockState>();
+  auto bothPosted = state->bothPosted.get_future();
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+      .Times(2)
+      .WillRepeatedly([state](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        if (state->postCount.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+          state->bothPosted.set_value();
+        }
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly([state](ibv_cq*, int, ibv_wc*) {
+        state->pollCount.fetch_add(1, std::memory_order_relaxed);
+        return Result<int>(0);
+      });
+  RequestOptions options{
+      .timeout = kTestRequestTimeout,
+  };
+  auto winner = transport_->put({&request, 1}, options);
+  auto peer = transport_->get({&request, 1}, options);
+  ASSERT_EQ(bothPosted.wait_for(kSyncTimeout), std::future_status::ready);
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+  auto racedAdmission = transport_->put({&request, 1}, options);
+  transport_->advanceNow(kPastRequestTimeout);
+  gate.release();
+  evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+
+  auto winnerStatus = winner.get();
+  auto peerStatus = peer.get();
+  auto racedStatus = racedAdmission.get();
+  ASSERT_TRUE(winnerStatus.hasError());
+  EXPECT_EQ(winnerStatus.error().code(), ErrCode::Timeout);
+  ASSERT_TRUE(peerStatus.hasError());
+  EXPECT_EQ(peerStatus.error().code(), ErrCode::Aborted);
+  ASSERT_TRUE(racedStatus.hasError());
+  EXPECT_EQ(racedStatus.error().code(), ErrCode::Aborted);
+  EXPECT_EQ(transport_->state(), TransportState::Error);
+
+  evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+  const auto pollsAfterTimeout =
+      state->pollCount.load(std::memory_order_acquire);
+  auto laterStatus = transport_->put({&request, 1}, options).get();
+  ASSERT_TRUE(laterStatus.hasError());
+  EXPECT_EQ(laterStatus.error().code(), ErrCode::Aborted);
+  evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+  EXPECT_EQ(
+      state->pollCount.load(std::memory_order_acquire), pollsAfterTimeout);
+}
+
+class RdmaTransportTwoQpDataPathTest : public RdmaTransportDataPathTest {
+ protected:
+  RdmaTransportTwoQpDataPathTest()
+      : RdmaTransportDataPathTest(2, kTestRequestTimeout) {}
+};
+
+// Verifies that a timeout destroys every QP before any Timeout or Aborted
+// result is visible, so the NIC can no longer access the caller's buffers, and
+// that the timeout counters record it.
+TEST_F(RdmaTransportTwoQpDataPathTest, TimeoutDestroysEveryQpBeforeResults) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  struct MockState {
+    std::shared_future<Status> timedOut;
+    std::shared_future<Status> aborted;
+    std::atomic<int> destroyedBeforeResults{0};
+  };
+  auto state = std::make_shared<MockState>();
+  auto recordDestroy = [state](ibv_qp*) {
+    const auto isReady = [](const std::shared_future<Status>& future) {
+      return future.wait_for(std::chrono::seconds{0}) ==
+          std::future_status::ready;
+    };
+    if (!isReady(state->timedOut) && !isReady(state->aborted)) {
+      state->destroyedBeforeResults.fetch_add(1, std::memory_order_relaxed);
+    }
+    return Ok();
+  };
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp_)).WillOnce(recordDestroy);
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp2_)).WillOnce(recordDestroy);
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly(Return(Result<int>(0)));
+  // No RequestOptions::timeout: both requests inherit requestTimeout.
+  state->timedOut = transport_->put({&request, 1}).share();
+  state->aborted = transport_->get({&request, 1}).share();
+  evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+
+  transport_->advanceNow(kPastRequestTimeout);
+  auto timedOutStatus = state->timedOut.get();
+  auto abortedStatus = state->aborted.get();
+
+  ASSERT_TRUE(timedOutStatus.hasError());
+  EXPECT_EQ(timedOutStatus.error().code(), ErrCode::Timeout);
+  ASSERT_TRUE(abortedStatus.hasError());
+  EXPECT_EQ(abortedStatus.error().code(), ErrCode::Aborted);
+  EXPECT_EQ(state->destroyedBeforeResults.load(std::memory_order_relaxed), 2);
+  EXPECT_EQ(counters_->timeoutsFired.load(), 1);
+  EXPECT_EQ(counters_->requestsAborted.load(), 1);
+  EXPECT_GT(counters_->teardownNanos.load(), 0);
+}
+
+// Verifies that an errored request still waiting for CQEs does not hide the
+// deadline of the request behind it: the later request gets Timeout.
+TEST_F(RdmaTransportTwoQpDataPathTest, SkipsErroredHeadWithOutstandingCqes) {
+  auto ts = makeTestSegments(2 * kChunkSize);
+  TransferRequest errored{
+      .local = ts->localReg.span(0ul, 2 * kChunkSize),
+      .remote = ts->remoteReg.span(0ul, 2 * kChunkSize),
+  };
+  TransferRequest timed{
+      .local = ts->localReg.span(0ul, kChunkSize),
+      .remote = ts->remoteReg.span(0ul, kChunkSize),
+  };
+  struct MockState {
+    std::atomic<int> postCount{0};
+    std::atomic<bool> errorReturned{false};
+    std::promise<void> timedPosted;
+  };
+  auto state = std::make_shared<MockState>();
+  auto timedPosted = state->timedPosted.get_future();
+  // The errored put posts one signaled chain per QP; the timed get posts the
+  // third chain.
+  EXPECT_CALL(*mockApi_, postSend(_, _, _))
+      .Times(3)
+      .WillRepeatedly([state](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        if (state->postCount.fetch_add(1, std::memory_order_acq_rel) + 1 == 3) {
+          state->timedPosted.set_value();
+        }
+        return Ok();
+      });
+  // Fail the put's chain on fakeQp_; its chain on fakeQp2_ never completes.
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly([state](ibv_cq*, int, ibv_wc* wcs) {
+        if (state->postCount.load(std::memory_order_acquire) < 2 ||
+            state->errorReturned.exchange(true)) {
+          return Result<int>(0);
+        }
+        wcs[0].status = IBV_WC_REM_ACCESS_ERR;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = (0ULL << 32) | 1;
+        return Result<int>(1);
+      });
+
+  auto erroredFuture = transport_->put({&errored, 1});
+  ASSERT_EQ(erroredFuture.wait_for(kSyncTimeout), std::future_status::ready);
+  auto erroredStatus = erroredFuture.get();
+  ASSERT_TRUE(erroredStatus.hasError());
+  EXPECT_EQ(erroredStatus.error().code(), ErrCode::DriverError);
+  auto timedFuture = transport_->get({&timed, 1});
+  ASSERT_EQ(timedPosted.wait_for(kSyncTimeout), std::future_status::ready);
+
+  transport_->advanceNow(kPastRequestTimeout);
+  ASSERT_EQ(timedFuture.wait_for(kSyncTimeout), std::future_status::ready);
+  auto timedStatus = timedFuture.get();
+  ASSERT_TRUE(timedStatus.hasError());
+  EXPECT_EQ(timedStatus.error().code(), ErrCode::Timeout);
+}
+
+// Verifies that the deadline starts after the EventBase admits the request,
+// not when the caller submits it, and that an explicit 0ms timeout inherits
+// requestTimeout.
+TEST_F(RdmaTransportTimeoutTest, ArmsDeadlineAfterEventBaseAdmission) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  // Shared, not captured by reference: the EventBase may call the mock after
+  // a failed assertion returns from the test body.
+  auto postedPromise = std::make_shared<std::promise<void>>();
+  auto posted = postedPromise->get_future();
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+      .WillOnce([postedPromise](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        postedPromise->set_value();
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly(Return(Result<int>(0)));
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+
+  RequestOptions options{
+      .timeout = std::chrono::milliseconds::zero(),
+  };
+  auto future = transport_->put({&request, 1}, options);
+  transport_->advanceNow(std::chrono::milliseconds{100});
+  EXPECT_EQ(transport_->nowCallCount(), 0);
+  gate.release();
+  ASSERT_EQ(posted.wait_for(kSyncTimeout), std::future_status::ready);
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds::zero()),
+      std::future_status::timeout);
+
+  transport_->advanceNow(kPastRequestTimeout);
+  evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+  auto status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::Timeout);
+}
+
+// Verifies that one pass arms every request admitted before it: of three
+// requests admitted together, the last times out after the first two complete.
+TEST_F(RdmaTransportTimeoutTest, ArmsAllRequestsAdmittedBeforeAPass) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  constexpr size_t kRequests = 3;
+  struct MockState {
+    std::atomic<size_t> postCount{0};
+    std::atomic<bool> completionsReturned{false};
+    std::promise<void> allPosted;
+  };
+  auto state = std::make_shared<MockState>();
+  auto allPosted = state->allPosted.get_future();
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+      .Times(kRequests)
+      .WillRepeatedly([state](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        if (state->postCount.fetch_add(1, std::memory_order_acq_rel) + 1 ==
+            kRequests) {
+          state->allPosted.set_value();
+        }
+        return Ok();
+      });
+  // Once all are posted, complete the first two requests (task IDs 0 and 1).
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly([state](ibv_cq*, int, ibv_wc* wcs) {
+        if (state->postCount.load(std::memory_order_acquire) < kRequests ||
+            state->completionsReturned.exchange(true)) {
+          return Result<int>(0);
+        }
+        for (uint64_t taskId = 0; taskId < 2; ++taskId) {
+          wcs[taskId].status = IBV_WC_SUCCESS;
+          wcs[taskId].qp_num = 100;
+          wcs[taskId].wr_id = (taskId << 32) | 1;
+        }
+        return Result<int>(2);
+      });
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+  std::vector<std::future<Status>> futures;
+  futures.reserve(kRequests);
+  for (size_t i = 0; i < kRequests; ++i) {
+    futures.push_back(transport_->put({&request, 1}));
+  }
+  gate.release();
+  ASSERT_EQ(allPosted.wait_for(kSyncTimeout), std::future_status::ready);
+
+  EXPECT_FALSE(futures[0].get().hasError());
+  EXPECT_FALSE(futures[1].get().hasError());
+  transport_->advanceNow(kPastRequestTimeout);
+  ASSERT_EQ(futures[2].wait_for(kSyncTimeout), std::future_status::ready);
+  auto status = futures[2].get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::Timeout);
+}
+
+// Verifies that a request still waiting for SQ space in pendingTransfers_ is
+// the deadline head: it gets Timeout, nothing more is posted, and shutdown()
+// completes.
+TEST_F(RdmaTransportTimeoutTest, TimesOutRequestWaitingForSqSpace) {
+  constexpr size_t kBufSize = (kTestMaxWr + 1) * kChunkSize;
+  auto ts = makeTestSegments(kBufSize);
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, kBufSize),
+      .remote = ts->remoteReg.span(0ul, kBufSize),
+  };
+  auto postedPromise = std::make_shared<std::promise<void>>();
+  auto posted = postedPromise->get_future();
+  // Only the first kTestMaxWr chunks fit, and without completions the SQ
+  // stays full, so the request never leaves pendingTransfers_.
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+      .WillOnce([postedPromise](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        postedPromise->set_value();
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly(Return(Result<int>(0)));
+
+  auto future = transport_->put({&request, 1});
+  ASSERT_EQ(posted.wait_for(kSyncTimeout), std::future_status::ready);
+  transport_->advanceNow(kPastRequestTimeout);
+  ASSERT_EQ(future.wait_for(kSyncTimeout), std::future_status::ready);
+  auto status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::Timeout);
+  transport_->shutdown();
+}
+
+struct DeadlineBoundaryParam {
+  ibv_wc_status completionStatus;
+  std::optional<ErrCode> expectedError;
+  std::string name;
+};
+
+class RdmaTransportDeadlineBoundaryTest
+    : public RdmaTransportTimeoutTest,
+      public ::testing::WithParamInterface<DeadlineBoundaryParam> {};
+
+TEST_P(RdmaTransportDeadlineBoundaryTest, CompletionObservedAfterPostWins) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  // Shared, not captured by reference: the EventBase may call the mocks after
+  // a failed assertion returns from the test body.
+  struct MockState {
+    std::promise<void> bothPosted;
+    std::atomic<size_t> postCount{0};
+    std::atomic<bool> releaseCompletion{false};
+    std::atomic<bool> completionReturned{false};
+  };
+  auto state = std::make_shared<MockState>();
+  auto bothPosted = state->bothPosted.get_future();
+  auto* transport = transport_.get();
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+      .Times(2)
+      .WillRepeatedly([state, transport](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        if (state->postCount.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+          state->releaseCompletion.store(true, std::memory_order_release);
+          transport->advanceNow(kPastRequestTimeout);
+          state->bothPosted.set_value();
+        }
+        return Ok();
+      });
+  EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+      .WillRepeatedly([state, completionStatus = GetParam().completionStatus](
+                          ibv_cq*, int, ibv_wc* wcs) {
+        if (!state->releaseCompletion.load(std::memory_order_acquire) ||
+            state->completionReturned.exchange(true)) {
+          return Result<int>(0);
+        }
+        wcs[0].status = completionStatus;
+        wcs[0].qp_num = 100;
+        wcs[0].wr_id = (1ULL << 32) | 1;
+        return Result<int>(1);
+      });
+
+  RequestOptions options{
+      .timeout = kTestRequestTimeout,
+  };
+  auto winner = transport_->put({&request, 1}, options);
+  auto completedPeer = transport_->get({&request, 1}, options);
+  ASSERT_EQ(bothPosted.wait_for(kSyncTimeout), std::future_status::ready);
+  evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+
+  auto winnerStatus = winner.get();
+  auto peerStatus = completedPeer.get();
+  ASSERT_TRUE(winnerStatus.hasError());
+  EXPECT_EQ(winnerStatus.error().code(), ErrCode::Timeout);
+  if (GetParam().expectedError.has_value()) {
+    ASSERT_TRUE(peerStatus.hasError());
+    EXPECT_EQ(peerStatus.error().code(), *GetParam().expectedError);
+  } else {
+    EXPECT_FALSE(peerStatus.hasError());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CompletionWins,
+    RdmaTransportDeadlineBoundaryTest,
+    ::testing::Values(
+        DeadlineBoundaryParam{IBV_WC_SUCCESS, std::nullopt, "Success"},
+        DeadlineBoundaryParam{
+            IBV_WC_REM_ACCESS_ERR,
+            ErrCode::DriverError,
+            "ProviderError"}),
+    [](const auto& info) { return info.param.name; });
 
 // --- Opcode-only parameterized fixture (put vs get) ---
 
