@@ -24,9 +24,13 @@ TEST(RetiredPrimsApiTest, DeviceSurfaceReturnsInvalidUsage) {
   EXPECT_EQ(ncclWinLocalDeregisterBuffer(nullptr, nullptr), ncclInvalidUsage);
 }
 
+// ncclx::deviceAllToAllv is a retired stub that only 2.30 declares; 2.32 does
+// not port it.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 32, 0)
 TEST(RetiredPrimsApiTest, DeviceAllToAllvReturnsInvalidUsage) {
   EXPECT_EQ(
       ncclx::deviceAllToAllv(
           nullptr, nullptr, nullptr, nullptr, ncclInt, nullptr, nullptr),
       ncclInvalidUsage);
 }
+#endif

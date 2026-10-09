@@ -27,6 +27,12 @@
 #include "argcheck.h"
 #include <mutex>
 
+#include <folly/ScopeGuard.h>
+#include "comms/ctran/Ctran.h"
+#include "meta/NcclxConfig.h"
+#include "meta/rma/ncclWin.h"
+#include "meta/wrapper/MetaFactory.h"
+
 int64_t ncclParamEnqueueRearchEnable();
 
 NCCL_PARAM(WinStride, "WIN_STRIDE", -1);
@@ -2004,6 +2010,46 @@ fail:
   goto exit;
 }
 
+// [NCCLX] The returned handle is an empty host-side ncclWindow_vidmem keyed into
+// ncclWinMap; the meta/rma window and RMA APIs resolve it back to the CTran window.
+static ncclResult_t ncclxCtranWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win) {
+  if (!ncclGetCuMemSysSupported()) {
+    ERR(ncclInternalError, "ncclWin requires CUMEM support.");
+    return ncclInternalError;
+  }
+
+  ncclWin* win_ = new ncclWin();
+  win_->comm = comm;
+  auto guard = folly::makeGuard([win_] { delete win_; });
+
+  // There is no per-window config path from Python, so the comm-level hints apply to every window.
+  meta::comms::Hints winHints;
+  NCCLCHECK(metaCommToNccl(
+      winHints.set("win_register_ipc_only", NCCLX_CONFIG_FIELD(comm->config, winRegisterIpcOnly) ? "1" : "0")));
+  NCCLCHECK(metaCommToNccl(winHints.set("win_register_enable_signal",
+                                        NCCLX_CONFIG_FIELD(comm->config, winRegisterEnableSignal) ? "1" : "0")));
+  NCCLCHECK(metaCommToNccl(
+      winHints.set("win_register_symmetric", NCCLX_CONFIG_FIELD(comm->config, winRegisterSymmetric) ? "1" : "0")));
+  NCCLCHECK(metaCommToNccl(
+      ctran::ctranWinRegister(buff, size, comm->ctranComm_.get(), &win_->ctranWindow, winHints)));
+
+  ncclWindow_t handle = new ncclWindow_vidmem();
+  ncclWinMap().insert(handle, win_);
+  *win = handle;
+  guard.dismiss();
+  return ncclSuccess;
+}
+
+static ncclResult_t ncclxCtranWindowDeregister(ncclWindow_t winDev, ncclWin* ncclWinPtr) {
+  ncclWinMap().erase(winDev);
+  auto guard = folly::makeGuard([winDev, ncclWinPtr] {
+    delete ncclWinPtr;
+    delete winDev;
+  });
+  NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
+  return ncclSuccess;
+}
+
 NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win,
          int winFlags);
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
@@ -2017,6 +2063,13 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
   if ((winFlags & NCCL_WIN_COLL_SYMMETRIC) && (winFlags & ncclDevrWinCapRestrictionMask)) {
     WARN("NCCL_WIN_COLL_SYMMETRIC cannot be combined with window capability-restriction flags");
     return ncclInvalidArgument;
+  }
+
+  // [NCCLX] Flag-free windows go to CTran when it is enabled. Any flag asks for a
+  // devr capability (device API, GIN, local-only, symmetric), which only the orig path has.
+  if (winFlags == NCCL_WIN_DEFAULT && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig &&
+      ctranInitialized(comm->ctranComm_.get())) {
+    return ncclxCtranWindowRegister(comm, buff, size, win);
   }
 
   if (!comm->symmetricSupport) {
@@ -2088,6 +2141,12 @@ ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_v
   cudaStreamCaptureMode captureMode = cudaStreamCaptureModeRelaxed;
 
   if (winDev == nullptr) goto exit;
+  { // [NCCLX] CTran handles are host allocations outside the shadow pool, so look them up first.
+    ncclWin* ncclWinPtr = ncclWinMap().find(winDev);
+    if (ncclWinPtr != nullptr && ncclWinPtr->comm == comm) {
+      return ncclxCtranWindowDeregister(winDev, ncclWinPtr);
+    }
+  }
 
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&captureMode));
   CUDACHECKGOTO(cudaGetDevice(&saveDev), ret, fail);
