@@ -63,6 +63,7 @@ struct ncclGinState {
 };
 
 extern int64_t ncclParamGinType();
+extern int64_t ncclParamGinEnable();
 
 // Get the GIN type from comm. ginType is set to the GIN type that can be used
 // by the comm to communicate with other nodes.
