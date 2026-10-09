@@ -92,9 +92,16 @@ class EpollEventBase : public EventBase {
     loopThreadId_.store(std::this_thread::get_id(), std::memory_order_relaxed);
     stop_.store(false, std::memory_order_release);
 
-    while (!stop_.load(std::memory_order_acquire)) {
-      wakeupPending_.store(false, std::memory_order_release);
+    for (;;) {
+      // Must be a read-modify-write, not a store: it orders this reset before
+      // the queue and stop_ checks below. With a store, dispatch() or stop()
+      // can still read `true` in wakeup() and skip the eventfd write while this
+      // loop misses its task or stop_ and sleeps in waitForEvents().
+      wakeupPending_.exchange(false, std::memory_order_acq_rel);
       queue_.drain();
+      if (stop_.load(std::memory_order_acquire)) {
+        break;
+      }
       waitForEvents();
     }
     while (queue_.drain()) {
