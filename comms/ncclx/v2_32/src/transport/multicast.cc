@@ -14,6 +14,7 @@
 #include "transport.h"
 #include "alloc.h"
 #include "bitops.h"
+#include "meta/nvls/NvlsBindWatchdog.h"
 
 #if CUDART_VERSION >= 12010
 
@@ -147,7 +148,8 @@ ncclResult_t ncclMcGroupBuildPartitions(struct ncclComm* comm, const struct nccl
 
   // Reserve and map the whole MC VA once; each consumer slice is a view into it.
   CUCHECKGOTO(cuMemAddressReserve(&base, capacity, recGran, 0U, 0), ret, fail);
-  CUCHECKGOTO(cuMemMap(base, capacity, 0, mcHandle, 0), ret, fail);
+  // [NCCLX] Waits for every local rank to join, so it runs under the NVLS watchdog.
+  NCCLCHECKGOTO(ncclx::nvls::multicastMapWithWatchdog(comm, base, capacity, mcHandle), ret, fail);
   mapped = 1;
   desc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   desc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
@@ -198,7 +200,8 @@ ncclResult_t ncclMcGroupDestroy(struct ncclMcGroup** groupPtr) {
 }
 
 ncclResult_t ncclMcPartitionBindMem(const struct ncclMcPartition* partition, size_t offsetInPartition,
-                                    CUmemGenericAllocationHandle mem, size_t memOffset, size_t bindSize) {
+                                    CUmemGenericAllocationHandle mem, size_t memOffset, size_t bindSize,
+                                    const struct ncclComm* watchdogComm) {
   // A bind overrunning its partition would corrupt the next consumer's partition; fail
   // cleanly instead (possible when UC rounding exceeds the MC-rounded partition).
   if (offsetInPartition + bindSize > partition->size) {
@@ -211,7 +214,9 @@ ncclResult_t ncclMcPartitionBindMem(const struct ncclMcPartition* partition, siz
         partition->mcHandle, mcOffset, mem, memOffset, bindSize, partition->dev);
   // NB: This blocks until all ranks have been added to the group, and is where we
   // normally see issues if the system NVLS/Multicast support is broken.
-  CUresult err = CUPFN(cuMulticastBindMem(partition->mcHandle, mcOffset, mem, memOffset, bindSize, 0 /*flags*/));
+  // [NCCLX] Runs under the NVLS bind watchdog.
+  CUresult err = ncclx::nvls::multicastBindMemWithWatchdog(watchdogComm, bindSize, bindSize, partition->size,
+                                                           partition->mcHandle, mem, mcOffset, memOffset);
   if (err != CUDA_SUCCESS) {
     const char* errStr;
     (void)pfn_cuGetErrorString(err, &errStr);
