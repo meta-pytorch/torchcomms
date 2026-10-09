@@ -1515,11 +1515,14 @@ TEST_F(RegisteredAllReduceTest, TwoStageServesPayloadsFromTheCutover) {
   HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
   uint16_t* const fixtureIn = input;
   uint16_t* const fixtureOut = output;
+  // No helper GPUs, so every size runs the two-stage kernel.
+  setenv("NCCL_RELAY_HELPER_DEVICES", "0000:ff:1f.7", 1);
   ASSERT_EQ(
       rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
   ASSERT_EQ(
       rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
       ncclSuccess);
+  unsetenv("NCCL_RELAY_HELPER_DEVICES");
   input = largeIn;
   output = largeOut;
   std::vector<uint16_t> host;
@@ -1546,6 +1549,106 @@ TEST_F(RegisteredAllReduceTest, TwoStageServesPayloadsFromTheCutover) {
     destroyGraph(graph);
   }
 
+  finalizeRequest();
+  input = fixtureIn;
+  output = fixtureOut;
+  HIPCHECK_TEST(hipFree(largeOut));
+  HIPCHECK_TEST(hipFree(largeIn));
+}
+
+// With the node's other GPUs visible, a four-rank request routes payloads from
+// NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES (default 1 MiB + 16 B) through them,
+// and the result is exactly the two-stage one: below the cutover, at it, vector
+// counts that leave the last quarter or the last chunk short, and the SBD
+// verify payload, eagerly and replayed from a graph with changed inputs.
+TEST_F(RegisteredAllReduceTest, RelayRoutesLargePayloadsExactly) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  int devices = 0;
+  HIPCHECK_TEST(hipGetDeviceCount(&devices));
+  if (devices < 2 * numRanks) {
+    GTEST_SKIP() << "needs the node's other GPUs visible as relay helpers";
+  }
+  constexpr size_t kLarge = 7 * kOneMiB;
+  const char* minBytes = getenv("NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES");
+  const size_t kCutover = std::max<size_t>(
+      minBytes == nullptr ? kOneMiB + 16 : std::strtoull(minBytes, nullptr, 10),
+      160 * 1024);
+  if (kCutover + 16 > kLarge) {
+    GTEST_SKIP() << "relay cutover above the test's 7 MiB payloads";
+  }
+  uint16_t* largeIn = nullptr;
+  uint16_t* largeOut = nullptr;
+  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
+  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
+      ncclSuccess);
+  input = largeIn;
+  output = largeOut;
+  std::vector<uint16_t> host;
+  int generation = 150;
+  for (size_t bytes :
+       {kCutover - 16,
+        kCutover,
+        kCutover + 16,
+        size_t{1966080},
+        size_t{3145728},
+        size_t{3145728} + 2048 + 48,
+        size_t{7340032} - 48,
+        size_t{7340032}}) {
+    const uint64_t before =
+        rcclx::relay::registeredAllReduceRelayLaunchesForTest();
+    fillInputAsync(bytes, generation, host);
+    clearOutputAsync(bytes);
+    execute(bytes);
+    syncStream("relay eager");
+    expectOutput(bytes, generation, "relay eager");
+    EXPECT_EQ(
+        rcclx::relay::registeredAllReduceRelayLaunchesForTest() - before,
+        bytes >= kCutover ? 1u : 0u)
+        << bytes << " bytes";
+    ++generation;
+  }
+  GraphRun graph = captureExecute(7340032);
+  for (int replay = 0; replay < 4; ++replay) {
+    fillInputAsync(7340032, generation, host);
+    clearOutputAsync(7340032);
+    HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+    syncStream("relay graph");
+    expectOutput(7340032, generation, "relay graph");
+    ++generation;
+  }
+  destroyGraph(graph);
+
+  // Each CTA's start and midpoint epochs advance on every call, but only relay
+  // calls write the relay's second-exchange word. Put the CTA epochs 2^31 + 37
+  // calls ahead of the relay words (as after that many plain calls), then
+  // interleave relay and two-stage calls: every relay exchange must still wait
+  // for its peers, so every sum stays exact.
+  syncStream("before aging the CTA epochs");
+  barrier();
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceSetCtaEpochsForTest(
+          request, 0x80000000u + 37u),
+      ncclSuccess);
+  barrier();
+  for (int round = 0; round < 6; ++round) {
+    for (size_t bytes :
+         {size_t{7340032}, size_t{786432}, size_t{1966080}, size_t{3145728}}) {
+      fillInputAsync(bytes, generation, host);
+      clearOutputAsync(bytes);
+      execute(bytes);
+      syncStream("after aged CTA epochs");
+      expectOutput(bytes, generation, "after aged CTA epochs");
+      ++generation;
+    }
+  }
   finalizeRequest();
   input = fixtureIn;
   output = fixtureOut;
@@ -1643,33 +1746,46 @@ TEST_F(RegisteredAllReduceTest, CommDestroyReleasesStatePool) {
 
 // Opt-in timing at [redacted] SBD decode payloads (REGISTERED_AR_SBD_PERF=1):
 // one all-reduce per graph replay, the same measure as the SGLang SBD
-// benchmark's per-call column, with the 0.5 / 1 MiB kernels as calibration.
-// "+16 B" sizes run the two-stage kernel next to the tuned 0.5 / 1 MiB
-// kernels.
+// benchmark's per-call column. Each payload runs on a request without helper
+// GPUs (two-stage) and on one with the relay route (taken from
+// NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES), with the tuned 0.5 / 1 MiB kernels
+// and their "+16 B" neighbours as calibration.
 TEST_F(RegisteredAllReduceTest, Z_SbdPayloadTiming) {
   const char* on = getenv("REGISTERED_AR_SBD_PERF");
   if (on == nullptr || on[0] != '1' || !isSupportedTopology()) {
     GTEST_SKIP() << "set REGISTERED_AR_SBD_PERF=1 on four ranks";
   }
   constexpr size_t kLarge = 7 * kOneMiB;
-  uint16_t* largeIn = nullptr;
-  uint16_t* largeOut = nullptr;
-  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
-  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
-  HIPCHECK_TEST(hipMemset(largeIn, 0x3c, kLarge));
+  struct Route {
+    const char* name;
+    uint16_t* in{nullptr};
+    uint16_t* out{nullptr};
+    rcclx::relay::RegisteredAllReduce* request{nullptr};
+  };
+  Route routes[] = {{"two-stage"}, {"relay"}};
+  for (Route& route : routes) {
+    HIPCHECK_TEST(hipMalloc(&route.in, kLarge));
+    HIPCHECK_TEST(hipMalloc(&route.out, kLarge));
+    HIPCHECK_TEST(hipMemset(route.in, 0x3c, kLarge));
+    const bool direct = &route == &routes[0];
+    if (direct) {
+      setenv("NCCL_RELAY_HELPER_DEVICES", "0000:ff:1f.7", 1);
+    }
+    ASSERT_EQ(
+        rcclx::relay::registeredAllReducePrepare(comm, &route.request),
+        ncclSuccess);
+    ASSERT_EQ(
+        rcclx::relay::registeredAllReduceInit(
+            route.request, route.in, route.out, kLarge),
+        ncclSuccess);
+    if (direct) {
+      unsetenv("NCCL_RELAY_HELPER_DEVICES");
+    }
+  }
   uint16_t* const fixtureIn = input;
   uint16_t* const fixtureOut = output;
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
-  ASSERT_EQ(
-      rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
-      ncclSuccess);
-  input = largeIn;
-  output = largeOut;
 
   constexpr int kReplays = 200;
-  // rows x 8192 and rows x 4096 decode payloads from AITER's two-stage cutover
-  // to the largest SBD verify shape, plus the tuned kernels' neighbours.
   std::vector<std::pair<std::string, size_t>> sizes = {
       {"0.5 MiB tuned", kHalfMiB},
       {"1 MiB tuned", kOneMiB},
@@ -1686,50 +1802,63 @@ TEST_F(RegisteredAllReduceTest, Z_SbdPayloadTiming) {
           rows * width * sizeof(uint16_t));
     }
   }
-  {
-    for (const auto& [label, bytes] : sizes) {
-      GraphRun graph = captureExecute(bytes);
-      for (int i = 0; i < 10; ++i) {
+  const auto time = [&](size_t bytes, float* result) {
+    GraphRun graph = captureExecute(bytes);
+    for (int i = 0; i < 10; ++i) {
+      HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+    }
+    syncStream("timing warmup");
+    std::vector<float> samples;
+    for (int round = 0; round < 7; ++round) {
+      barrier();
+      hipEvent_t start = nullptr;
+      hipEvent_t end = nullptr;
+      HIPCHECK_TEST(hipEventCreate(&start));
+      HIPCHECK_TEST(hipEventCreate(&end));
+      HIPCHECK_TEST(hipEventRecord(start, stream));
+      for (int i = 0; i < kReplays; ++i) {
         HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
       }
-      syncStream("timing warmup");
-      std::vector<float> samples;
-      for (int round = 0; round < 7; ++round) {
-        barrier();
-        hipEvent_t start = nullptr;
-        hipEvent_t end = nullptr;
-        HIPCHECK_TEST(hipEventCreate(&start));
-        HIPCHECK_TEST(hipEventCreate(&end));
-        HIPCHECK_TEST(hipEventRecord(start, stream));
-        for (int i = 0; i < kReplays; ++i) {
-          HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
-        }
-        HIPCHECK_TEST(hipEventRecord(end, stream));
-        HIPCHECK_TEST(hipEventSynchronize(end));
-        float ms = 0;
-        HIPCHECK_TEST(hipEventElapsedTime(&ms, start, end));
-        samples.push_back(ms * 1000.0f / kReplays);
-        HIPCHECK_TEST(hipEventDestroy(start));
-        HIPCHECK_TEST(hipEventDestroy(end));
-      }
-      std::sort(samples.begin(), samples.end());
-      destroyGraph(graph);
-      if (globalRank == 0) {
-        printf(
-            "SBD_TIMING %-22s %8zu B median %8.2f us min %8.2f us\n",
-            label.c_str(),
-            bytes,
-            samples[samples.size() / 2],
-            samples.front());
-        fflush(stdout);
-      }
+      HIPCHECK_TEST(hipEventRecord(end, stream));
+      HIPCHECK_TEST(hipEventSynchronize(end));
+      float ms = 0;
+      HIPCHECK_TEST(hipEventElapsedTime(&ms, start, end));
+      samples.push_back(ms * 1000.0f / kReplays);
+      HIPCHECK_TEST(hipEventDestroy(start));
+      HIPCHECK_TEST(hipEventDestroy(end));
+    }
+    std::sort(samples.begin(), samples.end());
+    destroyGraph(graph);
+    *result = samples[samples.size() / 2];
+  };
+  for (const auto& [label, bytes] : sizes) {
+    float us[2] = {0, 0};
+    for (int k = 0; k < 2; ++k) {
+      request = routes[k].request;
+      input = routes[k].in;
+      output = routes[k].out;
+      time(bytes, &us[k]);
+    }
+    if (globalRank == 0) {
+      printf(
+          "SBD_TIMING %-22s %8zu B two-stage %8.2f us relay %8.2f us\n",
+          label.c_str(),
+          bytes,
+          us[0],
+          us[1]);
+      fflush(stdout);
     }
   }
-  finalizeRequest();
+  for (Route& route : routes) {
+    ASSERT_EQ(
+        rcclx::relay::registeredAllReduceFinalize(route.request, stream, true),
+        ncclSuccess);
+    HIPCHECK_TEST(hipFree(route.out));
+    HIPCHECK_TEST(hipFree(route.in));
+  }
+  request = nullptr;
   input = fixtureIn;
   output = fixtureOut;
-  HIPCHECK_TEST(hipFree(largeOut));
-  HIPCHECK_TEST(hipFree(largeIn));
 }
 
 int main(int argc, char* argv[]) {

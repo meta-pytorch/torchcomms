@@ -19,6 +19,7 @@
 #include "bootstrap.h"
 #include "comm.h"
 #include "debug.h"
+#include "meta/relay/registered_allreduce_kernels.h"
 #include "meta/relay/registered_allreduce_relay_kernels.h"
 #include "meta/relay/relay_helper_devices.h"
 #include "param.h"
@@ -36,6 +37,20 @@ NCCL_PARAM(
     "REGISTERED_AR_RELAY_DIRECT_WEIGHT",
     1);
 NCCL_PARAM(RelayMaxHelpers, "RELAY_MAX_HELPERS", kRegisteredRelayMaxHelpers);
+// Four-rank route: payloads from MIN_BYTES; of every DIRECT_WEIGHT + helpers
+// consecutive chunks, DIRECT_WEIGHT use the direct links; LANES CTAs per
+// helper GPU. With four helpers, 6 / 32 (as many helper CTAs as direct ones)
+// beat the two-stage kernel from just above 1 MiB (+4%) to 7 MiB (+35%); at
+// 1 MiB and below the route is not faster, so the tuned 1 MiB kernel stays.
+NCCL_PARAM(
+    RegisteredArTp4RelayMinBytes,
+    "REGISTERED_AR_TP4_RELAY_MIN_BYTES",
+    (1 << 20) + 16);
+NCCL_PARAM(
+    RegisteredArTp4RelayDirectWeight,
+    "REGISTERED_AR_TP4_RELAY_DIRECT_WEIGHT",
+    6);
+NCCL_PARAM(RegisteredArTp4RelayLanes, "REGISTERED_AR_TP4_RELAY_LANES", 32);
 
 namespace {
 
@@ -144,6 +159,23 @@ size_t powerOfTwoFloor(size_t v) {
   return p;
 }
 
+constexpr size_t kTp4MinBytes = 160 * 1024;
+
+Config readTp4Config(size_t capacityBytes) {
+  Config c{};
+  c.maxHelpers = static_cast<int32_t>(std::clamp<int64_t>(
+      ncclParamRelayMaxHelpers(), 0, kRegisteredAllReduceRelayMaxHelpers));
+  c.directWeight = static_cast<int32_t>(
+      std::clamp<int64_t>(ncclParamRegisteredArTp4RelayDirectWeight(), 1, 16));
+  c.lanes = static_cast<int32_t>(
+      std::clamp<int64_t>(ncclParamRegisteredArTp4RelayLanes(), 1, 32));
+  c.minBytes = static_cast<uint64_t>(std::max<int64_t>(
+      ncclParamRegisteredArTp4RelayMinBytes(),
+      static_cast<int64_t>(kTp4MinBytes)));
+  c.capacityBytes = capacityBytes;
+  return c;
+}
+
 Config readConfig(size_t capacityBytes) {
   Config c{};
   c.lanes = static_cast<int32_t>(std::clamp<int64_t>(
@@ -183,6 +215,14 @@ std::atomic<uint64_t>& launches() {
 struct RegisteredRelay {
   int device{-1};
   int rank{-1};
+  int nRanks{2};
+  // Four ranks: every rank's staging on each helper, as mapped here (this
+  // rank's own allocations included), and the slots per owner in each.
+  std::array<
+      std::array<void*, kRegisteredAllReduceRelayMaxHelpers>,
+      kRegisteredAllReduceRanks>
+      rankStaging{};
+  size_t slotChunks{0};
   Config config{};
   size_t ringBytes{0};
   int helpers{0};
@@ -326,20 +366,28 @@ ncclResult_t registeredRelaySetup(
     size_t capacityBytes,
     RegisteredRelay** relay) {
   *relay = nullptr;
-  if (comm->nRanks != 2) {
+  const int nRanks = comm->nRanks;
+  if (nRanks != 2 && nRanks != kRegisteredAllReduceRanks) {
     return ncclSuccess;
   }
-  Config configs[2]{};
-  configs[comm->rank] = readConfig(capacityBytes);
-  NCCLCHECK(bootstrapAllGather(comm->bootstrap, configs, sizeof(Config)));
-  if (!configs[0].sameContract(configs[1])) {
-    WARN(
-        "Registered all-reduce: NCCL_REGISTERED_AR_RELAY_* / NCCL_RELAY_MAX_HELPERS differ between the two ranks");
-    return ncclInvalidUsage;
+  const bool fourRanks = nRanks == kRegisteredAllReduceRanks;
+  std::vector<Config> configs(nRanks);
+  configs[comm->rank] =
+      fourRanks ? readTp4Config(capacityBytes) : readConfig(capacityBytes);
+  NCCLCHECK(
+      bootstrapAllGather(comm->bootstrap, configs.data(), sizeof(Config)));
+  uint64_t minCapacity = configs[0].capacityBytes;
+  for (const Config& other : configs) {
+    if (!configs[0].sameContract(other)) {
+      WARN(
+          "Registered all-reduce: NCCL_REGISTERED_AR_%sRELAY_* / NCCL_RELAY_MAX_HELPERS differ between ranks",
+          fourRanks ? "TP4_" : "");
+      return ncclInvalidUsage;
+    }
+    minCapacity = std::min(minCapacity, other.capacityBytes);
   }
   const Config config = configs[0];
-  if (std::min(configs[0].capacityBytes, configs[1].capacityBytes) <
-      config.minBytes) {
+  if (minCapacity < config.minBytes) {
     return ncclSuccess;
   }
   std::vector<int> devices;
@@ -349,21 +397,33 @@ ncclResult_t registeredRelaySetup(
   }
 
   auto* r = new (std::nothrow) RegisteredRelay;
-  ExportRecord exports[2]{};
+  std::vector<ExportRecord> exports(nRanks);
   if (r != nullptr) {
     r->device = comm->cudaDev;
     r->rank = comm->rank;
+    r->nRanks = nRanks;
     r->config = config;
     r->pool = relayPoolFor(comm);
-    r->ringBytes =
-        static_cast<size_t>(config.lanes) * config.slots * config.sliceBytes;
+    if (fourRanks) {
+      r->slotChunks = registeredAllReduceRelaySlotChunks(
+          minCapacity, config.directWeight, static_cast<int>(devices.size()));
+      r->ringBytes = registeredAllReduceRelayStagingBytes(r->slotChunks);
+    } else {
+      r->ringBytes =
+          static_cast<size_t>(config.lanes) * config.slots * config.sliceBytes;
+    }
     exports[comm->rank].ok =
         allocateAndExport(*r, devices, exports[comm->rank]);
   }
   const ncclResult_t gathered =
-      bootstrapAllGather(comm->bootstrap, exports, sizeof(ExportRecord));
-  if (gathered != ncclSuccess || !exports[0].ok || !exports[1].ok ||
-      exports[0].slot != exports[1].slot) {
+      bootstrapAllGather(comm->bootstrap, exports.data(), sizeof(ExportRecord));
+  bool allOk = gathered == ncclSuccess;
+  uint32_t agreed = ~0u;
+  for (const ExportRecord& record : exports) {
+    allOk = allOk && record.ok && record.slot == exports[0].slot;
+    agreed &= record.stagingOk;
+  }
+  if (!allOk) {
     if (r != nullptr) {
       releaseSlot(*r);
       delete r;
@@ -371,10 +431,14 @@ ncclResult_t registeredRelaySetup(
     WARN("Registered all-reduce: relay state allocation failed on a rank");
     return gathered != ncclSuccess ? gathered : ncclSystemError;
   }
+  // The four-rank staging is sized for every agreed helper, so a helper some
+  // rank could not stage on turns the route off rather than shrinking it.
+  const uint32_t everyHelper = (1u << devices.size()) - 1;
+  if (fourRanks && (agreed & everyHelper) != everyHelper) {
+    agreed = 0;
+  }
 
-  // Keep the helpers both ranks staged on, compacting them in the same order.
-  const int peer = 1 - comm->rank;
-  const uint32_t agreed = exports[0].stagingOk & exports[1].stagingOk;
+  // Keep the helpers every rank staged on, compacting them in the same order.
   bool importOk = true;
   int kept = 0;
   {
@@ -388,30 +452,49 @@ ncclResult_t registeredRelaySetup(
       if (kept != static_cast<int>(h)) {
         r->staging[h] = nullptr;
       }
-      importOk = importOk &&
-          importPooled(
-                     *r->pool,
-                     exports[peer].stagingId[h],
-                     exports[peer].staging[h],
-                     &r->peerStaging[kept]);
+      for (int peer = 0; peer < nRanks; ++peer) {
+        if (peer == comm->rank) {
+          if (fourRanks) {
+            r->rankStaging[peer][kept] = r->staging[kept];
+          }
+          continue;
+        }
+        void* mapped = nullptr;
+        importOk = importOk &&
+            importPooled(
+                       *r->pool,
+                       exports[peer].stagingId[h],
+                       exports[peer].staging[h],
+                       &mapped);
+        if (fourRanks) {
+          r->rankStaging[peer][kept] = mapped;
+        } else {
+          r->peerStaging[kept] = mapped;
+        }
+      }
       ++kept;
     }
     r->helpers = kept;
-    void* peerFlags = nullptr;
-    importOk =
-        importOk &&
-        importPooled(
-            *r->pool, exports[peer].flagsId, exports[peer].flags, &peerFlags);
-    r->peerFlags = static_cast<RegisteredRelayFlags*>(peerFlags);
+    if (!fourRanks) {
+      const int peer = 1 - comm->rank;
+      void* peerFlags = nullptr;
+      importOk =
+          importOk &&
+          importPooled(
+              *r->pool, exports[peer].flagsId, exports[peer].flags, &peerFlags);
+      r->peerFlags = static_cast<RegisteredRelayFlags*>(peerFlags);
+    }
   }
-  int32_t votes[2]{};
+  std::vector<int32_t> votes(nRanks);
   votes[comm->rank] = importOk ? 1 : 0;
   const ncclResult_t voted =
-      bootstrapAllGather(comm->bootstrap, votes, sizeof(int32_t));
-  if (voted != ncclSuccess || !votes[0] || !votes[1]) {
+      bootstrapAllGather(comm->bootstrap, votes.data(), sizeof(int32_t));
+  const bool everyVote = std::all_of(
+      votes.begin(), votes.end(), [](int32_t vote) { return vote != 0; });
+  if (voted != ncclSuccess || !everyVote) {
     releaseSlot(*r);
     delete r;
-    WARN("Registered all-reduce: opening the peer's relay mappings failed");
+    WARN("Registered all-reduce: opening the peers' relay mappings failed");
     return voted != ncclSuccess ? voted : ncclSystemError;
   }
   if (r->helpers == 0) {
@@ -421,7 +504,8 @@ ncclResult_t registeredRelaySetup(
   }
   INFO(
       NCCL_INIT,
-      "Registered all-reduce relay route: %d helper GPUs, %zu KiB staging per helper, from %zu bytes",
+      "Registered all-reduce relay route: %d ranks, %d helper GPUs, %zu KiB staging per helper, from %zu bytes",
+      nRanks,
       r->helpers,
       r->ringBytes >> 10,
       static_cast<size_t>(config.minBytes));
@@ -467,6 +551,26 @@ hipError_t registeredRelayLaunch(
   args.peerFlags = relay->peerFlags;
   launches().fetch_add(1, std::memory_order_relaxed);
   return launchRegisteredRelayAllReduce(args, stream);
+}
+
+bool registeredRelayRoute(
+    const RegisteredRelay* relay,
+    RegisteredAllReduceRelayRoute* route) {
+  if (relay == nullptr || relay->nRanks != kRegisteredAllReduceRanks) {
+    return false;
+  }
+  *route = RegisteredAllReduceRelayRoute{};
+  for (int r = 0; r < kRegisteredAllReduceRanks; ++r) {
+    for (int h = 0; h < relay->helpers; ++h) {
+      route->staging[r][h] = relay->rankStaging[r][h];
+    }
+  }
+  route->slotChunks = relay->slotChunks;
+  route->helpers = relay->helpers;
+  route->directWeight = relay->config.directWeight;
+  route->helperBlocks = relay->helpers * relay->config.lanes;
+  launches().fetch_add(1, std::memory_order_relaxed);
+  return true;
 }
 
 void registeredRelayRelease(RegisteredRelay* relay) {

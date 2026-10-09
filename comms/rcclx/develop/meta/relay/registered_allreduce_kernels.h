@@ -40,9 +40,16 @@ constexpr bool isRegisteredAllReduceRankCount(int nRanks) {
 // Protocol words of one CTA. Each CTA owns a separate 256-byte slot so remote
 // flag writes, polls, and epoch updates from different CTAs never share a line.
 struct alignas(256) RegisteredAllReduceBlockState {
-  uint32_t phase[2][kRegisteredAllReduceRanks];
+  // Start, midpoint, and the relay's second exchange.
+  uint32_t phase[3][kRegisteredAllReduceRanks];
   uint32_t seq[kRegisteredAllReduceRanks];
   uint32_t seen[kRegisteredAllReduceRanks];
+  // The relay's second exchange has its own epochs: only the CTAs serving a
+  // helper write it, so the shared epochs above also advance on calls that
+  // never write it. Every exchange's epochs advance only on the calls that
+  // write it, so each word trails its waiter by at most one call.
+  uint32_t relaySeq[kRegisteredAllReduceRanks];
+  uint32_t relaySeen[kRegisteredAllReduceRanks];
 };
 
 // The gated-residual-norm epilogue runs on 1 MiB payloads viewed as 64 rows of
@@ -126,6 +133,55 @@ struct RegisteredAllReduceGatedResidualNormArgs {
   float postNormEpsilon;
   float preNormEpsilon;
 };
+
+// Helper-GPU route of a four-rank two-stage all-reduce. Each quarter is cut
+// into kRegisteredAllReduceRelayChunkVectors-vector chunks; of every
+// directWeight + helpers consecutive chunks the first directWeight run the
+// two-stage kernel over the direct links and chunk directWeight + h is relayed
+// through helper GPU h. staging[r][h] is rank r's buffer in helper h's HBM
+// (mapped here): slots [q * slotChunks, (q + 1) * slotChunks) hold r's
+// contribution to owner q's relayed chunks, and slots [4 * slotChunks,
+// 5 * slotChunks) hold r's reduced relayed chunks of its own quarter.
+constexpr int kRegisteredAllReduceRelayMaxHelpers = 4;
+constexpr size_t kRegisteredAllReduceRelayChunkVectors = 128;
+
+struct RegisteredAllReduceRelayRoute {
+  void* staging[kRegisteredAllReduceRanks][kRegisteredAllReduceRelayMaxHelpers];
+  size_t slotChunks;
+  int helpers;
+  int directWeight;
+  int helperBlocks;
+};
+
+// Chunks of helper h's staging slots per owner for a request of this capacity.
+constexpr size_t registeredAllReduceRelaySlotChunks(
+    size_t capacityBytes,
+    int directWeight,
+    int helpers) {
+  const size_t quarterVectors = capacityBytes / 16 / kRegisteredAllReduceRanks +
+      kRegisteredAllReduceRanks;
+  const size_t chunks =
+      (quarterVectors + kRegisteredAllReduceRelayChunkVectors - 1) /
+      kRegisteredAllReduceRelayChunkVectors;
+  const size_t cycle = static_cast<size_t>(directWeight) + helpers;
+  return (chunks + cycle - 1) / cycle;
+}
+
+constexpr size_t registeredAllReduceRelayStagingBytes(size_t slotChunks) {
+  return (kRegisteredAllReduceRanks + 1) * slotChunks *
+      kRegisteredAllReduceRelayChunkVectors * 16;
+}
+
+// Four-rank BF16 SUM of `count` elements over the direct links and the
+// route's helper GPUs, bitwise equal to the two-stage kernel.
+hipError_t launchRegisteredAllReduceRelayKernel(
+    void* output,
+    RegisteredAllReduceInputTable inputs,
+    RegisteredAllReduceStateTable states,
+    int rank,
+    size_t count,
+    const RegisteredAllReduceRelayRoute& route,
+    hipStream_t stream);
 
 // Enqueues exactly one payload-specific kernel and never synchronizes stream.
 // The request lifecycle owns cross-call ordering and final stream quiescence.
