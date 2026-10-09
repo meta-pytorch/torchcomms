@@ -1,5 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-#include "comms/utils/MemUtils.h"
+#include "comms/ctran/utils/MemUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/utils/CudaChecks.h"
