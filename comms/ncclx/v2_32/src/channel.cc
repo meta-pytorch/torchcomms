@@ -26,6 +26,7 @@ static ncclResult_t ncclxChannelCallocAsync(
   }
 
   // [META:MEMCACHE_SLAB] Retain NCCL's suspend/resume tracking when slab allocation is disabled.
+  memLogMetaData = comm->logMetaData; // [NCCLX] attribute to the comm, as the slab path does
   return ncclCudaCallocAsync(ptr, nelem, stream, comm->memManager, ncclMemOffload);
 }
 
@@ -134,6 +135,7 @@ ncclResult_t initNvlsChannel(struct ncclComm* comm, int channelId, struct ncclCo
     }
   } else {
     NCCLCHECK(ncclCalloc(&channel->nvlsPeers, nvlsRanks));
+    memLogMetaData = comm->logMetaData;
     NCCLCHECK(ncclCudaCallocAsync(&channel->nvlsDevPeers, nvlsRanks, deviceStream, comm->memManager));
     for (int r = 0; r < nvlsRanks; ++r) {
       uintptr_t addr = (uintptr_t)(channel->nvlsDevPeers + r);
@@ -175,6 +177,7 @@ ncclResult_t initCollnetChannel(struct ncclComm* comm, int channelId, struct ncc
     ncclAtomicRefCountIncrement(&parent->channels[channelId].collnetPeers->refCount);
   } else {
     NCCLCHECK(ncclCalloc(&channel->collnetPeers, 1));
+    memLogMetaData = comm->logMetaData;
     NCCLCHECK(ncclCudaCallocAsync(&channel->collnetDevPeers, 1, deviceStream, comm->memManager));
     addr = (uintptr_t)channel->collnetDevPeers;
     channel->peers[comm->nRanks] = channel->collnetPeers;

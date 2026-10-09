@@ -414,7 +414,7 @@ static ncclResult_t sharedFree(struct ncclProxyState* proxyState, struct ncclCol
 }
 
 static ncclResult_t sharedBuffersInit(struct ncclCollNetSharedRes* collNet, int cuda, char** gpuPtr, char** cpuPtr,
-                                      int* size, struct ncclMemManager* manager) {
+                                      int* size, struct ncclMemManager* manager, struct ncclComm* comm) {
   if (collNet->size == 0) {
     collNet->size = 2 * collNet->nChannels * collNet->buffSize;
   }
@@ -422,6 +422,7 @@ static ncclResult_t sharedBuffersInit(struct ncclCollNetSharedRes* collNet, int 
   *size = collNet->size;
 
   if (cuda && collNet->cudaBuff == NULL) {
+    memLogMetaData = comm->logMetaData;
     NCCLCHECK(ncclCudaCalloc(&collNet->cudaBuff, *size, manager));
     cudaMemset(collNet->cudaBuff, 0x33, *size / 2);
     cudaMemset((char*)collNet->cudaBuff + *size / 2, 0x66, *size / 2);
@@ -536,7 +537,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   int bank = resources->useGdr ? NCCL_NET_MAP_SHARED_DEVMEM : NCCL_NET_MAP_SHARED_HOSTMEM;
   struct connectMapMem* mapMem = map->mems + bank;
   NCCLCHECK(sharedBuffersInit(connection->collNet, resources->useGdr, &mapMem->gpuPtr, &mapMem->cpuPtr, &mapMem->size,
-                              proxyState->memManager));
+                              proxyState->memManager, proxyState->comm));
   NCCL_NET_MAP_ADD_POINTER(map, 1, resources->useGdr ? 1 : 0, mapMem->size, buffs[NCCL_PROTO_SIMPLE]);
 
   int dmabuf_fd = -1;
@@ -630,7 +631,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   int bank = resources->useGdr ? NCCL_NET_MAP_SHARED_DEVMEM : NCCL_NET_MAP_SHARED_HOSTMEM;
   struct connectMapMem* mapMem = map->mems + bank;
   NCCLCHECK(sharedBuffersInit(connection->collNet, resources->useGdr, &mapMem->gpuPtr, &mapMem->cpuPtr, &mapMem->size,
-                              proxyState->memManager));
+                              proxyState->memManager, proxyState->comm));
   NCCL_NET_MAP_ADD_POINTER(map, 1, resources->useGdr ? 1 : 0, mapMem->size, buffs[NCCL_PROTO_SIMPLE]);
 
   int dmabuf_fd = -1;

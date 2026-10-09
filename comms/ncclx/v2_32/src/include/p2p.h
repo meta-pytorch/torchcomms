@@ -52,8 +52,12 @@ struct ncclIpcRegInfo {
   struct ncclIpcImpInfo impInfo;
 };
 
+// [NCCLX] comm and callsite carry allocation-tracing attribution through to
+// ncclCuMemAlloc; they are required rather than defaulted so no call site
+// silently loses attribution.
 ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int directMap, ncclIpcDesc* ipcDesc, void** ptr,
-                                            int peerRank = -1, struct ncclMemManager* manager = nullptr,
+                                            ncclComm* comm, const char* callsite, int peerRank = -1,
+                                            struct ncclMemManager* manager = nullptr,
                                             ncclMemType_t memtype = ncclMemPersist);
 ncclResult_t ncclP2pFreeShareableBuffer(ncclIpcDesc* ipcDesc);
 ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm* comm, int peer, size_t size, ncclIpcDesc* ipcDesc,
