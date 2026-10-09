@@ -2076,36 +2076,8 @@ cvars:
      Enable bidirectional Ring reduce-scatter and all-gather for non-LL
      collectives with more than two nodes on both staged-copy and registered
      zero-copy paths. Out-of-place ranks stage their input before running the
-     same peer schedule. Fine-grained tracing is suppressed without changing
-     that schedule. A divergent value across ranks fails communicator
+     same peer schedule. A divergent value across ranks fails communicator
      initialization.
-
- - name        : MCCL_PRIMS_TRACE_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Enable direct PRiMS algorithm tracing. When enabled, CTA leaders write
-     compact per-phase events to an HRDW ring buffer and a host background
-     thread polls the buffer on an interval, so breadcrumbs are logged while
-     the kernel is still running (including when it hangs). This value is
-     sampled when the communicator initializes; leave it false for the normal
-     untraced kernel path.
-
- - name        : MCCL_PRIMS_TRACE_RING_SIZE
-   type        : uint64_t
-   default     : 1048576
-   description : |-
-     Number of HRDW ring-buffer entries reserved per communicator for
-     MCCL_PRIMS_TRACE_ENABLE.
-
- - name        : MCCL_PRIMS_TRACE_POLL_INTERVAL_MS
-   type        : uint64_t
-   default     : 50
-   description : |-
-     Interval in milliseconds at which the host background thread polls the
-     HRDW ring buffer for MCCL_PRIMS_TRACE_ENABLE. Smaller values reduce
-     the chance of losing events to ring wraparound on high-rate kernels at the
-     cost of more frequent polling; a final drain always runs on teardown.
 
  - name        : MCCL_PRIMS_DISABLE_IB
    type        : bool
