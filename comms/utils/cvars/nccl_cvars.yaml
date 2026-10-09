@@ -3525,8 +3525,8 @@ cvars:
      NO_DBR_HW only when supported, falling back to VALID_DBR on unsupported
      NICs or query failures. enable requires every selected NIC to report
      support and fails transport initialization otherwise. disable skips the
-     capability query and forces VALID_DBR. Host-only loopback QPs always use
-     VALID_DBR. This policy is NVIDIA-only and ignored on AMD.
+     capability query and forces VALID_DBR. This policy is NVIDIA-only and
+     ignored on AMD.
 
  - name        : MCCL_IBGDA_COLLAPSED_CQ_MODE
    type        : enum
@@ -3538,8 +3538,7 @@ cvars:
      accept the firmware CREATE_CQ request; otherwise it falls back to ordinary
      ring CQs. on requires every selected NIC to accept collapsed CQ creation
      and fails transport initialization otherwise. off skips the probe and
-     forces ring CQs. Host-only loopback QPs always use ring CQs. This policy is
-     NVIDIA-only and ignored on AMD.
+     forces ring CQs. This policy is NVIDIA-only and ignored on AMD.
 
  - name        : MCCL_IBGDA_WARP_PROXY_ENABLE
    type        : bool
@@ -3547,14 +3546,6 @@ cvars:
    description : |-
      Enable the dedicated IBGDA warp-proxy stream path for eligible fused Ring
      Simple AllReduce launches. Disabled by default while the path is evaluated.
- - name        : MCCL_IBGDA_ENABLE_COMPANION_QP
-   type        : bool
-   default     : false
-   description : |-
-     Create NVIDIA IBGDA companion QPs and their local loopback responders for
-     local completion-counter operations. Ordinary collectives use main-QP
-     completion tickets and leave this disabled. Transport-owned counter slots
-     require this setting. Ignored on AMD and IBRC.
  - name        : MCCL_IBGDA_QP_ORDERING_SEMANTIC
    type        : enum
    default     : auto
@@ -3594,7 +3585,6 @@ cvars:
      Every rank must use the same policy. Auto performs an additional pairwise
      bootstrap exchange, while explicit policies skip it so ibta remains a
      deployment rollback path.
-     Host-only loopback QPs always use ibta.
      This policy is NVIDIA-only and ignored on AMD.
 
  - name        : MCCL_IB_QP_DEPTH
