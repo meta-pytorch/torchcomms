@@ -3361,6 +3361,15 @@ cvars:
      downgrade a caller's trap request. "none" disables MCCL abort support for
      the communicator.
 
+ - name        : MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY
+   type        : bool
+   default     : false
+   description : |-
+     Transition every Prims IBGDA queue pair to the error state before teardown
+     releases memory that outstanding work requests may still reference. A
+     failed transition terminates the process instead of continuing teardown.
+     This mitigation applies to NVIDIA IBGDA only and is disabled by default.
+
  - name        : MCCL_TREE_FANOUT
    type        : int
    default     : 2
