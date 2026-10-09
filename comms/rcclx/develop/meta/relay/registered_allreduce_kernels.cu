@@ -20,9 +20,16 @@ static_assert(
     kRegisteredAllReduceMaxScratchBytes == 256 * 1024,
     "A four-rank 1 MiB all-reduce stages one 256 KiB shard per rank");
 
-// Native bf16 vector: each add is an f32 add plus one round-to-nearest-even
-// conversion, matching canonical stepwise BF16 at lower instruction cost.
+// BF16 vectors are loaded and stored; sums accumulate in FP32 and round to
+// BF16 (nearest even) once, as AITER's custom all-reduce does.
 using Vec = __bf16 __attribute__((ext_vector_type(kElementsPerVector)));
+using Acc = float __attribute__((ext_vector_type(kElementsPerVector)));
+
+// AITER reduces a four-rank payload of at least this size in two stages: the
+// vectors are split into four contiguous quarters and quarter q is summed
+// starting at rank q. Smaller payloads, and all two-rank ones, start at rank 0.
+// Matching that order makes the sums bit-identical to AITER's.
+constexpr size_t kAiterTwoStageMinBytes = 160 * 1024;
 
 enum class Phase : int {
   Start = 0,
@@ -33,13 +40,22 @@ __device__ __forceinline__ bool epochReached(uint32_t got, uint32_t want) {
   return (got - want) <= (uint32_t(-1) >> 1);
 }
 
-__device__ __forceinline__ void addContribution(
-    Vec& accumulator,
-    const Vec& contribution) {
+__device__ __forceinline__ Acc widen(const Vec& value) {
+  Acc result;
 #pragma unroll
   for (int element = 0; element < kElementsPerVector; ++element) {
-    accumulator[element] = accumulator[element] + contribution[element];
+    result[element] = static_cast<float>(value[element]);
   }
+  return result;
+}
+
+__device__ __forceinline__ Vec narrow(const Acc& value) {
+  Vec result;
+#pragma unroll
+  for (int element = 0; element < kElementsPerVector; ++element) {
+    result[element] = static_cast<__bf16>(value[element]);
+  }
+  return result;
 }
 
 __device__ __forceinline__ Vec loadPeer(
@@ -53,26 +69,10 @@ __device__ __forceinline__ Vec loadPeer(
       inputs.input[source] + shardOffset)[vectorIndex];
 }
 
-__device__ __forceinline__ Vec contributionOf(
-    int source,
-    int rank,
-    Vec own,
-    Vec next,
-    Vec opposite,
-    Vec previous) {
-  const int distance =
-      (source - rank + kRegisteredAllReduceRanks) % kRegisteredAllReduceRanks;
-  Vec contribution = own;
-  contribution = distance == 1 ? next : contribution;
-  contribution = distance == 2 ? opposite : contribution;
-  contribution = distance == 3 ? previous : contribution;
-  return contribution;
-}
-
-// Canonical rank 0 -> rank 3 stepwise BF16 reduction; the caller supplies its
-// own (already loaded) contribution. Peers are loaded by rotated index and
-// placed into canonical order with selects, so a runtime rank adds no
-// branches. Named values (not an array) keep the operands in registers.
+// Reduces one vector of the quarter this rank owns (quarter `rank` of a 0.5 or
+// 1 MiB payload, or of the 64 x 8192 epilogue rows), in AITER's two-stage
+// order for that quarter: the owner's own contribution, then ranks rank + 1,
+// rank + 2 and rank + 3. Named values keep the operands in registers.
 __device__ __forceinline__ Vec reduceVector(
     const RegisteredAllReduceInputTable& inputs,
     int rank,
@@ -82,14 +82,11 @@ __device__ __forceinline__ Vec reduceVector(
   const Vec next = loadPeer(inputs, rank, 1, shardOffset, vectorIndex);
   const Vec opposite = loadPeer(inputs, rank, 2, shardOffset, vectorIndex);
   const Vec previous = loadPeer(inputs, rank, 3, shardOffset, vectorIndex);
-  Vec accumulator = contributionOf(0, rank, own, next, opposite, previous);
-  addContribution(
-      accumulator, contributionOf(1, rank, own, next, opposite, previous));
-  addContribution(
-      accumulator, contributionOf(2, rank, own, next, opposite, previous));
-  addContribution(
-      accumulator, contributionOf(3, rank, own, next, opposite, previous));
-  return accumulator;
+  Acc sum = widen(own);
+  sum += widen(next);
+  sum += widen(opposite);
+  sum += widen(previous);
+  return narrow(sum);
 }
 
 template <bool ScopedAtomics, int Order>
@@ -480,7 +477,7 @@ __device__ __forceinline__ void gatedResidualNorm(
   }
 }
 
-// One CTA per row. The row owner (row / 16) reduces it in canonical order into
+// One CTA per row. The row owner (row / 16, the AITER quarter) reduces it into
 // its scratch and publishes one midpoint epoch per peer; every rank then runs
 // the epilogue on the full row. The plain reduced row is never written.
 __global__ void __launch_bounds__(kRegisteredAllReduceNormThreads)
@@ -553,12 +550,12 @@ __global__ void __launch_bounds__(kRegisteredAllReduceNormThreads)
   gatedResidualNorm(reduced, operands, elementOffset, output, norm);
 }
 
-// Generic one-shot path: every rank reduces the whole payload in canonical
-// rank 0 -> N-1 stepwise BF16 order. Per CTA, a start handshake (inputs ready)
-// precedes the peer reads and a done handshake (inputs no longer read)
-// follows them, so the caller may overwrite its input once the call completes.
-// It uses the same per-CTA slots and epochs as the four-rank kernels, so all
-// payload kinds may be interleaved on one request.
+// Generic one-shot path: every rank reduces the whole payload, each vector in
+// AITER's order for its position (firstSummand). Per CTA, a start handshake
+// (inputs ready) precedes the peer reads and a done handshake (inputs no longer
+// read) follows them, so the caller may overwrite its input once the call
+// completes. It uses the same per-CTA slots and epochs as the four-rank
+// kernels, so all payload kinds may be interleaved on one request.
 template <int NRanks>
 __device__ __forceinline__ void genericStartHandshake(
     int rank,
@@ -611,12 +608,42 @@ __device__ __forceinline__ void genericDoneHandshake(
   }
 }
 
+// The rank whose contribution AITER adds first for vector `vector` of a
+// `vectors`-vector payload (see kAiterTwoStageMinBytes).
+template <int NRanks>
+__device__ __forceinline__ int firstSummand(size_t vector, size_t vectors) {
+  if constexpr (NRanks == 2) {
+    return 0;
+  } else {
+    if (vectors * sizeof(Vec) < kAiterTwoStageMinBytes) {
+      return 0;
+    }
+    const size_t part = vectors / NRanks;
+    return vector < (NRanks - 1) * part ? static_cast<int>(vector / part)
+                                        : NRanks - 1;
+  }
+}
+
+// Contributions are loaded by compile-time source index (a runtime-indexed
+// pointer table would leave registers) and summed in rotated order by select.
+template <int NRanks>
+__device__ __forceinline__ Vec
+rotatedContribution(const Vec (&contributions)[NRanks], int source) {
+  Vec value = contributions[0];
+#pragma unroll
+  for (int candidate = 1; candidate < NRanks; ++candidate) {
+    value = source == candidate ? contributions[candidate] : value;
+  }
+  return value;
+}
+
 template <int NRanks>
 __device__ __forceinline__ Vec reduceVectorGeneric(
     const RegisteredAllReduceInputTable& inputs,
     int rank,
     const Vec& own,
-    size_t vectorIndex) {
+    size_t vectorIndex,
+    size_t vectors) {
   Vec contributions[NRanks];
 #pragma unroll
   for (int source = 0; source < NRanks; ++source) {
@@ -624,12 +651,14 @@ __device__ __forceinline__ Vec reduceVectorGeneric(
         ? own
         : reinterpret_cast<const Vec*>(inputs.input[source])[vectorIndex];
   }
-  Vec accumulator = contributions[0];
+  const int first = firstSummand<NRanks>(vectorIndex, vectors);
+  Acc sum = widen(rotatedContribution<NRanks>(contributions, first));
 #pragma unroll
-  for (int source = 1; source < NRanks; ++source) {
-    addContribution(accumulator, contributions[source]);
+  for (int step = 1; step < NRanks; ++step) {
+    sum += widen(
+        rotatedContribution<NRanks>(contributions, (first + step) % NRanks));
   }
-  return accumulator;
+  return narrow(sum);
 }
 
 // Each CTA owns a contiguous range of vectors, strided over its threads.
@@ -659,7 +688,7 @@ __global__ void __launch_bounds__(kRegisteredAllReduceThreads)
        vector += kRegisteredAllReduceThreads) {
     const Vec local = vector == first ? firstOwn : own[vector];
     destination[vector] =
-        reduceVectorGeneric<NRanks>(inputs, rank, local, vector);
+        reduceVectorGeneric<NRanks>(inputs, rank, local, vector, vectors);
   }
   genericDoneHandshake<NRanks>(rank, states, targetEpochs, sourceEpochs);
 }
@@ -881,11 +910,13 @@ __global__ void __launch_bounds__(kRegisteredAllReduceWideNormThreads)
   }
 
   genericStartHandshake<NRanks>(rank, states, targetEpochs, sourceEpochs);
+  const size_t vectors = static_cast<size_t>(gridDim.x) *
+      (kRegisteredAllReduceWideNormHidden / kElementsPerVector);
   head.reduced = reduceVectorGeneric<NRanks>(
-      inputs, rank, headOwn, head.offset / kElementsPerVector);
+      inputs, rank, headOwn, head.offset / kElementsPerVector, vectors);
   if (hasTail) {
     tail.reduced = reduceVectorGeneric<NRanks>(
-        inputs, rank, tailOwn, tail.offset / kElementsPerVector);
+        inputs, rank, tailOwn, tail.offset / kElementsPerVector, vectors);
   }
 #pragma unroll
   for (int element = 0; element < kElementsPerVector; ++element) {
