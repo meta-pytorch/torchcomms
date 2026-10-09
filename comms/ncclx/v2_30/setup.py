@@ -40,8 +40,15 @@ ext_modules = [
     Pybind11Extension(
         "ncclx_trainer_context",
         ["../meta/py/wrapper.cc"],
-        library_dirs=[LIBDIR],
-        libraries=["nccl"],
+        # TrainerContext lives in libcommsutils (comms/utils, the commsutils
+        # package); nccl stays for the ncclx-side entry points the wrapper
+        # also calls.
+        library_dirs=[
+            LIBDIR,
+            os.environ.get("COMMSUTILS_LIB_DIR")
+            or os.path.join(os.environ["CONDA_PREFIX"], "lib"),
+        ],
+        libraries=["commsutils", "nccl"],
     ),
 ]
 

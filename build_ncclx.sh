@@ -334,7 +334,8 @@ if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
 else
   THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt "
 fi
-# libobservatory.so.1 is a DT_NEEDED of libnccl.so and is installed beside it.
+# libcommsutils.so.1 and libobservatory.so.1 are DT_NEEDED of libnccl.so and
+# are installed beside it.
 # $$ because make gets this on its command line, where a bare $O expands as a
 # make variable; the quotes keep $ORIGIN from the recipe's shell.
 THIRD_PARTY_LDFLAGS+="-Wl,-rpath,'\$\$ORIGIN' "
@@ -343,6 +344,30 @@ echo "$THIRD_PARTY_LDFLAGS"
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then
     NVCC_GENCODE=$(nvcc_gencode_from_arch "$NVCC_ARCH")
+fi
+
+# libcommsutils.so.1 and libobservatory.so.1 are a dependency of libnccl.so,
+# consumed from COMMSUTILS_LIB_DIR. Environments with the commsutils package
+# (the conda feedstock's host dep, the wheel build's installed wheel) already
+# have them there; otherwise -- the from-source OSS build, a bare env -- build
+# and install them like the other dependencies above, into their own build
+# tree so `src.install`'s copy of $BUILDDIR/lib does not ship a second copy.
+COMMSUTILS_LIB_DIR=${COMMSUTILS_LIB_DIR:="$CONDA_LIB_DIR"}
+if [[ -z "${NCCL_REBUILD_COMMSUTILS:-}" ]] \
+   && [ -f "$COMMSUTILS_LIB_DIR/libcommsutils.so.1" ] \
+   && [ -f "$COMMSUTILS_LIB_DIR/libobservatory.so.1" ]; then
+  echo "Using the commsutils libraries in $COMMSUTILS_LIB_DIR"
+else
+  echo "Building the commsutils libraries into $COMMSUTILS_LIB_DIR"
+  PREFIX="$(dirname "$COMMSUTILS_LIB_DIR")" \
+    CONDA_PREFIX="$CONDA_PREFIX" \
+    USE_SYSTEM_LIBS="${USE_SYSTEM_LIBS:-}" \
+    BASE_DIR="$BASE_DIR" \
+    BUILDDIR="$BUILDDIR/commsutils" \
+    CUDA_HOME="$CUDA_HOME" \
+    NVCC_GENCODE="$NVCC_GENCODE" \
+    CUDARTLIB="$CUDARTLIB" \
+    "$(dirname "${BASH_SOURCE[0]}")/build_commsutils.sh"
 fi
 
 if [ "$CLEAN_BUILD" == 1 ]; then
@@ -388,6 +413,7 @@ function build_nccl {
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
+    COMMSUTILS_LIB_DIR="$COMMSUTILS_LIB_DIR" \
     CUDARTLIB="$CUDARTLIB"
 }
 
@@ -404,6 +430,7 @@ make VERBOSE=1 -j"${NCCL_BUILD_JOBS:-$(nproc)}" \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
+    COMMSUTILS_LIB_DIR="$COMMSUTILS_LIB_DIR" \
     CUDARTLIB="$CUDARTLIB"
 }
 

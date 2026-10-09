@@ -106,27 +106,14 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/wrapper/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tuner/*.cc)
 
 #### Start of fbcode source files
-## Trainer Context for getting/setting trainer steps.
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/trainer/*.cc)
-## Logger for Scuba & Basic logging
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/logger/*.cc)
-## Common Utils shared between comm libraries
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
-## Memory tracing
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/memtrace/*.cc)
-## CollTrace source files
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
-## HRDWRingBuffer + GpuClockCalibration host sources
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/hrdw_ring_buffer/*.cc)
-## CollTrace CUDA source files (host-side kernel launchers)
-LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
-LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
-## CollTrace plugin source files
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
+## comms/utils -- the cvars table, the logger, the trainer context, memtrace,
+## colltrace and the shared helpers -- is libcommsutils.so.1, and the
+## observability registry is libobservatory.so.1: the commsutils package
+## (comms/utils/Makefile) builds both, and libnccl.so links the installed
+## copies like any other dependency, so one process holds one copy of each,
+## shared with the MCCL plugin. None of their sources is compiled here.
 ## Include ibverbx files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/ibverbx/*.cc)
-## Include cvars files
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/cvars/*.cc)
 ## Include common fault-tolerance files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/common/fault_tolerance/*.cc)
 ## Include ctran files
@@ -274,7 +261,12 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-LDFLAGS    += -L$(LIBDIR) -lobservatory
+# libcommsutils.so.1 and libobservatory.so.1 come prebuilt from the commsutils
+# package: the environment's lib dir, or wherever the caller installed them
+# (comms/github/build_ncclx.sh runs comms/github/build_commsutils.sh when the
+# environment has none).
+COMMSUTILS_LIB_DIR ?= $(CONDA_LIB_DIR)
+LDFLAGS    += -L$(COMMSUTILS_LIB_DIR) -lobservatory -lcommsutils
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
     # Ensure that cudart symbols are resolved within the module itself.
@@ -336,29 +328,16 @@ $(INCDIR)/nccl.h : nccl.h.in ${NCCLDIR}/makefiles/version.mk
 	    -e "s/\$${nccl:Version}/$(NCCL_VERSION)/g" \
 	    $< > $@
 
-# libobservatory.so. See comms/observatory/README.md.
-#
-# -fvisibility=default overrides the hidden default in makefiles/common.mk, and
-# unlike libnccl.so below this gets no version script and no -Bsymbolic:
-# consumers must resolve these symbols here rather than locally.
-LIBOBSERVATORY_SRC    := ${BASE_DIR}/comms/observatory/colltrace/LifecycleFeedRegistry.cc
-LIBOBSERVATORY_NAME   := libobservatory.so
-LIBOBSERVATORY_SONAME := $(LIBOBSERVATORY_NAME).1
-# Listed so a header-only edit relinks. Other objects get this from their .d
-# files; this rule compiles and links in one step and has none, and a stale
-# libobservatory.so.1 is an ABI mismatch nothing else catches.
-LIBOBSERVATORY_HDRS   := $(wildcard ${BASE_DIR}/comms/observatory/colltrace/*.h)
-
-$(LIBDIR)/$(LIBOBSERVATORY_SONAME): $(LIBOBSERVATORY_SRC) $(LIBOBSERVATORY_HDRS)
-	@printf "Linking    %-35s > %s\n" $(LIBOBSERVATORY_SONAME) $@
-	mkdir -p $(LIBDIR)
-	$(CXX) $(CXXFLAGS) -fvisibility=default -I${BASE_DIR} -shared \
-	    -Wl,--no-undefined -Wl,-soname,$(LIBOBSERVATORY_SONAME) -o $@ $<
-	ln -sf $(LIBOBSERVATORY_SONAME) $(LIBDIR)/$(LIBOBSERVATORY_NAME)
+# The commsutils libraries libnccl.so links (see LDFLAGS above). No recipe:
+# they are inputs, and a missing one is reported here, where the linker would
+# otherwise name it without saying where it should have come from.
+COMMSUTILS_LIBS := $(COMMSUTILS_LIB_DIR)/libcommsutils.so.1 $(COMMSUTILS_LIB_DIR)/libobservatory.so.1
+$(COMMSUTILS_LIBS):
+	$(error $@ is missing: install the commsutils package into $(COMMSUTILS_LIB_DIR) or run comms/github/build_commsutils.sh)
 
 # Device objs (from device/Makefile manifest, incl. common.cu.o) are linked in so libnccl.so contains
 # device code (e.g. ncclGin_BackendMask<...>) that tests resolve when linking with -lnccl.
-$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFEST) $(LIBDIR)/$(LIBOBSERVATORY_SONAME)
+$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFEST) $(COMMSUTILS_LIBS)
 	@printf "Linking    %-35s > %s\n" $(LIBTARGET) $@
 	mkdir -p $(LIBDIR)
 	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFEST)) $(LDFLAGS)
@@ -378,7 +357,9 @@ $(BINDIR)/$(BINNAME): $(BINOBJ)
 $(BINDIR)/$(PARAMBIN): $(PARAMBINOBJ) $(LIBDIR)/$(LIBTARGET)
 	@printf "Linking    %-35s > %s\n" $(PARAMBIN) $@
 	mkdir -p $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< -o $@ -L$(LIBDIR) -L${CONDA_LIB_DIR} -lnccl -L${CUDA_LIB} -l$(CUDARTLIB) -lpthread -lrt -ldl -latomic
+	$(CXX) $(CXXFLAGS) $< -o $@ -L$(LIBDIR) -L${CONDA_LIB_DIR} -lnccl \
+	    -Wl,-rpath-link,$(COMMSUTILS_LIB_DIR) \
+	    -L${CUDA_LIB} -l$(CUDARTLIB) -lpthread -lrt -ldl -latomic
 
 $(PKGDIR)/nccl.pc : nccl.pc.in
 	mkdir -p $(PKGDIR)
