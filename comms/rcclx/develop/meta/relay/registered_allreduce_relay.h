@@ -12,20 +12,22 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "meta/relay/registered_allreduce_kernels.h"
 #include "nccl.h"
 
 namespace rcclx::relay {
 
-// Large-message route of a two-rank registered all-reduce: part of each call
-// is relayed through the node's other GPUs, with staging rings the two ranks
+// Large-message route of a two- or four-rank registered all-reduce: part of
+// each call is relayed through the node's other GPUs, with staging the ranks
 // allocate in those GPUs' HBM and no process on them.
 struct RegisteredRelay;
 
-// Collective over a two-rank comm, run at registration after the peer inputs
-// are mapped. Sets *relay to null (and succeeds) when the route does not apply
-// on both ranks: capacity below NCCL_REGISTERED_AR_RELAY_MIN_BYTES or no helper
-// GPU both ranks can reach. Fails on both ranks if the relay state or its peer
-// mappings cannot be created.
+// Collective over a two- or four-rank comm, run at registration after the peer
+// inputs are mapped. Sets *relay to null (and succeeds) when the route does not
+// apply on every rank: capacity below NCCL_REGISTERED_AR_RELAY_MIN_BYTES
+// (NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES at four ranks) or no helper GPU every
+// rank can reach. Fails on every rank if the relay state or its peer mappings
+// cannot be created.
 ncclResult_t registeredRelaySetup(
     ncclComm_t comm,
     size_t capacityBytes,
@@ -44,6 +46,12 @@ hipError_t registeredRelayLaunch(
     void* output,
     size_t bytes,
     hipStream_t stream);
+
+// Fills the four-rank route of `relay` for one launch of
+// launchRegisteredAllReduceRelayKernel; false for a two-rank relay.
+bool registeredRelayRoute(
+    const RegisteredRelay* relay,
+    RegisteredAllReduceRelayRoute* route);
 
 // Returns the request's pooled flags and staging to its communicator. Purely
 // local; the caller must have established that neither rank still runs a

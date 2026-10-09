@@ -1219,11 +1219,12 @@ typedef struct {
                 must execute the same count sequence and graph replay count/order, with all calls
                 for a request ordered on one stream. Supports BF16 SUM at any payload that is a
                 positive multiple of 16 bytes within the registered capacity, reduced in rank
-                order; unsupported combinations fail before launch. On two ranks, requests whose
-                capacity reaches NCCL_REGISTERED_AR_RELAY_MIN_BYTES (default 2 MiB) relay payloads
-                of at least that size partly through the node's other GPUs (staging the ranks
-                allocate in those GPUs' HBM; nothing runs there), with bitwise-identical results;
-                NCCL_RELAY_HELPER_DEVICES / NCCL_RELAY_MAX_HELPERS select those GPUs. With norm,
+                order; unsupported combinations fail before launch. Requests whose capacity
+                reaches NCCL_REGISTERED_AR_RELAY_MIN_BYTES (two ranks, default 2 MiB) or
+                NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES (four ranks, default 1 MiB + 16 B) relay
+                payloads of at least that size partly through the node's other GPUs (staging the
+                ranks allocate in those GPUs' HBM; nothing runs there), with bitwise-identical
+                results; NCCL_RELAY_HELPER_DEVICES / NCCL_RELAY_MAX_HELPERS select those GPUs. With norm,
                 recvbuff receives the epilogue's normalized rows instead of the plain sum;
                 supported shapes are 64 rows of 8192 elements (1 MiB) on four ranks, and 1 to 64
                 rows of 4608 elements on
