@@ -2039,16 +2039,17 @@ cvars:
 
  - name        : MCCL_ALLREDUCE_ZERO_COPY_MODE
    type        : enum
-   default     : "enabled"
-   choices     : off, enabled, force
+   default     : "off"
+   choices     : off, force
    description : |-
      Select zero-copy for MCCL-native AllReduce.
-     off - Always use the copy path.
-     enabled - Use zero-copy when every rank is eligible during CUDA graph
-               capture; otherwise use the copy path.
-     force - Require zero-copy during CUDA graph capture and return an error
-             instead of falling back to the copy path. Eager calls use the
-             copy path. Invalid or rank-mismatched requests return an error.
+     off - Always use the copy path. An empty value also selects off.
+     force - Send CUDA-graph-captured AllReduces from the registered user
+             buffer; eager calls use the copy path. Each rank decides on its
+             own, so communicator init rejects configurations whose zero-copy
+             and copy kernels would disagree on the wire (LL, warp proxy,
+             pipes trace, non-Ring/Tree selection), and a captured operation
+             that cannot run zero-copy throws instead of falling back.
 
  - name        : MCCL_ALLREDUCE_ROUTE_EVIDENCE_ENABLE
    type        : bool
