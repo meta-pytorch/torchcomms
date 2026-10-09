@@ -30,6 +30,9 @@ struct ncclGinBackendState {
   ncclGin_t* ncclGin;
   void* ginInstance;          // Plugin's per-comm opaque context.
   int pluginIndex;            // Index into pluginLibs[].
+  // [NCCLX] Loaded from an external plugin library. Its ncclGin_t may be an
+  // upstream-sized struct, so the NCCLX members past finalize must not be read.
+  bool isExternal;
   int ginCommCount;
   void* ginComms[NCCL_GIN_MAX_CONNECTIONS];
   ncclNetProperties_t ginProps[NCCL_GIN_MAX_CONNECTIONS];
@@ -76,6 +79,16 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
                              void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
                              ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
                              int winFlags, bool multiSegment = false, int memType = NCCL_PTR_CUDA);
+// [NCCLX] Local-only registration for source buffers (non-collective).
+// Uses each backend's existing PD but skips the rkey allGather, so the resulting
+// window can only be the source of a device-side GIN put. GIN must already be
+// connected. Backends that cannot register locally (the proxy, or a plugin without
+// regMrLocal) are skipped and leave their slots null; backend 0 is required.
+ncclResult_t ncclGinRegisterLocal(struct ncclComm* comm, void* address, size_t size, int winFlags,
+                                  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
+                                  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
+ncclResult_t ncclGinDeregisterLocal(struct ncclComm* comm,
+                                    void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
 ncclResult_t ncclGinDeregister(struct ncclComm* comm,
                                void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
 

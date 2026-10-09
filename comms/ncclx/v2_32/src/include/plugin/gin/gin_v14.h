@@ -64,5 +64,18 @@ typedef struct {
 
   // Finalize the GIN support
   ncclResult_t (*finalize)(void* ctx);
+
+  // [NCCLX] Local-only memory registration (non-collective, for source buffers only).
+  // Registers memory with the local PD but skips the rkey exchange (allGather), so the
+  // resulting handle can only be used as a source buffer for RDMA writes.
+  //
+  // Appended after the last upstream member rather than inserted next to regMrSym: an
+  // externally loaded plugin (NCCL_GIN_PLUGIN) built against upstream headers supplies an
+  // upstream-sized struct, and inserting mid-struct would shift every later member's
+  // offset. They are read only from in-tree backends (ncclGinBackendState::isExternal);
+  // callers must still null-check them.
+  ncclResult_t (*regMrLocal)(void* collComm, void* data, size_t size, int type, uint64_t mrFlags, void** mhandle,
+                             void** ginHandle);
+  ncclResult_t (*deregMrLocal)(void* collComm, void* mhandle);
 } ncclGin_v14_t;
 #endif // end include guard
