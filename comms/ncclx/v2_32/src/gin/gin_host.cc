@@ -16,7 +16,10 @@
 #include "compiler.h"
 #include <cmath>
 
-NCCL_PARAM(GinEnable, "GIN_ENABLE", 1);
+// [NCCLX] Upstream defaults this to 1. 2.30 overrides it to 0 because GIN unit tests
+// failed with GIN on; that note names no test. Keep 2.32 at 0 until the 2.32 GIN tests
+// under comms/ncclx/meta/tests pass without setting NCCL_GIN_ENABLE.
+NCCL_PARAM(GinEnable, "GIN_ENABLE", 0);
 
 // Backend version compatibility. Index: backend version. Value: min compatible NCCL version
 const int proxyBackendMinVersions[] = {0, NCCL_VERSION(2, 30, 3), NCCL_VERSION(2, 30, 5), NCCL_VERSION(2, 32, 0)};

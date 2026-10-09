@@ -278,6 +278,17 @@ ncclResult_t ncclGinInit(struct ncclComm* comm) {
     return ncclSuccess;
   }
 
+  // [NCCLX] NCCL_GIN_ENABLE=0 (the NCCLX default, see gin_host.cc) must stop GIN
+  // before any backend registers, not only at connect. An advertised backend gives a
+  // multi-node comm symmetricSupport; ncclSymkInitOnce then requests a RAIL GIN
+  // connection on every NCCL_WIN_COLL_SYMMETRIC registration, and ncclGinConnectOnce
+  // refuses it with "GIN is disabled.". Upstream checked this in setLocalGinType up to
+  // 2.30.3 and dropped the check when discovery moved to ncclGinPluginAssignToComm.
+  if (!ncclParamGinEnable()) {
+    INFO(NCCL_INIT | NCCL_NET, "GIN/Plugin: GIN disabled by NCCL_GIN_ENABLE=0; set NCCL_GIN_ENABLE=1 to enable");
+    return ncclSuccess;
+  }
+
   bool initialized = false;
   std::call_once(initPluginLibsOnceFlag, initPluginLibsOnceFunc);
   std::lock_guard<std::mutex> lock(pluginMutex);
