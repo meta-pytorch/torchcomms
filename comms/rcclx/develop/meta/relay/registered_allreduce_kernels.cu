@@ -308,6 +308,104 @@ __global__ void registeredAllReduceOneMiBKernel(
       true>(output, rank, inputs, states, targetEpochs, sourceEpochs);
 }
 
+// Two-stage all-reduce of any other four-rank payload from
+// kAiterTwoStageMinBytes, in AITER's split and order: quarter q holds vectors
+// [q * part, (q + 1) * part) with part = vectors / 4 (the last quarter takes
+// the remainder), and rank q sums quarter q starting with its own contribution.
+// Like AITER's kernel, 512 threads form four 128-lane groups: in stage 1 group
+// g loads source (rank + g) % 4 of a 128-vector chunk of the own quarter into
+// shared memory, so each wave reads one peer, and group 0 sums the four and
+// stores the result to its scratch and output; in stage 2 group g copies the
+// same chunk of owner (rank + g) % 4's quarter from that owner's scratch.
+// Chunk c runs on CTA c % gridDim.x on every rank, so a CTA reads only scratch
+// the same-index peer CTA wrote, and the per-CTA midpoint barrier orders it.
+constexpr int kTwoStageLanes = 128;
+constexpr int kTwoStageThreads = kTwoStageLanes * kRegisteredAllReduceRanks;
+
+__global__ void __launch_bounds__(kTwoStageThreads)
+    registeredAllReduceTwoStageKernel(
+        __nv_bfloat16* __restrict__ output,
+        int rank,
+        RegisteredAllReduceInputTable inputs,
+        RegisteredAllReduceStateTable states,
+        size_t vectors) {
+  __shared__ uint32_t targetEpochs[kRegisteredAllReduceRanks];
+  __shared__ uint32_t sourceEpochs[kRegisteredAllReduceRanks];
+  __shared__ Vec staged[kRegisteredAllReduceRanks][kTwoStageLanes];
+  constexpr int kRanks = kRegisteredAllReduceRanks;
+  const size_t part = vectors / kRanks;
+  const auto quarterCount = [part, vectors](int q) {
+    return q == kRanks - 1 ? vectors - (kRanks - 1) * part : part;
+  };
+  const auto group = threadIdx.x / kTwoStageLanes;
+  const auto lane = threadIdx.x % kTwoStageLanes;
+  Vec* destination = reinterpret_cast<Vec*>(output);
+
+  const size_t ownBegin = rank * part;
+  const size_t ownCount = quarterCount(rank);
+  const size_t shardOffset = ownBegin * kElementsPerVector;
+  // The local input is ready by stream order: the first chunk's own vector is
+  // loaded before the handshake so its latency overlaps the wait for peers.
+  const size_t firstVector =
+      static_cast<size_t>(blockIdx.x) * kTwoStageLanes + lane;
+  Vec early;
+  if (group == 0 && firstVector < ownCount) {
+    early = loadPeer(inputs, rank, 0, shardOffset, firstVector);
+  }
+
+  startHandshake<true>(rank, states, targetEpochs, sourceEpochs);
+
+  Vec* scratch =
+      reinterpret_cast<Vec*>(registeredAllReduceScratch(states.state[rank]));
+  for (size_t chunk = blockIdx.x; chunk * kTwoStageLanes < ownCount;
+       chunk += gridDim.x) {
+    const size_t i = chunk * kTwoStageLanes + lane;
+    if (i < ownCount) {
+      staged[group][lane] = group == 0 && chunk == blockIdx.x
+          ? early
+          : loadPeer(inputs, rank, group, shardOffset, i);
+    }
+    __syncthreads();
+    if (group == 0 && i < ownCount) {
+      Acc sum = widen(staged[0][lane]);
+      sum += widen(staged[1][lane]);
+      sum += widen(staged[2][lane]);
+      sum += widen(staged[3][lane]);
+      const Vec reduced = narrow(sum);
+      scratch[i] = reduced;
+      destination[ownBegin + i] = reduced;
+    }
+    __syncthreads();
+  }
+  drainWaveStores();
+
+  midpointBarrier<true>(states, rank, targetEpochs, sourceEpochs);
+
+  if (group != 0) {
+    const int owner = (rank + group) % kRanks;
+    const Vec* ownerScratch = reinterpret_cast<const Vec*>(
+        registeredAllReduceScratch(states.state[owner]));
+    const size_t begin = owner * part;
+    const size_t count = quarterCount(owner);
+    for (size_t chunk = blockIdx.x; chunk * kTwoStageLanes < count;
+         chunk += gridDim.x) {
+      const size_t i = chunk * kTwoStageLanes + lane;
+      if (i < count) {
+        destination[begin + i] = ownerScratch[i];
+      }
+    }
+  }
+}
+
+int twoStageBlocks(size_t vectors) {
+  const size_t largestQuarter = vectors -
+      (kRegisteredAllReduceRanks - 1) * (vectors / kRegisteredAllReduceRanks);
+  const size_t blocks = (largestQuarter + kTwoStageLanes - 1) / kTwoStageLanes;
+  return static_cast<int>(
+      blocks < kRegisteredAllReduceMaxBlocks ? blocks
+                                             : kRegisteredAllReduceMaxBlocks);
+}
+
 // Gated-residual-norm epilogue with a fixed arithmetic order, matching the
 // reference Triton post-norm/gated-residual/pre-norm kernel bit for bit: thread
 // t owns elements [8t, 8t + 8) of the row, row sums use the per-thread order,
@@ -1083,6 +1181,19 @@ hipError_t launchRegisteredAllReduceKernel(
         states);
   } else if (bytes == 0 || bytes % sizeof(Vec) != 0) {
     return hipErrorInvalidValue;
+  } else if (fourRanks && bytes >= kAiterTwoStageMinBytes) {
+    const size_t vectors = bytes / sizeof(Vec);
+    hipLaunchKernelGGL(
+        registeredAllReduceTwoStageKernel,
+        dim3(twoStageBlocks(vectors)),
+        dim3(kTwoStageThreads),
+        0,
+        stream,
+        reinterpret_cast<__nv_bfloat16*>(output),
+        rank,
+        inputs,
+        states,
+        vectors);
   } else if (fourRanks) {
     launchGeneric<kRegisteredAllReduceRanks>(
         reinterpret_cast<__nv_bfloat16*>(output),
