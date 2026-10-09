@@ -80,6 +80,11 @@ uint16_t floatToBfloat16(float value) {
 }
 
 constexpr uint16_t kAdversarialInputs[][kRanks] = {
+    // 1 + 1/256 + 1/256 + 0: 1.0078125 when accumulated in FP32, 1.0 when
+    // rounded to BF16 after every add.
+    {0x3f80, 0x3b80, 0x3b80, 0x0000},
+    // 2^24, 1, -2^24, 1: FP32 sums of 1, 2, 2 and 0 when started at ranks 0-3.
+    {0x4b80, 0x3f80, 0xcb80, 0x3f80},
     {0x3f4c, 0xc336, 0x3d04, 0x4329},
     {0xc1e2, 0x4218, 0xbf03, 0xc0dd},
     {0x4417, 0xc3cd, 0xc0fa, 0xc12b},
@@ -105,14 +110,36 @@ uint16_t expectedInputBits(int rank, size_t element, int generation) {
   return kAdversarialInputs[pattern][rank];
 }
 
-uint16_t expectedOutputBits(size_t element, int generation) {
-  uint16_t accumulator = expectedInputBits(0, element, generation);
-  for (int rank = 1; rank < kRanks; ++rank) {
-    accumulator = floatToBfloat16(
-        bfloat16ToFloat(accumulator) +
-        bfloat16ToFloat(expectedInputBits(rank, element, generation)));
+// The registered all-reduce contract: contributions accumulate in FP32 and
+// round to BF16 once, in AITER custom all-reduce order. A four-rank payload of
+// at least 160 KiB is split into four 16-byte-vector quarters and quarter q is
+// summed starting at rank q; smaller payloads, and two-rank ones, start at
+// rank 0.
+int firstSummand(int nRanks, size_t element, size_t count) {
+  constexpr size_t kTwoStageMinBytes = 160 * 1024;
+  constexpr size_t kElementsPerVector = 8;
+  if (nRanks != 4 || count * sizeof(uint16_t) < kTwoStageMinBytes) {
+    return 0;
   }
-  return accumulator;
+  const size_t part = count / kElementsPerVector / 4;
+  const size_t vector = element / kElementsPerVector;
+  return vector < 3 * part ? static_cast<int>(vector / part) : 3;
+}
+
+template <typename BitsOf>
+uint16_t reducedBits(int nRanks, size_t element, size_t count, BitsOf bitsOf) {
+  const int first = firstSummand(nRanks, element, count);
+  float sum = bfloat16ToFloat(bitsOf(first));
+  for (int step = 1; step < nRanks; ++step) {
+    sum = sum + bfloat16ToFloat(bitsOf((first + step) % nRanks));
+  }
+  return floatToBfloat16(sum);
+}
+
+uint16_t expectedOutputBits(size_t element, int generation, size_t count) {
+  return reducedBits(kRanks, element, count, [&](int rank) {
+    return expectedInputBits(rank, element, generation);
+  });
 }
 
 constexpr int kNormRows = rcclx::relay::kRegisteredAllReduceRows;
@@ -537,11 +564,11 @@ class RegisteredAllReduceTest : public ::testing::Test {
         norm.routerOut, 0xff, kNormCount * sizeof(float), stream));
   }
 
-  // Expected epilogue outputs from the canonical reduced row of generation.
+  // Expected epilogue outputs from the reduced rows of generation.
   void computeNormReferenceAsync(int generation) {
     std::vector<uint16_t> reduced(kNormCount);
     for (size_t i = 0; i < kNormCount; ++i) {
-      reduced[i] = expectedOutputBits(i, generation);
+      reduced[i] = expectedOutputBits(i, generation, kNormCount);
     }
     HIPCHECK_TEST(hipMemcpyAsync(
         norm.reduced, reduced.data(), kOneMiB, hipMemcpyHostToDevice, stream));
@@ -633,7 +660,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
     for (size_t i = 0; i < count; ++i) {
       const uint16_t expected = inputBuffer
           ? expectedInputBits(globalRank, i, generation)
-          : expectedOutputBits(i, generation);
+          : expectedOutputBits(i, generation, count);
       if (host[i] != expected) {
         ADD_FAILURE() << "R" << globalRank << " " << what << " index " << i
                       << " expected BF16 bits " << expected << " got "
