@@ -4,6 +4,7 @@ include README.md
 include pyproject.toml
 include requirements.txt
 include setup.py
+include torchcomms_build_info.py
 include version.txt
 include build_ncclx.sh
 include build_rccl.sh

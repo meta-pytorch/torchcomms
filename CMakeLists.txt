@@ -50,7 +50,7 @@ message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 # GLOO and XCCL are the only backends that are neither CUDA nor ROCm.
 # If no CUDA-dependent backend is enabled we can skip CUDA-specific setup
 # like TORCH_CUDA_ARCH_LIST detection.
-if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK OR USE_TRITON)
+if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRITON)
     set(NEEDS_CUDA TRUE)
 else()
     set(NEEDS_CUDA FALSE)
@@ -192,6 +192,21 @@ list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
 list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
 list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})
 
+# NCCLX and separately packaged MCCL share these implementations through
+# libtorchcomms. Keeping them in the core library gives both backends the same
+# ownership boundary without imposing NCCLX dependencies on other builds.
+if(USE_NCCLX)
+    find_package(CUDAToolkit REQUIRED)
+    find_package(spdlog CONFIG REQUIRED)
+    list(APPEND TORCHCOMMS_SOURCES
+        comms/utils/GraphCaptureSideStream.cc
+        comms/utils/StreamCaptureModeGuard.cc
+        comms/torchcomms/CommsLoggingOss.cc
+        comms/utils/logger/CommsLogFormatter.cc
+        comms/utils/logger/SpdlogLogger.cc
+    )
+endif()
+
 message(STATUS "Python3_ROOT_DIR : ${Python3_ROOT_DIR}")
 
 set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
@@ -217,6 +232,16 @@ target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
 # symbols from libtorchcomms.so at runtime via the DT_NEEDED chain.
 target_link_libraries(torchcomms PRIVATE glog::glog gflags::gflags fmt::fmt)
 target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(torchcomms PRIVATE LINKER:--no-undefined)
+endif()
+if(USE_NCCLX)
+    target_compile_definitions(torchcomms PRIVATE
+        SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+        SPDLOG_FMT_EXTERNAL
+    )
+    target_link_libraries(torchcomms PRIVATE CUDA::cudart spdlog::spdlog)
+endif()
 
 # Clog Hook sources (compiled into _comms)
 # Common hooks sources

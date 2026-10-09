@@ -21,6 +21,7 @@ INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/tests/integration/py' -
     ! -path '*/ncclx/*' \
     ! -path '*/rccl/*' \
     ! -path '*/rcclx/*' \
+    ! -path '*/mccl/*' \
     ! -path '*/fb/*' | sort -u)
 
 NCCLX_INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/ncclx/tests/integration/py' -type d \
