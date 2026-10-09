@@ -470,6 +470,15 @@ ncclResult_t newCollTraceDestroy(ncclComm* comm) {
 
 std::unique_ptr<meta::comms::colltrace::ICollMetadata>
 getMetadataFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
+  // Deadlock safety, same as the empty persistent plan below: symmetric kernels
+  // are never armed with colltraceHdr (see armNcclInKernelColltrace), so a
+  // graph record for one would never complete and would hang the poll thread on
+  // drain. Symmetric plans may carry tasks, so the empty-plan check does not
+  // catch them.
+  if (plan.persistent && plan.isSymColl) {
+    return nullptr;
+  }
+
   auto planInfo = getKernelPlanInfo(plan);
 
   // Handle invalid cases
