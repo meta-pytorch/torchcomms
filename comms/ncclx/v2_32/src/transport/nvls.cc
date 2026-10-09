@@ -43,6 +43,7 @@ static ncclResult_t nvlsFreeUc(struct ncclComm* comm, struct ncclNvlsUcSegment* 
   if (uc->ptr) {
     INFO(NCCL_NVLS, "NVLS release UC handle %llx ptr %p size %zu", uc->handle, uc->ptr, uc->size);
     // Unmaps/frees/releases and untracks the persistent ncclMemTrack entry from nvlsAllocBindUc.
+    memLogMetaData = comm->logMetaData; // [NCCLX] attribute the free
     NCCLCHECK(ncclCuMemFree(uc->ptr, comm->memManager));
     memset(uc, 0, sizeof(*uc));
   }
@@ -260,7 +261,11 @@ static ncclResult_t nvlsAllocBindUc(struct ncclComm* comm, const struct ncclMcPa
   INFO(NCCL_NVLS, "NVLS rank %d (dev %d) bound UC ptr %p ucsize %zu into MC slice offset %zu (inputsize %zu)",
        comm->rank, comm->cudaDev, ucptr, ucsize, partition->offset, size);
 
-  // Publish the UC owner only on success (callers test outUc->ptr).
+  // Publish the UC owner only on success (callers test outUc->ptr). Record it
+  // here too, so a failed barrier or bind leaves no phantom allocation. The
+  // callsite matches v2_30's allocation row, so 2.30 and 2.32 traces line up.
+  meta::comms::memtrace::recordAlloc(comm->logMetaData, "nvlsAllocateMem", "cuMemCreate",
+                                     reinterpret_cast<uintptr_t>(ucptr), ucsize);
   outUc->handle = ucHandle;
   outUc->ptr = ucptr;
   outUc->size = ucsize;
