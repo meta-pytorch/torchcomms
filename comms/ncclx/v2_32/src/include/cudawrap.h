@@ -232,6 +232,9 @@ inline ncclResult_t ncclCudaDriverVersion(int* driver) {
 }
 
 ncclResult_t ncclCuMemGdrSupport(int cudaDev, bool* support);
+// [NCCLX] Whether CUMEM/VMM RDMA is supported on this platform. Exposed for
+// meta/ code that cannot reach the static ncclCuMemSupported in cudawrap.cc.
+bool ncclGetCuMemSysSupported();
 
 ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps, CUstreamBatchMemOpParams* batchParams);
 

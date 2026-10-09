@@ -22,6 +22,11 @@ CUmemAllocationHandleType ncclCuMemHandleType = CU_MEM_HANDLE_TYPE_POSIX_FILE_DE
 
 static int ncclCuMemSupported = 0;
 
+// [NCCLX] Read-only accessor for meta/ code outside this TU (meta/rma/window.cc).
+bool ncclGetCuMemSysSupported() {
+  return ncclCuMemSupported == 1;
+}
+
 // Determine whether CUMEM & VMM RDMA is supported on this platform
 int ncclIsCuMemSupported() {
 #if CUDART_VERSION < 11030 || defined(NCCL_OS_WINDOWS)
