@@ -99,6 +99,8 @@ static std::mutex ncclWindowMapMutex;
 static ncclIntruAddressMap<ncclDevrWindow, struct ncclWindow_vidmem*, &ncclDevrWindow::vidmem, &ncclDevrWindow::next>
   ncclWindowMap;
 static ncclResult_t symWindowDestroy(struct ncclComm* comm, struct ncclWindow_vidmem* winDev, cudaStream_t stream);
+static ncclResult_t symLocalWindowDestroy(struct ncclComm* comm, struct ncclWindow_vidmem* winDev,
+                                          cudaStream_t stream);
 
 struct ncclDevrWindowSorted {
   uintptr_t userAddr;
@@ -236,6 +238,10 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
   // symmetric window objects, we need to destroy all remaining window objects
   // that are not deregistered by user to avoid memory leaks here.
   CUDACHECKIGNORE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+  // [NCCLX] symLocalWindowDestroy unlinks the window first, so this terminates.
+  while (devr->localWinHead != nullptr) {
+    NCCLCHECKIGNORE(symLocalWindowDestroy(comm, devr->localWinHead->vidmem, stream), ret);
+  }
   while (devr->winSortedCount > 0) {
     struct ncclDevrWindow* win = devr->winSorted[0].win;
     NCCLCHECKIGNORE(symWindowDestroy(comm, win->vidmem, stream), ret);
@@ -1146,6 +1152,149 @@ fail:
   return ret;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// [NCCLX] Local-only windows for source buffers (non-collective registration).
+// Reuse the parent comm's PD but skip the rkey allGather, so the window is only
+// valid as the source of a put.
+//
+// Deliberately not inserted into ncclWindowMap: every reader of that map
+// (multimem/NVLS/team pointer queries, CFT) dereferences ncclDevrWindow members a
+// local window does not have -- memory is always nullptr here. Staying out of the
+// map turns those calls into a clean "could not find communicator" error instead
+// of a null dereference.
+
+// [NCCLX] 2.32 device code expects every GIN window to have numSegments >= 1 and
+// a per-backend segment table (see symWindowInitGin). Give a local window one
+// device segment per backend; backends skipped at registration keep null handles.
+static ncclResult_t symLocalWindowAllocSegments(struct ncclDevrState* devr, struct ncclDevrLocalWindow* win,
+                                                cudaStream_t stream, struct ncclSegmentWindow** outSegmentWinsDev) {
+  ncclResult_t ret = ncclSuccess;
+  struct ncclSegmentWindow* segmentWinsDev = nullptr;
+  struct ncclSegmentWindow* segmentWinsHost = nullptr;
+  NCCLCHECK(ncclShadowPoolAlloc(&devr->shadows, sizeof(struct ncclSegmentWindow) * NCCL_GIN_MAX_ACTIVE_BACKENDS,
+                                (void**)&segmentWinsDev, (void**)&segmentWinsHost, stream));
+  for (int backend = 0; backend < NCCL_GIN_MAX_ACTIVE_BACKENDS; backend++) {
+    segmentWinsHost[backend].memType = CU_MEM_LOCATION_TYPE_DEVICE;
+    segmentWinsHost[backend].segmentSize = win->size;
+    for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+      segmentWinsHost[backend].ginWins[i] = win->ginDevWins[backend * NCCL_GIN_MAX_CONNECTIONS + i];
+    }
+  }
+  CUDACHECKGOTO(cudaMemcpyAsync(segmentWinsDev, segmentWinsHost,
+                                sizeof(struct ncclSegmentWindow) * NCCL_GIN_MAX_ACTIVE_BACKENDS,
+                                cudaMemcpyHostToDevice, stream),
+                ret, fail);
+  *outSegmentWinsDev = segmentWinsDev;
+  return ncclSuccess;
+fail:
+  NCCLCHECKIGNORE(ncclShadowPoolFree(&devr->shadows, segmentWinsDev, stream), ret);
+  return ret;
+}
+
+static ncclResult_t symLocalWindowCreate(struct ncclComm* comm, void* userPtr, size_t userSize, int winFlags,
+                                         void* localReg, struct ncclWindow_vidmem** outWinDev,
+                                         struct ncclDevrLocalWindow** outWin, cudaStream_t stream) {
+  uintptr_t userAddr = reinterpret_cast<uintptr_t>(userPtr);
+  struct ncclDevrState* devr = &comm->devrState;
+  ncclResult_t ret = ncclSuccess;
+  struct ncclDevrLocalWindow* win = nullptr;
+  struct ncclWindow_vidmem* winDev = nullptr;
+  struct ncclWindow_vidmem* winDevHost = nullptr;
+  struct ncclSegmentWindow* segmentWinsDev = nullptr;
+
+  win = (struct ncclDevrLocalWindow*)malloc(sizeof(struct ncclDevrLocalWindow));
+  if (win == nullptr) {
+    ERR(ncclSystemError, "Failed to allocate %zu bytes for a local window", sizeof(struct ncclDevrLocalWindow));
+    return ncclSystemError;
+  }
+  memset(win, 0, sizeof(*win));
+  win->memory = nullptr;
+  win->userPtr = userPtr;
+  win->size = userSize;
+  win->bigOffset = 0;
+  win->winFlags = winFlags;
+  win->localRegHandle = localReg;
+
+  // GIN must already be connected via the parent comm.
+  NCCLCHECKGOTO(ncclGinRegisterLocal(comm, userPtr, userSize, winFlags, win->ginHostWins, win->ginDevWins), ret,
+                fail_gin);
+
+  NCCLCHECKGOTO(symLocalWindowAllocSegments(devr, win, stream, &segmentWinsDev), ret, fail_gin);
+
+  NCCLCHECKGOTO(ncclShadowPoolAlloc(&devr->shadows, &winDev, &winDevHost, stream), ret, fail_segments);
+  win->vidmem = winDev;
+
+  // No collective mapping exists, so lsaFlatBase is just the caller's pointer and
+  // the multicast/stride fields stay zero -- they are only valid for local access.
+  winDevHost->lsaFlatBase = (char*)userPtr;
+  winDevHost->mcOffset4K = 0;
+  winDevHost->stride4G = 0;
+  winDevHost->lsaRank = devr->lsaSelf;
+  winDevHost->cftFlatRank = devr->cftSelf;
+  winDevHost->worldRank = comm->rank;
+  winDevHost->winHost = (void*)win;
+  winDevHost->winFlags = winFlags;
+  winDevHost->ucLeIdBase = NCCL_LE_ID_INVALID;
+  winDevHost->ginOffset4K = 0;
+  winDevHost->ginMultiSegmentWins = segmentWinsDev;
+  winDevHost->numSegments = 1;
+  for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+    winDevHost->ginWinsDefaultBackend[i] = win->ginDevWins[i];
+  }
+  CUDACHECKGOTO(cudaMemcpyAsync(winDev, winDevHost, sizeof(struct ncclWindow_vidmem), cudaMemcpyHostToDevice, stream),
+                ret, fail_shadow);
+
+  win->next = devr->localWinHead;
+  devr->localWinHead = win;
+
+  if (outWinDev) *outWinDev = winDev;
+  if (outWin) *outWin = win;
+  return ncclSuccess;
+
+fail_shadow:
+  NCCLCHECKIGNORE(ncclShadowPoolFree(&devr->shadows, winDev, stream), ret);
+fail_segments:
+  NCCLCHECKIGNORE(ncclShadowPoolFree(&devr->shadows, segmentWinsDev, stream), ret);
+fail_gin:
+  NCCLCHECKIGNORE(ncclGinDeregisterLocal(comm, win->ginHostWins), ret);
+  free(win);
+  if (outWinDev) *outWinDev = nullptr;
+  if (outWin) *outWin = nullptr;
+  return ret;
+}
+
+static ncclResult_t symLocalWindowDestroy(struct ncclComm* comm, struct ncclWindow_vidmem* winDev,
+                                          cudaStream_t stream) {
+  ncclResult_t ret = ncclSuccess;
+  struct ncclDevrState* devr = &comm->devrState;
+  struct ncclWindow_vidmem* winDevHost;
+  struct ncclDevrLocalWindow* winHost;
+
+  NCCLCHECK(ncclShadowPoolToHost(&devr->shadows, winDev, &winDevHost));
+  winHost = (struct ncclDevrLocalWindow*)winDevHost->winHost;
+
+  // Unlink first, so teardown's loop over localWinHead always makes progress.
+  for (struct ncclDevrLocalWindow** p = &devr->localWinHead; *p != nullptr; p = &(*p)->next) {
+    if (*p == winHost) {
+      *p = winHost->next;
+      break;
+    }
+  }
+
+  NCCLCHECKIGNORE(ncclGinDeregisterLocal(comm, winHost->ginHostWins), ret);
+  if (winDevHost->ginMultiSegmentWins != nullptr) {
+    NCCLCHECKIGNORE(ncclShadowPoolFree(&devr->shadows, winDevHost->ginMultiSegmentWins, stream), ret);
+  }
+  NCCLCHECKIGNORE(ncclShadowPoolFree(&devr->shadows, winDev, stream), ret);
+  if (winHost->localRegHandle != nullptr) {
+    NCCLCHECKIGNORE(ncclCommDeregister(comm, winHost->localRegHandle), ret);
+  }
+  free(winHost);
+  return ret;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr, size_t userSize, int winFlags,
                                            ncclWindow_t* outWinDev) {
   ncclResult_t ret = ncclSuccess;
@@ -1170,7 +1319,64 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr,
     goto fail;
   }
 
+  // [NCCLX] A local-only window is never a collective or counted window.
+  if ((winFlags & NCCL_WIN_LOCAL_ONLY) && (winFlags & (NCCL_WIN_COLL_SYMMETRIC | NCCL_WIN_CFT_COUNTED))) {
+    ERR(ncclInvalidArgument, "NCCL_WIN_LOCAL_ONLY cannot be combined with NCCL_WIN_COLL_SYMMETRIC or NCCL_WIN_CFT_COUNTED");
+    ret = ncclInvalidArgument;
+    goto fail;
+  }
+
   NCCLCHECKGOTO(ncclCommRegister(comm, userPtr, userSize, &localRegHandle), ret, fail);
+
+  // [NCCLX] Local-only registration (non-collective, source buffers only): skips
+  // the collective allGather and registers the local lkey alone.
+  if (winFlags & NCCL_WIN_LOCAL_ONLY) {
+    struct ncclDevrState* devr = &comm->devrState;
+
+    // GIN comes up only with a devcomm whose ginConnectionType is not NONE. A group drains
+    // window registrations before devcomm creation, so that devcomm needs an earlier group.
+    if (!devr->ginEnabled) {
+      ERR(ncclInvalidUsage,
+          "NCCL_WIN_LOCAL_ONLY requires GIN. Create a devcomm with GIN enabled in an earlier group first.");
+      ret = ncclInvalidUsage;
+      goto fail_locReg;
+    }
+
+    // Same alignment rule as a collective window: the GIN backend registers the
+    // range through cuMemGetHandleForAddressRange, which needs it aligned.
+    NCCLCHECKGOTO(ncclCuMemGetAddressRange(reinterpret_cast<CUdeviceptr>(userPtr), userSize, &memAddr, &memSize,
+                                           &numSegments, &hasSysmemSegment),
+                  ret, fail_locReg);
+    if ((reinterpret_cast<CUdeviceptr>(userPtr) - memAddr) % NCCL_WIN_REQUIRED_ALIGNMENT != 0) {
+      ERR(ncclInvalidArgument, "Window address must be suitably aligned.");
+      ret = ncclInvalidArgument;
+      goto fail_locReg;
+    }
+
+    struct ncclDevrLocalWindow* localWin = nullptr;
+    CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail_locReg);
+
+    NCCLCHECKGOTO(symLocalWindowCreate(comm, userPtr, userSize, winFlags, localRegHandle, outWinDev, &localWin, stream),
+                  ret, fail_locReg_stream);
+
+    CUDACHECKGOTO(cudaStreamSynchronize(stream), ret, fail_locReg_stream_win);
+
+    // No barrier: local-only registration is not collective.
+    cudaStreamDestroy(stream);
+    cudaThreadExchangeStreamCaptureMode(&captureMode);
+    return ncclSuccess;
+
+  fail_locReg_stream_win:
+    // symLocalWindowDestroy deregisters localRegHandle only on its fully successful
+    // path. Detach it so the fail_locReg ladder below deregisters it exactly once.
+    localWin->localRegHandle = nullptr;
+    NCCLCHECKIGNORE(symLocalWindowDestroy(comm, *outWinDev, stream), ret);
+    *outWinDev = nullptr;
+    CUDACHECKIGNORE(cudaStreamSynchronize(stream));
+  fail_locReg_stream:
+    cudaStreamDestroy(stream);
+    goto fail_locReg;
+  }
 
   if (winFlags & NCCL_WIN_COLL_SYMMETRIC) {
     // Defer symmetric kernel init until at least one window with that flag exists.
@@ -1752,7 +1958,10 @@ static ncclResult_t ncclDevrWindowRegisterJob(struct ncclAsyncJob* job_) {
   ncclResult_t ret = ncclSuccess;
 
   CUDACHECKGOTO(cudaSetDevice(job->comm->cudaDev), ret, fail);
-  if (job->comm->hostRmaSupport && !job->comm->rmaState.rmaCeState.initialized) {
+  // [NCCLX] RMA CE init registers a collective window; a local-only registration
+  // is not collective and must not trigger it.
+  if (!(job->winFlags & NCCL_WIN_LOCAL_ONLY) && job->comm->hostRmaSupport &&
+      !job->comm->rmaState.rmaCeState.initialized) {
     NCCLCHECKGOTO(ncclRmaCeInit(job->comm), ret, fail);
   }
   NCCLCHECKGOTO(ncclDevrWindowRegisterInGroup(job->comm, job->userPtr, job->userSize, job->winFlags, job->outWinDev),
@@ -1848,7 +2057,8 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     ncclGroupCommJoin(comm, ncclGroupTaskTypeSymRegister);
 
     // Initialize RMA CE alongside the first window registration
-    if (ncclDevrWinRegEnabled(winFlags, ncclDevrRegisterRma) && comm->hostRmaSupport &&
+    if (!(winFlags & NCCL_WIN_LOCAL_ONLY) && // [NCCLX] see ncclDevrWindowRegisterJob
+        ncclDevrWinRegEnabled(winFlags, ncclDevrRegisterRma) && comm->hostRmaSupport &&
         !comm->rmaState.rmaCeState.initialized && ncclIntruQueueEmpty(&comm->rmaCeInitTaskQueue)) {
       NCCLCHECKGOTO(ncclCalloc(&ceTask, 1), ret, fail);
       ceTask->comm = comm;
@@ -1883,7 +2093,20 @@ ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_v
   CUDACHECKGOTO(cudaGetDevice(&saveDev), ret, fail);
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail_dev);
-  NCCLCHECKGOTO(symWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
+
+  { // [NCCLX] winHost is either an ncclDevrWindow or an ncclDevrLocalWindow; winFlags
+    // sits at the same offset in both (see the static_asserts in dev_runtime.h), so it
+    // is safe to read through either type to decide which destructor to run.
+    struct ncclDevrState* devr = &comm->devrState;
+    struct ncclWindow_vidmem* winDevHost;
+    NCCLCHECKGOTO(ncclShadowPoolToHost(&devr->shadows, winDev, &winDevHost), ret, fail_dev_stream);
+
+    if (ncclDevrWinIsLocalOnly(winDevHost->winHost)) {
+      NCCLCHECKGOTO(symLocalWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
+    } else {
+      NCCLCHECKGOTO(symWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
+    }
+  }
 fail_dev_stream:
   cudaStreamSynchronize(stream);
   cudaStreamDestroy(stream);

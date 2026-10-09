@@ -532,6 +532,71 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
   return ncclSuccess;
 }
 
+// [NCCLX] Whether a backend can register a local-only window. The proxy cannot,
+// and regMrLocal / deregMrLocal are NCCLX extensions past the upstream members,
+// so they are read only from in-tree backends (an external plugin's struct may
+// end at finalize).
+static bool ncclGinBackendSupportsLocal(const struct ncclGinBackendState* backend) {
+  return !backend->isExternal && backend->ginType != NCCL_GIN_TYPE_PROXY && backend->ncclGin->regMrLocal != nullptr &&
+         backend->ncclGin->deregMrLocal != nullptr;
+}
+
+// [NCCLX] Local-only registration for source buffers (non-collective).
+// Reuses each backend's existing PD but skips the rkey allGather, so the resulting
+// window can only be the source of a device-side GIN put. GIN must already be
+// connected. On 2.32 the proxy is normally active next to GDAKI, so backends that
+// cannot register locally are skipped and leave their slots null; only backend 0,
+// which default devcomms use, is required.
+ncclResult_t ncclGinRegisterLocal(struct ncclComm* comm, void* address, size_t size, int winFlags,
+                                  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
+                                  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]) {
+  struct ncclGinState* ginState = &comm->sharedRes->ginState;
+
+  if (!ginState->connected) {
+    ERR(ncclInvalidUsage, "ncclGinRegisterLocal: GIN not connected.");
+    return ncclInvalidUsage;
+  }
+  if (ginState->numActiveBackends == 0 || !ncclGinBackendSupportsLocal(&ginState->backends[0])) {
+    ERR(ncclInvalidUsage, "ncclGinRegisterLocal: the default GIN backend (%s) does not support local registration",
+        ginState->numActiveBackends == 0 ? "none" : ginState->backends[0].ncclGin->name);
+    return ncclInvalidUsage;
+  }
+
+  int mrFlags = (winFlags & NCCL_WIN_STRICT_ORDERING) ? NCCL_NET_MR_FLAG_FORCE_SO : 0;
+  for (int backendIdx = 0; backendIdx < ginState->numActiveBackends; backendIdx++) {
+    struct ncclGinBackendState* backend = &ginState->backends[backendIdx];
+    if (!ncclGinBackendSupportsLocal(backend)) continue;
+    for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+      int slot = backendIdx * NCCL_GIN_MAX_CONNECTIONS + commIdx;
+      NCCLCHECK(backend->ncclGin->regMrLocal(backend->ginComms[commIdx], address, size, NCCL_PTR_CUDA, mrFlags,
+                                             &ginHostWins[slot], &ginDevWins[slot]));
+      if (ginHostWins[slot] == nullptr) {
+        ERR(ncclSystemError, "rank %d - GIN Local register failed: buff %p, size %ld", comm->rank, address, size);
+        return ncclSystemError;
+      }
+    }
+  }
+  return ncclSuccess;
+}
+
+ncclResult_t ncclGinDeregisterLocal(struct ncclComm* comm,
+                                    void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]) {
+  struct ncclGinState* ginState = &comm->sharedRes->ginState;
+  ncclResult_t ret = ncclSuccess;
+  for (int backendIdx = 0; backendIdx < ginState->numActiveBackends; backendIdx++) {
+    struct ncclGinBackendState* backend = &ginState->backends[backendIdx];
+    if (!ncclGinBackendSupportsLocal(backend)) continue; // registration skipped it too
+    for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+      int slot = backendIdx * NCCL_GIN_MAX_CONNECTIONS + commIdx;
+      if (ginHostWins[slot] == nullptr) continue;
+      // Best-effort: a failure on one slot must not strand the rest registered.
+      NCCLCHECKIGNORE(backend->ncclGin->deregMrLocal(backend->ginComms[commIdx], ginHostWins[slot]), ret);
+      ginHostWins[slot] = nullptr;
+    }
+  }
+  return ret;
+}
+
 ncclResult_t ncclGinDeregister(struct ncclComm* comm,
                                void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]) {
   struct ncclGinState* ginState = &comm->sharedRes->ginState;
