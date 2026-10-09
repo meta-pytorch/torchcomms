@@ -351,6 +351,15 @@ ncclResult_t ncclGinIbGdakiDeregMrSym(void* collComm, void* mhandle) {
   return ncclGinGdakiDeregMrSym((struct ncclGinIbCollComm*)collComm, mhandle);
 }
 
+ncclResult_t ncclGinIbGdakiRegMrLocal(void* collComm, void* data, size_t size, int type, uint64_t mr_flags,
+                                      void** mhandle, void** ginHandle) {
+  return ncclGinGdakiRegMrLocal((struct ncclGinIbCollComm*)collComm, data, size, type, mr_flags, mhandle, ginHandle);
+}
+
+ncclResult_t ncclGinIbGdakiDeregMrLocal(void* collComm, void* mhandle) {
+  return ncclGinGdakiDeregMrLocal((struct ncclGinIbCollComm*)collComm, mhandle);
+}
+
 ncclResult_t ncclGinIbGdakiDestroyContext(void* ginCtx) {
   return ncclGinGdakiDestroyContext(ginCtx);
 }
@@ -379,7 +388,9 @@ ncclGin_t ncclGinIbGdaki = {"GIN_IB_GDAKI",
                             ncclIbCloseListen,
                             ncclGinIbGdakiProgress,
                             ncclGinIbGdakiQueryLastError,
-                            ncclGinIbFinalize};
+                            ncclGinIbFinalize,
+                            ncclGinIbGdakiRegMrLocal,   // [NCCLX] local-only registration
+                            ncclGinIbGdakiDeregMrLocal};
 
 struct ncclRmaIbProxyMrHandle {
   struct ncclIbMrHandle* mrHandle;

@@ -42,6 +42,53 @@ struct ncclDevrWindow {
   struct ncclDevrWindow* next; // next for intrusive map
   struct ncclComm* comm; // comm for intrusive map window <> comm look up
 };
+
+// [NCCLX] Local-only window for source buffers (non-collective registration).
+// Uses the parent comm's PD but skips the rkey allGather, so it can only be the
+// source of a device-side GIN put.
+//
+// ncclWindow_vidmem::winHost may point at either window type, and the type is
+// recovered by reading winFlags for NCCL_WIN_LOCAL_ONLY. That only works while the
+// leading members below stay at the same offsets as in ncclDevrWindow; the
+// static_asserts under this struct enforce it.
+struct ncclDevrLocalWindow {
+  void* memory;     // always nullptr -- local-only windows have no ncclDevrMemory
+  void* userPtr;
+  size_t size;
+  size_t bigOffset; // always 0 -- no big VA space mapping
+  int winFlags;
+  void* localRegHandle;
+  struct ncclWindow_vidmem* vidmem;
+  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
+  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
+  struct ncclDevrLocalWindow* next; // ncclDevrState::localWinHead
+};
+
+static_assert(offsetof(struct ncclDevrLocalWindow, winFlags) == offsetof(struct ncclDevrWindow, winFlags),
+              "ncclDevrLocalWindow::winFlags must alias ncclDevrWindow::winFlags -- the window-type check reads it "
+              "through whichever type ncclWindow_vidmem::winHost happens to point at");
+static_assert(offsetof(struct ncclDevrLocalWindow, userPtr) == offsetof(struct ncclDevrWindow, userPtr),
+              "ncclDevrLocalWindow prefix must match ncclDevrWindow");
+static_assert(offsetof(struct ncclDevrLocalWindow, size) == offsetof(struct ncclDevrWindow, size),
+              "ncclDevrLocalWindow prefix must match ncclDevrWindow");
+// The members below are not read through the pun today, but they are the ones
+// that would silently corrupt if they ever were -- memory in particular is
+// always null for a local window, so anything reaching it via a punned pointer
+// dereferences null rather than misbehaving quietly.
+static_assert(offsetof(struct ncclDevrLocalWindow, memory) == offsetof(struct ncclDevrWindow, memory),
+              "ncclDevrLocalWindow prefix must match ncclDevrWindow");
+static_assert(offsetof(struct ncclDevrLocalWindow, bigOffset) == offsetof(struct ncclDevrWindow, bigOffset),
+              "ncclDevrLocalWindow prefix must match ncclDevrWindow");
+static_assert(offsetof(struct ncclDevrLocalWindow, localRegHandle) == offsetof(struct ncclDevrWindow, localRegHandle),
+              "ncclDevrLocalWindow prefix must match ncclDevrWindow");
+static_assert(offsetof(struct ncclDevrLocalWindow, vidmem) == offsetof(struct ncclDevrWindow, vidmem),
+              "ncclDevrLocalWindow prefix must match ncclDevrWindow");
+
+// [NCCLX] Whether ncclWindow_vidmem::winHost points at a local-only window. The
+// winFlags read through ncclDevrLocalWindow is what the asserts above protect.
+static inline bool ncclDevrWinIsLocalOnly(void const* winHost) {
+  return winHost != nullptr && (static_cast<struct ncclDevrLocalWindow const*>(winHost)->winFlags & NCCL_WIN_LOCAL_ONLY);
+}
 struct ncclDevrWindowSorted;
 struct ncclDevrTeam;
 
@@ -86,6 +133,9 @@ struct ncclDevrState {
   uint64_t nextRegistryId; // next value for ncclDevrMemory::registryId
   struct ncclDevrWindowSorted* winSorted;
   int winSortedCapacity, winSortedCount;
+  // [NCCLX] Local-only windows. Kept out of winSorted and the device window table:
+  // a put takes its source window directly, so they never need address lookup.
+  struct ncclDevrLocalWindow* localWinHead;
   struct ncclDevrTeam* teamHead;
   size_t bigSize; // size of our big logical space (128GB?)
   struct ncclSpace bigSpace; // allocates our big VA space.

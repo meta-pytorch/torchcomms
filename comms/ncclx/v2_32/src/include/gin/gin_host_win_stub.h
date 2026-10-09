@@ -126,6 +126,13 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
                              void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
                              ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
                              int winFlags, bool multiSegment = false, int memType = NCCL_PTR_CUDA);
+// [NCCLX] symLocalWindowCreate/Destroy in dev_runtime.cc are compiled on every
+// platform, so the stub has to mirror these too.
+ncclResult_t ncclGinRegisterLocal(struct ncclComm* comm, void* address, size_t size, int winFlags,
+                                  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
+                                  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
+ncclResult_t ncclGinDeregisterLocal(struct ncclComm* comm,
+                                    void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
 ncclResult_t ncclGinDeregister(struct ncclComm* comm,
                                void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
 ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError);

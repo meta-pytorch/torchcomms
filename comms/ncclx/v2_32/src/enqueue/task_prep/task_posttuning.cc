@@ -376,6 +376,14 @@ static ncclResult_t postTuneRmaTaskAppend(struct ncclComm* comm, const struct nc
     struct ncclWindow_vidmem* peerWinDevHost = NULL;
     NCCLCHECK(ncclShadowPoolToHost(&comm->devrState.shadows, peerWin, &peerWinDevHost));
     peerWinHost = (struct ncclDevrWindow*)peerWinDevHost->winHost;
+    // [NCCLX] A local-only window has no ncclDevrMemory, so anything downstream
+    // that walks ->memory (ncclDevrWindowIsMultiSegment, and the segment paths)
+    // would dereference null. It is also meaningless as a peer window: the
+    // registration deliberately skips the rkey exchange.
+    if (ncclDevrWinIsLocalOnly(peerWinHost)) {
+      ERR(ncclInvalidArgument, "ncclPutSignal: peerWin is a local-only window, which cannot be a remote target");
+      return ncclInvalidArgument;
+    }
 
     // Validate source buffer and window
     if (srcBuff == NULL) {
