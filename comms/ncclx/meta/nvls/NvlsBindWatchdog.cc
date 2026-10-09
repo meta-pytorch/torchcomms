@@ -3,13 +3,11 @@
 #include "meta/nvls/NvlsBindWatchdog.h"
 
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
-#include <exception>
-#include <mutex>
 #include <string>
-#include <thread>
+
+#include "meta/nvls/StuckWatchdog.h"
 
 #include "comm.h"
 #include "cudawrap.h"
@@ -25,9 +23,6 @@ NCCL_PARAM(NvlsBindWatchdogSec, "NVLS_BIND_WATCHDOG_SEC", 30);
 constexpr int kHostnameLen = 256;
 
 struct NvlsBindWatchdogState {
-  std::mutex mutex;
-  std::condition_variable cv;
-  bool done{false};
   uint64_t startNs{0};
   uint64_t commHash{0};
   uint64_t pid{0};
@@ -44,6 +39,8 @@ struct NvlsBindWatchdogState {
   CUmemGenericAllocationHandle ucHandle{};
   const void* comm{nullptr};
   std::string commDesc{"unknown"};
+  // The guarded driver call, named in every log line.
+  const char* op{"cuMulticastBindMem"};
   int64_t watchdogSec{0};
   char hostname[kHostnameLen]{};
 };
@@ -93,7 +90,8 @@ void logBindState(
   const uint64_t elapsedMs = (clockNano() - state.startNs) / 1000000;
   INFO(
       NCCL_INIT | NCCL_NVLS,
-      "NVLS cuMulticastBindMem %s cuResult %d elapsedMs %llu host %s pid %llu rank %d/%d localRank %d/%d cudaDev %d nvlsChannels %d comm %p commHash %llx commDesc %s inputSize %zu ucsize %zu mcsize %zu mcHandle 0x%llx ucHandle 0x%llx watchdogSec %lld",
+      "NVLS %s %s cuResult %d elapsedMs %llu host %s pid %llu rank %d/%d localRank %d/%d cudaDev %d nvlsChannels %d comm %p commHash %llx commDesc %s inputSize %zu ucsize %zu mcsize %zu mcHandle 0x%llx ucHandle 0x%llx watchdogSec %lld",
+      state.op,
       event,
       cuResult,
       static_cast<unsigned long long>(elapsedMs),
@@ -119,7 +117,8 @@ void logBindState(
 void logBindStuck(const NvlsBindWatchdogState& state) {
   const uint64_t elapsedMs = (clockNano() - state.startNs) / 1000000;
   WARN(
-      "NVLS cuMulticastBindMem STUCK elapsedMs %llu host %s pid %llu rank %d/%d localRank %d/%d cudaDev %d nvlsChannels %d comm %p commHash %llx commDesc %s inputSize %zu ucsize %zu mcsize %zu mcHandle 0x%llx ucHandle 0x%llx. Check Fabric Manager/NVSwitch logs for multicast team setup errors such as stale or missing GPU handles after a Fabric Manager restart; affected GPUs or the partition may need a GPU reset before NVLS jobs can run safely.",
+      "NVLS %s STUCK elapsedMs %llu host %s pid %llu rank %d/%d localRank %d/%d cudaDev %d nvlsChannels %d comm %p commHash %llx commDesc %s inputSize %zu ucsize %zu mcsize %zu mcHandle 0x%llx ucHandle 0x%llx. Check Fabric Manager/NVSwitch logs for multicast team setup errors such as stale or missing GPU handles after a Fabric Manager restart; affected GPUs or the partition may need a GPU reset before NVLS jobs can run safely.",
+      state.op,
       static_cast<unsigned long long>(elapsedMs),
       state.hostname,
       static_cast<unsigned long long>(state.pid),
@@ -139,19 +138,42 @@ void logBindStuck(const NvlsBindWatchdogState& state) {
       static_cast<unsigned long long>(state.ucHandle));
 }
 
-void bindWatchdog(NvlsBindWatchdogState* state) {
-  NCCL_NAMED_THREAD_START_EXT(
-      "NVLSBindWatch", state->rank, state->commHash, state->commDesc);
-  std::unique_lock<std::mutex> lock(state->mutex);
-  while (!state->done) {
-    if (state->cv.wait_for(
-            lock, std::chrono::seconds(state->watchdogSec), [state] {
-              return state->done;
-            })) {
-      break;
-    }
-    logBindStuck(*state);
+template <typename Call>
+CUresult runUnderWatchdog(NvlsBindWatchdogState& state, Call call) {
+  ncclx::nvls::StuckWatchdog watchdog{
+      std::chrono::seconds(state.watchdogSec),
+      [&state] { logBindStuck(state); },
+      [&state] {
+        NCCL_NAMED_THREAD_START_EXT(
+            "NVLSBindWatch", state.rank, state.commHash, state.commDesc);
+      }};
+  if (watchdog.launchFailed()) {
+    WARN(
+        "NVLS %s watchdog thread launch failed for rank %d localRank %d cudaDev %d: %s",
+        state.op,
+        state.rank,
+        state.localRank,
+        state.cudaDev,
+        watchdog.launchError().c_str());
   }
+
+  logBindState("START", state, -1);
+  CUresult err = call();
+  const bool joined = watchdog.finish();
+
+  logBindState("RETURN", state, static_cast<int>(err));
+
+  if (!joined) {
+    // Fatal: the watchdog's destructor terminates the process; see finish().
+    WARN(
+        "NVLS %s watchdog thread join failed for rank %d localRank %d cudaDev %d: %s",
+        state.op,
+        state.rank,
+        state.localRank,
+        state.cudaDev,
+        watchdog.joinError().c_str());
+  }
+  return err;
 }
 
 } // namespace
@@ -164,51 +186,46 @@ CUresult multicastBindMemWithWatchdog(
     size_t ucsize,
     size_t mcsize,
     CUmemGenericAllocationHandle mcHandle,
-    CUmemGenericAllocationHandle ucHandle) {
-  const int64_t watchdogSec = ncclParamNvlsBindWatchdogSec();
+    CUmemGenericAllocationHandle ucHandle,
+    size_t mcOffset,
+    size_t memOffset) {
   NvlsBindWatchdogState state;
   fillWatchdogState(
-      &state, comm, inputSize, ucsize, mcsize, mcHandle, ucHandle, watchdogSec);
+      &state,
+      comm,
+      inputSize,
+      ucsize,
+      mcsize,
+      mcHandle,
+      ucHandle,
+      ncclParamNvlsBindWatchdogSec());
+  return runUnderWatchdog(state, [&] {
+    return CUPFN(
+        cuMulticastBindMem(mcHandle, mcOffset, ucHandle, memOffset, ucsize, 0));
+  });
+}
 
-  std::thread watchdogThread;
-  if (watchdogSec > 0) {
-    try {
-      watchdogThread = std::thread(bindWatchdog, &state);
-    } catch (const std::exception& ex) {
-      WARN(
-          "NVLS cuMulticastBindMem watchdog thread launch failed for rank %d localRank %d cudaDev %d: %s",
-          state.rank,
-          state.localRank,
-          state.cudaDev,
-          ex.what());
-    }
+ncclResult_t multicastMapWithWatchdog(
+    const ncclComm* comm,
+    CUdeviceptr base,
+    size_t size,
+    CUmemGenericAllocationHandle mcHandle) {
+  NvlsBindWatchdogState state;
+  fillWatchdogState(
+      &state, comm, size, 0, size, mcHandle, 0, ncclParamNvlsBindWatchdogSec());
+  state.op = "cuMemMap(multicast)";
+  const CUresult err = runUnderWatchdog(
+      state, [&] { return CUPFN(cuMemMap(base, size, 0, mcHandle, 0)); });
+  if (err != CUDA_SUCCESS) {
+    const char* errStr = nullptr;
+    (void)pfn_cuGetErrorString(err, &errStr);
+    WARN("Cuda failure %d '%s'", err, errStr);
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 32, 0)
+    printCudaDriverErrorHint(err);
+#endif
+    return ncclUnhandledCudaError;
   }
-
-  logBindState("START", state, -1);
-  CUresult err = CUPFN(cuMulticastBindMem(mcHandle, 0, ucHandle, 0, ucsize, 0));
-  if (watchdogThread.joinable()) {
-    {
-      std::lock_guard<std::mutex> lock(state.mutex);
-      state.done = true;
-    }
-    state.cv.notify_one();
-  }
-
-  logBindState("RETURN", state, static_cast<int>(err));
-
-  if (watchdogThread.joinable()) {
-    const ncclResult_t joinRes = ncclThreadJoin(watchdogThread);
-    if (joinRes != ncclSuccess) {
-      WARN(
-          "NVLS cuMulticastBindMem watchdog thread join failed for rank %d localRank %d cudaDev %d: %d",
-          state.rank,
-          state.localRank,
-          state.cudaDev,
-          joinRes);
-    }
-  }
-
-  return err;
+  return ncclSuccess;
 }
 
 } // namespace ncclx::nvls
