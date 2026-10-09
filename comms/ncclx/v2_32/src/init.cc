@@ -9,6 +9,7 @@
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxPerCommConfig.h" // @manual
 #include "meta/DeviceRackSerial.h" // @manual
+#include "meta/colltrace/CollTraceWrapper.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
@@ -2191,6 +2192,17 @@ static ncclResult_t getParentRanks(int parentRanks, int parentRank, int* exclude
   return ncclSuccess;
 }
 
+// [META] The logging identity every NCCLX subsystem reads. Filled right after
+// commAlloc, before bootstrap: ncclProxyInit runs inside bootstrapInit /
+// bootstrapSplit and starts ProxyTrace, which registers the comm under it.
+static void ncclxFillLogMetaData(struct ncclComm* comm, uint64_t commId) {
+  comm->logMetaData.commId = commId;
+  comm->logMetaData.commHash = comm->commHash;
+  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
+  comm->logMetaData.rank = comm->rank;
+  comm->logMetaData.nRanks = comm->nRanks;
+}
+
 static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   struct ncclCommInitRankAsyncJob* job = (struct ncclCommInitRankAsyncJob*)job_;
   ncclComm_t comm = job->comm;
@@ -2244,6 +2256,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     timers[TIMER_INIT_ALLOC] = clockNano();
     NCCLCHECKGOTO(commAlloc(comm, job->parent, job->nranks, job->myrank), res, fail);
     timers[TIMER_INIT_ALLOC] = clockNano() - timers[TIMER_INIT_ALLOC];
+    ncclxFillLogMetaData(comm, /*commId=*/0);
     comm->isGrow = false;
     INFO(NCCL_INIT,
          "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%" PRIx64 " parent %p childCount %d "
@@ -2270,6 +2283,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     timers[TIMER_INIT_ALLOC] = clockNano();
     NCCLCHECKGOTO(commAlloc(comm, NULL, job->nranks, job->myrank), res, fail);
     timers[TIMER_INIT_ALLOC] = clockNano() - timers[TIMER_INIT_ALLOC];
+    ncclxFillLogMetaData(comm, commIdHash);
 
     comm->isGrow = job->isGrow;
     INFO(NCCL_INIT, "[Rank %d] %s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init START",
@@ -2281,12 +2295,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   }
   comm->cudaArch = cudaArch;
   comm->maxSharedMemOptin = maxSharedMem;
-
-  comm->logMetaData.commId = commIdHash;
-  comm->logMetaData.commHash = comm->commHash;
-  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
-  comm->logMetaData.rank = comm->rank;
-  comm->logMetaData.nRanks = comm->nRanks;
 
   // [META] Comms that share resources, including ones that may lend them to split/shrink children later
   // (shareResources is only set at split time), have channel metadata that outlives any single comm, so they keep
@@ -2310,6 +2318,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
          "continuing without progress-counter mirroring",
          comm->cudaDev);
   }
+
+  // [META] Before createCtranComm, which hands comm->newCollTrace to CTRAN.
+  NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
 
   if (comm->useCtran_) {
     NCCLCHECKGOTO(createCtranComm(comm), res, fail);
@@ -3305,6 +3316,16 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
 
+  /*
+   * NCCLX - Resource Cleanup.
+   * commFree() releases the comm with a raw free(), so no destructor runs on
+   * ncclComm. This drops the comm's CollTrace reference (CTRAN's copy goes with
+   * destroyCtranComm below), and it has to happen before ncclProxyStop() and the
+   * intra-node barrier further down.
+   */
+  if (meta::comms::ncclx::newCollTraceDestroy(comm) != ncclSuccess) {
+    WARN("commDestroySync: comm %p rank %d failed to destroy CollTrace; continuing teardown", comm, comm->rank);
+  }
   NCCLCHECKGOTO(destroyCtranComm(comm), ret, fail);
 
   TRACE(NCCL_DESTROY, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank,
