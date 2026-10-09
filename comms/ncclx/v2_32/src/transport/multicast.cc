@@ -14,6 +14,7 @@
 #include "transport.h"
 #include "alloc.h"
 #include "bitops.h"
+#include "meta/nvls/NvlsBindRetry.h"
 #include "meta/nvls/NvlsBindWatchdog.h"
 
 #if CUDART_VERSION >= 12010
@@ -89,6 +90,7 @@ ncclResult_t ncclMcGroupBuildPartitions(struct ncclComm* comm, const struct nccl
   struct ncclMcGroup* group = NULL;
   size_t recGran, minGran, capacity = 0;
   int mcCreated = 0, mapped = 0;
+  int64_t teamAttempt = 0; // [NCCLX] NVLS team-formation retry
 
   *outGroup = NULL;
 
@@ -123,6 +125,7 @@ ncclResult_t ncclMcGroupBuildPartitions(struct ncclComm* comm, const struct nccl
 
   // Own the MC handle the instant it exists so every later failure path releases
   // the scarce MC slot.
+retryTeam:
   if (comm->localRank == 0) {
     NCCLCHECKGOTO(ncclMcCreate(comm, &mcprop, comm->localRank, comm->localRanks, &mcHandle, shareableHandle), ret,
                   fail);
@@ -148,8 +151,24 @@ ncclResult_t ncclMcGroupBuildPartitions(struct ncclComm* comm, const struct nccl
 
   // Reserve and map the whole MC VA once; each consumer slice is a view into it.
   CUCHECKGOTO(cuMemAddressReserve(&base, capacity, recGran, 0U, 0), ret, fail);
-  // [NCCLX] Waits for every local rank to join, so it runs under the NVLS watchdog.
-  NCCLCHECKGOTO(ncclx::nvls::multicastMapWithWatchdog(comm, base, capacity, mcHandle), ret, fail);
+  {
+    // [NCCLX] Waits for every local rank to join, so it runs under the NVLS watchdog. A
+    // transient Fabric Manager stall rebuilds the group, as 2.30 retries its bind.
+    bool retry = false;
+    NCCLCHECKGOTO(ncclx::nvls::multicastMapWithRetry(comm, base, capacity, mcHandle, teamAttempt, &retry, &mapped), ret, fail);
+    if (retry) {
+      CUresult cleanupResult = CUPFN(cuMemAddressFree(base, capacity));
+      if (cleanupResult == CUDA_SUCCESS) {
+        base = 0;
+        cleanupResult = CUPFN(cuMemRelease(mcHandle));
+        if (cleanupResult == CUDA_SUCCESS) mcCreated = 0;
+      }
+      memset(shareableHandle, 0, sizeof(shareableHandle));
+      NCCLCHECKGOTO(ncclx::nvls::finishNvlsTeamRetry(comm, cleanupResult), ret, fail);
+      teamAttempt++;
+      goto retryTeam;
+    }
+  }
   mapped = 1;
   desc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   desc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;

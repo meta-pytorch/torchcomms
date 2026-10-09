@@ -205,7 +205,7 @@ CUresult multicastBindMemWithWatchdog(
   });
 }
 
-ncclResult_t multicastMapWithWatchdog(
+CUresult multicastMapWithWatchdog(
     const ncclComm* comm,
     CUdeviceptr base,
     size_t size,
@@ -214,18 +214,8 @@ ncclResult_t multicastMapWithWatchdog(
   fillWatchdogState(
       &state, comm, size, 0, size, mcHandle, 0, ncclParamNvlsBindWatchdogSec());
   state.op = "cuMemMap(multicast)";
-  const CUresult err = runUnderWatchdog(
+  return runUnderWatchdog(
       state, [&] { return CUPFN(cuMemMap(base, size, 0, mcHandle, 0)); });
-  if (err != CUDA_SUCCESS) {
-    const char* errStr = nullptr;
-    (void)pfn_cuGetErrorString(err, &errStr);
-    WARN("Cuda failure %d '%s'", err, errStr);
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 32, 0)
-    printCudaDriverErrorHint(err);
-#endif
-    return ncclUnhandledCudaError;
-  }
-  return ncclSuccess;
 }
 
 } // namespace ncclx::nvls

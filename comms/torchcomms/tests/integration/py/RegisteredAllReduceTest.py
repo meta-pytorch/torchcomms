@@ -15,6 +15,10 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
 )
 
 
+@unittest.skipUnless(
+    os.environ.get("TEST_BACKEND", "rcclx") == "rcclx",
+    "registered all-reduce requires the RCCLX backend",
+)
 class RegisteredAllReduceTest(unittest.TestCase):
     REGISTERED_BYTES = 512 * 1024
     ELEM_COUNT = REGISTERED_BYTES // 2
@@ -343,6 +347,10 @@ class RegisteredAllReduceTest(unittest.TestCase):
         request.close()
 
 
+@unittest.skipUnless(
+    os.environ.get("TEST_BACKEND", "rcclx") == "rcclx",
+    "registered all-reduce requires the RCCLX backend",
+)
 class RegisteredAllReduceTP2RelayTest(unittest.TestCase):
     """Two-rank requests large enough for the relay route, which sends part of
     each payload through the node's other GPUs (RCCLX picks it internally)."""
