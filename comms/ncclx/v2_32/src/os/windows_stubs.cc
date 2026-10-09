@@ -163,6 +163,26 @@ ncclResult_t ncclGinDeregister(struct ncclComm* comm,
   return ncclSuccess;
 }
 
+// [NCCLX] Local-only GIN windows are not supported on Windows.
+ncclResult_t ncclGinRegisterLocal(struct ncclComm* comm, void* address, size_t size, int winFlags,
+                                  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
+                                  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]) {
+  (void)comm;
+  (void)address;
+  (void)size;
+  (void)winFlags;
+  (void)ginHostWins;
+  (void)ginDevWins;
+  return ncclInvalidUsage;
+}
+
+ncclResult_t ncclGinDeregisterLocal(struct ncclComm* comm,
+                                    void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]) {
+  (void)comm;
+  (void)ginHostWins;
+  return ncclInvalidUsage;
+}
+
 ncclResult_t ncclGinGetDevCount(int ginPluginIndex, int* nPhysDev, int* nVirtDev) {
   (void)ginPluginIndex;
   *nPhysDev = 0;

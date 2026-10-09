@@ -52,6 +52,11 @@ ncclGin_t* getNcclGin_v13(void* lib) {
     ncclGin.ginProgress = ncclGin_v13->ginProgress;
     ncclGin.queryLastError = ncclGin_v13->queryLastError;
     ncclGin.finalize = ncclGin_v13->finalize;
+    // [NCCLX] An external plugin built from upstream headers ends its struct at
+    // finalize, so reading these from it would read past the end. Only in-tree
+    // backends provide local registration.
+    ncclGin.regMrLocal = nullptr;
+    ncclGin.deregMrLocal = nullptr;
     return &ncclGin;
   }
   return nullptr;

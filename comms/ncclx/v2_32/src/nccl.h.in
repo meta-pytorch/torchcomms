@@ -93,6 +93,13 @@ typedef enum { ncclSuccess                 =  0,
 #define NCCL_WIN_GIN_ONLY 0x04
 /* Restrict window registration to CFT COUNTED only. By default, register for non-COUNTED LEs. */
 #define NCCL_WIN_CFT_COUNTED 0x08
+/* [NCCLX] Local-only registration for source buffers. Skips the rkey allGather.
+   The resulting window can only be used as a source for put operations.
+   A high bit rather than v2_30's 0x08: upstream 2.32 assigned 0x04
+   (NCCL_WIN_GIN_ONLY) and 0x08 (NCCL_WIN_CFT_COUNTED), and allocates new
+   flags upward from the low bits. v2_30's NCCL_WIN_DEVICE_API (0x04) needs a
+   new value for the same reason when it is ported. */
+#define NCCL_WIN_LOCAL_ONLY 0x40000000
 
 #define NCCL_WIN_REQUIRED_ALIGNMENT 4096
 

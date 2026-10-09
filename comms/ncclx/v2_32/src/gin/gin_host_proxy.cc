@@ -306,6 +306,14 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx* ctx, struct ginProxyH
   } else {
     srcOff = gfd->qword[ncclGinProxyGfdSrcOff].srcOff.srcOff;
     srcHandle = (void*)(uint64_t)gfd->qword[ncclGinProxyGfdSrcHandle].srcHandle.srcHandle;
+    // [NCCLX] A local-only window has no proxy registration (its proxy slot is
+    // null), so a put from it on a proxy devcomm arrives with no source handle.
+    // Fail it here, surfaced through queryLastError, rather than in the backend.
+    if (srcHandle == nullptr) {
+      ERR(ncclInvalidUsage,
+          "GIN proxy put with no source registration (a local-only window used from a proxy devcomm?)");
+      return ncclInvalidUsage;
+    }
   }
   uint64_t dstOff = gfd->qword[ncclGinProxyGfdDstOff].dstOff.dstOff;
   void* dstHandle = (void*)(uint64_t)gfd->qword[ncclGinProxyGfdDstHandle].dstHandle.dstHandle;
@@ -694,7 +702,9 @@ ncclGin_t ncclGinProxy{
   ncclGinProxyCloseListen,
   ncclGinProxyProgress,
   ncclGinProxyQueryLastError,
-  NULL  // Will map directly to the plugin: finalize()
+  NULL, // Will map directly to the plugin: finalize()
+  NULL, // [NCCLX] regMrLocal - not supported in proxy mode
+  NULL  // [NCCLX] deregMrLocal - not supported in proxy mode
 };
 
 int ncclGinProxyVersion = -1;
