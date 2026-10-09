@@ -53,7 +53,12 @@ class NcclLoggerTest : public ::testing::Test {
   }
 
   void initLogging() {
+#ifdef NCCL_DEBUG_LEVEL_MASK_UNINITIALIZED
+    // 2.32+ gates on a per-level bitmask instead of a scalar level.
+    ncclDebugLevelMask = NCCL_DEBUG_LEVEL_MASK_UNINITIALIZED;
+#else
     ncclDebugLevel = -1;
+#endif
     initNcclLogger();
   }
 };

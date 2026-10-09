@@ -382,9 +382,6 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto collRecordGuard =
       EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1); // -1 for no max records
-  // TODO: Currently CommsMonitor has an issue of communicators with same addr
-  // will have issue. temporarily disable it, will turn it back after the fix.
-  auto monitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, false);
 
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;

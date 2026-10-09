@@ -57,6 +57,15 @@ extern "C" {
 #define NCCL_COMM_DESCRIPTION
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 
+/* [META] CollTrace works under CUDA graph capture. Launchers detect this by
+ * searching the installed include/nccl.h for the #define below as plain text,
+ * and only then set NCCL_COLLTRACE, NCCL_PROXYTRACE and NCCL_MAPPERTRACE_ENABLE.
+ * Keep exactly one space between "#define" and the macro name, and do not
+ * spell the full directive anywhere else in this file: either change makes the
+ * check pass or fail silently, with no build or runtime error to catch it.
+ */
+#define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
+
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
 typedef struct ncclWindow_vidmem* ncclWindow_t;
@@ -1172,6 +1181,24 @@ void pncclParamDumpAll(void);
 #include <optional>
 #include <unordered_map>
 #include <vector>
+
+#define NCCL_COMM_DUMP
+#define NCCL_COMM_DUMP_ALL
+
+/* Dump NCCL current internal state for a given communicator in a key-value store format.
+ * define outside extern "C"{} to pass C++ template */
+ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std::string>& map);
+
+/* Dump NCCL current internal state for all the communicators.
+ * The returned map is in the format {commHash: {key: value}} where
+ * {key: value} is the result of ncclCommDump in the communicator with hash commHash.
+ * hints: key-value map of options. Supported hints:
+ *   "comm_dump::requestFields" — semicolon-separated list of field names to include.
+ *   "comm_dump::flush" — "1" to flush ring buffers before dumping.
+ *   Empty map (default) dumps all fields without flushing.
+ */
+ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
+    const std::unordered_map<std::string, std::string>& hints = {});
 
 namespace ncclx::colltrace {
 

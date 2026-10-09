@@ -280,6 +280,15 @@ TEST_F(CollTraceWrapperUT, PersistentEmptyPlanReturnsNoMetadata) {
   EXPECT_EQ(getMetadataFromNcclKernelPlan(plan, stream_), nullptr);
 }
 
+TEST_F(CollTraceWrapperUT, PersistentSymmetricPlanReturnsNoMetadata) {
+  auto plan = createMockKernelPlanWithColl();
+  plan.isSymColl = true;
+  EXPECT_NE(getMetadataFromNcclKernelPlan(plan, stream_), nullptr);
+
+  plan.persistent = true;
+  EXPECT_EQ(getMetadataFromNcclKernelPlan(plan, stream_), nullptr);
+}
+
 TEST_F(CollTraceWrapperUT, PersistentPlanUsesGraphWaitEvent) {
   auto plan = createMockKernelPlanWithColl();
   plan.persistent = true;

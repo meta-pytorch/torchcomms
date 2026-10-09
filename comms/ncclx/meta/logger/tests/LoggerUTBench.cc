@@ -189,7 +189,12 @@ TEST_F(NcclLoggerBenchTest, CommBenchDebugLog) {
   EnvRAII env(NCCL_DEBUG_FILE, getTmpLogFile());
   SysEnvRAII sysEnv{"NCCL_DEBUG_FILE", getTmpLogFile()};
   // Reset ncclDebugLevel to force debug sub-system to be re-initialized
+#ifdef NCCL_DEBUG_LEVEL_MASK_UNINITIALIZED
+  // 2.32+ gates on a per-level bitmask instead of a scalar level.
+  ncclDebugLevelMask = NCCL_DEBUG_LEVEL_MASK_UNINITIALIZED;
+#else
   ncclDebugLevel = -1;
+#endif
   initNcclLogger();
   ncclLoggerBenchTest();
 }
