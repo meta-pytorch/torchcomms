@@ -10,6 +10,7 @@
 #include "meta/NcclxPerCommConfig.h" // @manual
 #include "meta/DeviceRackSerial.h" // @manual
 #include "meta/colltrace/CollTraceWrapper.h" // @manual
+#include "meta/comms-monitor/CommsMonitor.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
@@ -2326,6 +2327,10 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     NCCLCHECKGOTO(createCtranComm(comm), res, fail);
   }
 
+  // Must follow everything registerComm snapshots: logMetaData, newCollTrace,
+  // algoStats, proxyState->trace and ctranComm_.
+  ncclx::comms_monitor::CommsMonitor::registerComm(comm);
+
   // update communicator state
   COMPILER_ATOMIC_STORE(&comm->initState, ncclSuccess, std::memory_order_release);
   timers[TIMER_INIT_TOTAL] = clockNano() - timers[TIMER_INIT_TOTAL];
@@ -3321,7 +3326,9 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
    * commFree() releases the comm with a raw free(), so no destructor runs on
    * ncclComm. This drops the comm's CollTrace reference (CTRAN's copy goes with
    * destroyCtranComm below), and it has to happen before ncclProxyStop() and the
-   * intra-node barrier further down.
+   * intra-node barrier further down. With NCCL_COMMSMONITOR_ENABLE (default on)
+   * CommsMonitor also holds a reference, so ~CollTrace and its worker-thread
+   * join can happen later.
    */
   if (meta::comms::ncclx::newCollTraceDestroy(comm) != ncclSuccess) {
     WARN("commDestroySync: comm %p rank %d failed to destroy CollTrace; continuing teardown", comm, comm->rank);
@@ -3410,6 +3417,8 @@ ncclResult_t ncclCommFinalize(ncclComm_t comm) {
 
   ncclResult_t ret = ncclSuccess;
   struct ncclCommFinalizeAsyncJob* job = NULL;
+
+  ncclx::comms_monitor::CommsMonitor::deregisterComm(comm);
 
   NCCLCHECK(ncclGroupStartInternal());
   if (comm == NULL) goto exit;
@@ -3535,6 +3544,8 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
     NCCL_NVTX3_FUNC_RANGE;
     return ncclSuccess;
   }
+
+  ncclx::comms_monitor::CommsMonitor::deregisterComm(comm);
 
   int rank = comm->rank, nranks = comm->nRanks, cudaDev = comm->cudaDev;
   struct ncclCommFinalizeAsyncJob* job = NULL;
@@ -3718,6 +3729,8 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
 
   INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Abort START", comm,
        comm->rank, comm->nRanks, comm->cudaDev, comm->busId, comm->commHash);
+
+  ncclx::comms_monitor::CommsMonitor::deregisterComm(comm);
 
   NCCLCHECK(ncclGroupStartInternal());
   // Ask anything that might still be running on the device to quit
