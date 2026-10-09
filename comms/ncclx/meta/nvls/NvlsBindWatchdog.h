@@ -26,8 +26,8 @@ CUresult multicastBindMemWithWatchdog(
 
 // cuMemMap of a multicast object under the same watchdog. On 2.32+ this map,
 // not the bind, is where a rank waits for every local rank to join the group.
-// Reports a failure as CUCHECKGOTO does and returns ncclUnhandledCudaError.
-ncclResult_t multicastMapWithWatchdog(
+// Returns the raw result; multicastMapWithRetry (NvlsBindRetry.h) reports it.
+CUresult multicastMapWithWatchdog(
     const ncclComm* comm,
     CUdeviceptr base,
     size_t size,
