@@ -24,6 +24,7 @@
 #include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/InitCommsUtils.h"
 #include "comms/utils/InitFolly.h"
 #include "meta/NcclxLogger.h"
 
@@ -79,6 +80,7 @@ void initEnv() {
   static std::once_flag once;
   std::call_once(once, [] {
     meta::comms::initFolly();
+    meta::comms::initCommsUtils();
     ncclCvarInit();
     initEnvFunc();
     initNcclLogger();
