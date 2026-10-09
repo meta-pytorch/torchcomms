@@ -27,6 +27,7 @@
 #include "meta/lpcoll/low_precision_alltoall.h"
 #include "meta/lpcoll/low_precision_reduce_scatter.h"
 #include "meta/lpcoll/p2p_allgather.h"
+#include "meta/hierarchical/hierarchical_allreduce.h"
 #include "meta/relay/sharded_relay_allreduce.h"
 #include "meta/relay/sharded_relay_reduce_scatter.h"
 #include "meta/relay/sharded_relay_all_to_all.h"
@@ -671,6 +672,14 @@ if (isLowPrecisionFp8E4M3AllReduceEnabled() && (datatype == ncclFloat32 || datat
   return ncclLowPrecisionAllReduce(
       sendbuff, recvbuff, count, datatype, op, comm, stream);
 }
+
+  // Multi-host over the Socket transport: hierarchical schedule that keeps
+  // inter-node traffic at the minimum. Ahead of the recorder, like the LP path,
+  // because it is built from ncclSend/ncclRecv that record themselves.
+  if (rcclx::hier::hierAllReduceEligible(count, datatype, op, comm)) {
+    return rcclx::hier::hierAllReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream);
+  }
 
   NVTX3_FUNC_WITH_PARAMS(AllReduce, NcclNvtxParamsAllReduce,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), op, datatype));
