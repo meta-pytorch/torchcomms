@@ -101,10 +101,12 @@ USE_TRANSPORT_CCA_HOOK = flag_enabled(
     "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
 )
 USE_TRITON = flag_enabled("USE_TRITON", False)
-# The NCCLX make build produces libobservatory.so but no package ships it, so
-# the wheel has to. Turn this off wherever the environment already supplies the
-# process's one copy. A second copy gives each backend its own registry.
-TORCHCOMMS_BUNDLE_OBSERVATORY = flag_enabled("TORCHCOMMS_BUNDLE_OBSERVATORY", True)
+# The from-source NCCLX build provides libcommsutils.so and libobservatory.so
+# but no package ships them, so the wheel has to. Turn this off wherever the
+# environment already supplies the process's one copy of each (the commsutils
+# package). A second copy gives each backend its own configuration table and
+# registry.
+TORCHCOMMS_BUNDLE_COMMSUTILS = flag_enabled("TORCHCOMMS_BUNDLE_COMMSUTILS", True)
 
 
 def parse_requirements(path: str) -> list[str]:
@@ -207,7 +209,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
-            f"-DTORCHCOMMS_BUNDLE_OBSERVATORY={flag_str(TORCHCOMMS_BUNDLE_OBSERVATORY)}",
+            f"-DTORCHCOMMS_BUNDLE_COMMSUTILS={flag_str(TORCHCOMMS_BUNDLE_COMMSUTILS)}",
         ]
         parallel_level = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "").strip()
         if parallel_level:
