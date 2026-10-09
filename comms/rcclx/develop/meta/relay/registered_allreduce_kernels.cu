@@ -1302,7 +1302,411 @@ void launchWideNormRanks(
   }
 }
 
+// Row epilogue for widths and Triton launch configurations [redacted] decodes
+// with at the served row counts: 8192-element rows at 16 warps and
+// 4096-element rows at 8 warps. Threads is
+// 64 x num_warps, and thread t owns elements [8t + 8 * Threads * j, +8) for
+// j < Vectors (Triton's blocked layout). Each thread accumulates its squares in
+// element order (the first two contracted as fma(e0, e0, e1 * e1)), then the
+// DPP wave tree and a cross-wave butterfly over num_warps waves; the mean is
+// fma(sum, 1 / Hidden, epsilon) (Hidden is a power of two). The post-norm
+// weight is optional.
+template <int Hidden, int Threads>
+struct RowNormShape {
+  static constexpr int kWaves = Threads / 64;
+  static constexpr int kVectors = Hidden / (kElementsPerVector * Threads);
+  static constexpr int kRowVectors = Hidden / kElementsPerVector;
+  static_assert(kVectors >= 1);
+  static_assert(kVectors * kElementsPerVector * Threads == Hidden);
+};
+
+template <int Waves>
+__device__ __forceinline__ float rowTreeSum(float value, float* waveSums) {
+  constexpr int kRowShr = 0x110;
+  constexpr int kRowBcast15 = 0x142;
+  constexpr int kRowBcast31 = 0x143;
+  value = value + dppUpdate<kRowShr + 8>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 4>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 2>(0.0f, value);
+  value = value + dppUpdate<kRowShr + 1>(0.0f, value);
+  value = dppUpdate<kRowBcast15, 0xa>(value, value) + value;
+  value = value + dppUpdate<kRowBcast31>(0.0f, value);
+  const float waveTotal = __builtin_bit_cast(
+      float, __builtin_amdgcn_readlane(__builtin_bit_cast(int, value), 63));
+  if (threadIdx.x % 64 == 0) {
+    waveSums[threadIdx.x / 64] = waveTotal;
+  }
+  __syncthreads();
+  float sums[Waves];
+#pragma unroll
+  for (int wave = 0; wave < Waves; ++wave) {
+    sums[wave] = waveSums[wave];
+  }
+#pragma unroll
+  for (int step = Waves / 2; step >= 1; step /= 2) {
+#pragma unroll
+    for (int wave = 0; wave < step; ++wave) {
+      sums[wave] = sums[wave] + sums[wave + step];
+    }
+  }
+  return sums[0];
+}
+
+template <int Vectors>
+__device__ __forceinline__ float rowSquareSum(
+    const float (&values)[Vectors][kElementsPerVector]) {
+#pragma clang fp contract(off)
+  float sum = values[0][1] * values[0][1];
+  sum = __builtin_fmaf(values[0][0], values[0][0], sum);
+#pragma unroll
+  for (int element = 2; element < kElementsPerVector; ++element) {
+    sum = __builtin_fmaf(values[0][element], values[0][element], sum);
+  }
+#pragma unroll
+  for (int j = 1; j < Vectors; ++j) {
+#pragma unroll
+    for (int element = 0; element < kElementsPerVector; ++element) {
+      sum = __builtin_fmaf(values[j][element], values[j][element], sum);
+    }
+  }
+  return sum;
+}
+
+template <int Hidden>
+__device__ __forceinline__ float rowNormScale(float sum, float epsilon) {
+  constexpr float kInverseHidden = 1.0f / Hidden;
+  return __builtin_amdgcn_rsqf(__builtin_fmaf(sum, kInverseHidden, epsilon));
+}
+
+// Operands of one thread's slices that do not depend on the reduction.
+template <int Vectors>
+struct RowNormOperands {
+  Vec postNormWeight[Vectors];
+  Vec preNormWeight[Vectors];
+  float residual[Vectors][kElementsPerVector];
+  float gateAlpha[Vectors][kElementsPerVector];
+  float gateBeta[Vectors][kElementsPerVector];
+};
+
+template <int Hidden, int Threads, bool PostWeight>
+__device__ __forceinline__
+    RowNormOperands<RowNormShape<Hidden, Threads>::kVectors>
+    loadRowNormOperands(
+        size_t rowOffset,
+        const RegisteredAllReduceGatedResidualNormArgs& norm) {
+  constexpr int kVectors = RowNormShape<Hidden, Threads>::kVectors;
+  RowNormOperands<kVectors> operands;
+#pragma unroll
+  for (int j = 0; j < kVectors; ++j) {
+    const int channel = (j * Threads + threadIdx.x) * kElementsPerVector;
+    if constexpr (PostWeight) {
+      operands.postNormWeight[j] =
+          *reinterpret_cast<const Vec*>(norm.postNormWeight + channel);
+    }
+    operands.preNormWeight[j] =
+        *reinterpret_cast<const Vec*>(norm.preNormWeight + channel);
+    loadFloats(operands.residual[j], norm.residualIn + rowOffset + channel);
+    loadFloats(operands.gateAlpha[j], norm.gateAlpha + channel);
+    loadFloats(operands.gateBeta[j], norm.gateBeta + channel);
+  }
+  return operands;
+}
+
+template <int Hidden, int Threads, bool PostWeight>
+__device__ __forceinline__ void rowNormEpilogue(
+    const Vec (&reduced)[RowNormShape<Hidden, Threads>::kVectors],
+    const RowNormOperands<RowNormShape<Hidden, Threads>::kVectors>& operands,
+    size_t rowOffset,
+    __nv_bfloat16* __restrict__ output,
+    const RegisteredAllReduceGatedResidualNormArgs& norm) {
+#pragma clang fp contract(off)
+  using Shape = RowNormShape<Hidden, Threads>;
+  constexpr int kVectors = Shape::kVectors;
+  __shared__ float postSums[Shape::kWaves];
+  __shared__ float preSums[Shape::kWaves];
+  float branch[kVectors][kElementsPerVector];
+#pragma unroll
+  for (int j = 0; j < kVectors; ++j) {
+#pragma unroll
+    for (int element = 0; element < kElementsPerVector; ++element) {
+      branch[j][element] = static_cast<float>(reduced[j][element]);
+    }
+  }
+  const float postScale = rowNormScale<Hidden>(
+      rowTreeSum<Shape::kWaves>(rowSquareSum<kVectors>(branch), postSums),
+      norm.postNormEpsilon);
+  float residual[kVectors][kElementsPerVector];
+  float preInput[kVectors][kElementsPerVector];
+#pragma unroll
+  for (int j = 0; j < kVectors; ++j) {
+#pragma unroll
+    for (int element = 0; element < kElementsPerVector; ++element) {
+      float scaled = branch[j][element] * postScale;
+      if constexpr (PostWeight) {
+        scaled =
+            scaled * static_cast<float>(operands.postNormWeight[j][element]);
+      }
+      const float normedBranch = roundToBf16(scaled);
+      residual[j][element] = __builtin_fmaf(
+          operands.gateBeta[j][element],
+          normedBranch,
+          operands.gateAlpha[j][element] * operands.residual[j][element]);
+      preInput[j][element] = roundToBf16(residual[j][element]);
+    }
+  }
+#pragma unroll
+  for (int j = 0; j < kVectors; ++j) {
+    const size_t offset =
+        rowOffset + (j * Threads + threadIdx.x) * kElementsPerVector;
+    storeFloats(norm.residualOut + offset, residual[j]);
+  }
+  const float preScale = rowNormScale<Hidden>(
+      rowTreeSum<Shape::kWaves>(rowSquareSum<kVectors>(preInput), preSums),
+      norm.preNormEpsilon);
+#pragma unroll
+  for (int j = 0; j < kVectors; ++j) {
+    const size_t offset =
+        rowOffset + (j * Threads + threadIdx.x) * kElementsPerVector;
+    Vec normed;
+    float normedFloat[kElementsPerVector];
+#pragma unroll
+    for (int element = 0; element < kElementsPerVector; ++element) {
+      normedFloat[element] = roundToBf16(
+          preInput[j][element] * preScale *
+          static_cast<float>(operands.preNormWeight[j][element]));
+      normed[element] = static_cast<__bf16>(normedFloat[element]);
+    }
+    *reinterpret_cast<Vec*>(output + offset) = normed;
+    if (norm.routerOut != nullptr) {
+      storeFloats(norm.routerOut + offset, normedFloat);
+    }
+  }
+}
+
+// One CTA per row on every rank. Rank q reduces quarter q of the row's
+// 16-byte vectors (each in AITER's order for its position in the payload) into
+// its scratch and publishes it to every peer; every rank then gathers the four
+// quarters and runs the epilogue on the full row. A rank reads its peers'
+// inputs only after each has published its start epoch for the row, and
+// overwrites its scratch quarter only after every peer has started the next
+// call (so has finished reading this one). The plain reduced row is never
+// written.
+template <int Hidden, int Threads, bool PostWeight>
+__global__ void __launch_bounds__(Threads) registeredAllReduceRowNormKernel(
+    __nv_bfloat16* __restrict__ output,
+    int rank,
+    RegisteredAllReduceInputTable inputs,
+    RegisteredAllReduceStateTable states,
+    RegisteredAllReduceGatedResidualNormArgs norm,
+    int rows) {
+  using Shape = RowNormShape<Hidden, Threads>;
+  constexpr int kVectors = Shape::kVectors;
+  constexpr int kQuarterVectors =
+      Shape::kRowVectors / kRegisteredAllReduceRanks;
+  constexpr int kLoads =
+      (kRegisteredAllReduceRanks * kQuarterVectors + Threads - 1) / Threads;
+  static_assert(kQuarterVectors <= Threads);
+  // Every thread loads part of the four contributions to this rank's quarter,
+  // so all of the CTA's loads are in flight at once.
+  __shared__ Vec staged[kRegisteredAllReduceRanks][kQuarterVectors];
+  __shared__ uint32_t callsShared;
+  const auto row = blockIdx.x;
+  const size_t rowOffset = static_cast<size_t>(row) * Hidden;
+  const size_t rowVector = static_cast<size_t>(row) * Shape::kRowVectors;
+  const size_t vectors = static_cast<size_t>(rows) * Shape::kRowVectors;
+  RegisteredAllReduceRowState& local = states.state[rank]->row[row];
+  const size_t quarterBegin = rowVector + rank * kQuarterVectors;
+  const auto operands =
+      loadRowNormOperands<Hidden, Threads, PostWeight>(rowOffset, norm);
+  if (threadIdx.x == 0) {
+    const uint32_t calls = local.rowCalls + 1u;
+    local.rowCalls = calls;
+    callsShared = calls;
+  }
+  __syncthreads();
+  const uint32_t calls = callsShared;
+  if (threadIdx.x < kRegisteredAllReduceRanks && threadIdx.x != rank) {
+    peerStore<true, __ATOMIC_RELAXED>(
+        &states.state[threadIdx.x]->row[row].rowStart[rank], calls);
+    while (!epochReached(
+        peerLoad<true, __ATOMIC_RELAXED>(&local.rowStart[threadIdx.x]),
+        calls)) {
+    }
+  }
+  __syncthreads();
+
+  Vec* const ownScratch =
+      reinterpret_cast<Vec*>(registeredAllReduceScratch(states.state[rank])) +
+      static_cast<size_t>(row) * kQuarterVectors;
+#pragma unroll
+  for (int load = 0; load < kLoads; ++load) {
+    const auto index = load * Threads + threadIdx.x;
+    if (index < kRegisteredAllReduceRanks * kQuarterVectors) {
+      const int source = index / kQuarterVectors;
+      const int vector = index - source * kQuarterVectors;
+      staged[source][vector] = reinterpret_cast<const Vec*>(
+          inputs.input[source])[quarterBegin + vector];
+    }
+  }
+  __syncthreads();
+  if (threadIdx.x < kQuarterVectors) {
+    const int first = firstSummand<kRegisteredAllReduceRanks>(
+        quarterBegin + threadIdx.x, vectors);
+    Acc sum = widen(staged[first][threadIdx.x]);
+#pragma unroll
+    for (int step = 1; step < kRegisteredAllReduceRanks; ++step) {
+      sum += widen(
+          staged[(first + step) % kRegisteredAllReduceRanks][threadIdx.x]);
+    }
+    ownScratch[threadIdx.x] = narrow(sum);
+  }
+  drainWaveStores();
+  __syncthreads();
+  if (threadIdx.x < kRegisteredAllReduceRanks && threadIdx.x != rank) {
+    uint32_t* remote = &states.state[threadIdx.x]->row[row].quarter[rank];
+    if constexpr (kUncachedState) {
+      peerStore<true, __ATOMIC_RELAXED>(remote, calls);
+    } else {
+      peerStore<true, __ATOMIC_RELEASE>(remote, calls);
+    }
+    while (!epochReached(
+        peerLoad<true, __ATOMIC_RELAXED>(&local.quarter[threadIdx.x]), calls)) {
+    }
+    if constexpr (!kUncachedState) {
+      __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_DEVICE);
+    }
+  }
+  __syncthreads();
+
+  Vec reduced[kVectors];
+#pragma unroll
+  for (int j = 0; j < kVectors; ++j) {
+    const auto column = j * Threads + threadIdx.x;
+    const int quarter = column / kQuarterVectors;
+    reduced[j] =
+        (reinterpret_cast<const Vec*>(
+             registeredAllReduceScratch(states.state[quarter])) +
+         static_cast<size_t>(row) *
+             kQuarterVectors)[column - quarter * kQuarterVectors];
+  }
+  rowNormEpilogue<Hidden, Threads, PostWeight>(
+      reduced, operands, rowOffset, output, norm);
+}
+
+// The epilogue alone on already-reduced rows, for checking its arithmetic
+// against the reference kernel.
+template <int Hidden, int Threads, bool PostWeight>
+__global__ void __launch_bounds__(Threads) registeredAllReduceRowNormOnlyKernel(
+    const __nv_bfloat16* __restrict__ reducedRows,
+    __nv_bfloat16* __restrict__ output,
+    RegisteredAllReduceGatedResidualNormArgs norm) {
+  using Shape = RowNormShape<Hidden, Threads>;
+  const size_t rowOffset = static_cast<size_t>(blockIdx.x) * Hidden;
+  const auto operands =
+      loadRowNormOperands<Hidden, Threads, PostWeight>(rowOffset, norm);
+  Vec reduced[Shape::kVectors];
+#pragma unroll
+  for (int j = 0; j < Shape::kVectors; ++j) {
+    reduced[j] = reinterpret_cast<const Vec*>(
+        reducedRows + rowOffset)[j * Threads + threadIdx.x];
+  }
+  rowNormEpilogue<Hidden, Threads, PostWeight>(
+      reduced, operands, rowOffset, output, norm);
+}
+
+// Served row counts per width; the Triton kernel runs 16 warps for 8192 and 8
+// for 4096 there.
+constexpr int rowNormMaxRows(size_t hidden) {
+  return hidden == kRegisteredAllReduceNormHidden
+      ? kRegisteredAllReduceRowNormMaxRows
+      : hidden == kRegisteredAllReduceNarrowNormHidden
+      ? kRegisteredAllReduceNarrowRowNormMaxRows
+      : 0;
+}
+
+template <template <int, int, bool> class Launch, typename... Args>
+hipError_t
+dispatchRowNorm(size_t hidden, int rows, bool postWeight, Args&&... args) {
+  if (rows < 1 || rows > rowNormMaxRows(hidden)) {
+    return hipErrorInvalidValue;
+  }
+  if (hidden == kRegisteredAllReduceNormHidden) {
+    return postWeight ? Launch<8192, 1024, true>::run(args...)
+                      : Launch<8192, 1024, false>::run(args...);
+  }
+  return postWeight ? Launch<4096, 512, true>::run(args...)
+                    : Launch<4096, 512, false>::run(args...);
+}
+
+template <int Hidden, int Threads, bool PostWeight>
+struct LaunchRowNorm {
+  static hipError_t run(
+      void* output,
+      const RegisteredAllReduceInputTable& inputs,
+      const RegisteredAllReduceStateTable& states,
+      int rank,
+      const RegisteredAllReduceGatedResidualNormArgs& norm,
+      int rows,
+      hipStream_t stream) {
+    hipLaunchKernelGGL(
+        (registeredAllReduceRowNormKernel<Hidden, Threads, PostWeight>),
+        dim3(rows),
+        dim3(Threads),
+        0,
+        stream,
+        reinterpret_cast<__nv_bfloat16*>(output),
+        rank,
+        inputs,
+        states,
+        norm,
+        rows);
+    return hipPeekAtLastError();
+  }
+};
+
+template <int Hidden, int Threads, bool PostWeight>
+struct LaunchRowNormOnly {
+  static hipError_t run(
+      const void* reducedRows,
+      void* output,
+      const RegisteredAllReduceGatedResidualNormArgs& norm,
+      int rows,
+      hipStream_t stream) {
+    hipLaunchKernelGGL(
+        (registeredAllReduceRowNormOnlyKernel<Hidden, Threads, PostWeight>),
+        dim3(rows),
+        dim3(Threads),
+        0,
+        stream,
+        reinterpret_cast<const __nv_bfloat16*>(reducedRows),
+        reinterpret_cast<__nv_bfloat16*>(output),
+        norm);
+    return hipPeekAtLastError();
+  }
+};
+
 } // namespace
+
+hipError_t launchRegisteredAllReduceRowNormForTest(
+    const void* reducedRows,
+    void* output,
+    size_t hiddenSize,
+    int rows,
+    const RegisteredAllReduceGatedResidualNormArgs& norm,
+    hipStream_t stream) {
+  if (rows < 1 || norm.preNormWeight == nullptr) {
+    return hipErrorInvalidValue;
+  }
+  return dispatchRowNorm<LaunchRowNormOnly>(
+      hiddenSize,
+      rows,
+      norm.postNormWeight != nullptr,
+      reducedRows,
+      output,
+      norm,
+      rows,
+      stream);
+}
 
 hipError_t launchRegisteredAllReduceProbe(
     const unsigned char* const* addresses,
@@ -1398,6 +1802,28 @@ hipError_t launchRegisteredAllReduceKernel(
           static_cast<int>(rows),
           stream);
     }
+  } else if (
+      norm != nullptr &&
+      !(hiddenSize == kRegisteredAllReduceNormHidden &&
+        bytes == kRegisteredAllReduceOneMiBBytes &&
+        norm->postNormWeight != nullptr)) {
+    const size_t rows = hiddenSize == 0 ? 0 : count / hiddenSize;
+    if (!fourRanks || rows == 0 || count % hiddenSize != 0 ||
+        rows > static_cast<size_t>(rowNormMaxRows(hiddenSize)) ||
+        norm->preNormWeight == nullptr) {
+      return hipErrorInvalidValue;
+    }
+    return dispatchRowNorm<LaunchRowNorm>(
+        hiddenSize,
+        static_cast<int>(rows),
+        norm->postNormWeight != nullptr,
+        output,
+        inputs,
+        states,
+        rank,
+        *norm,
+        static_cast<int>(rows),
+        stream);
   } else if (norm != nullptr) {
     if (!fourRanks || bytes != kRegisteredAllReduceOneMiBBytes ||
         hiddenSize != kRegisteredAllReduceNormHidden) {
