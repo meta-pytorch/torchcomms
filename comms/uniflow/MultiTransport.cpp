@@ -322,6 +322,7 @@ MultiTransportFactory::MultiTransportFactory(
     config.gidIndex = options_.gidIndex;
     config.trafficClass = options_.trafficClass;
     config.numQps = static_cast<uint32_t>(nics.size());
+    config.requestTimeout = options_.rdmaRequestTimeout;
     auto rdma = std::make_shared<RdmaTransportFactory>(
         std::move(nics), eventBaseThread_->getEventBase(), config);
     factories_.emplace_back(std::move(rdma));

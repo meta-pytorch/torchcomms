@@ -7,6 +7,7 @@
 #include "comms/uniflow/transport/Transport.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <optional>
 
@@ -71,6 +72,9 @@ struct MultiTransportFactoryOptions {
   // is 200G -- and the backend fabric (beth*) is addressed identically; "eth"
   // is the frontend convention.
   std::string tcpDevicePrefix{"eth"};
+  // Forwarded to RdmaTransportConfig::requestTimeout. nullopt (default) keeps
+  // RDMA ignoring RequestOptions::timeout.
+  std::optional<std::chrono::milliseconds> rdmaRequestTimeout;
 };
 
 class MultiTransport {
