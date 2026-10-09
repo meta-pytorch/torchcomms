@@ -1426,6 +1426,67 @@ TEST_F(RegisteredAllReduceTest, StateRegionsPooledPerCommunicator) {
   EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
 }
 
+// A request whose scratch does not fit any pooled region gets a larger region
+// (imported once by each peer); later requests of either size reuse a free
+// region that fits, and the two-stage kernels run exactly from either.
+TEST_F(RegisteredAllReduceTest, StateRegionsGrowWithCapacity) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  constexpr size_t kLarge = 7 * kOneMiB;
+  createRequest();
+  finalizeRequest();
+  const size_t imports =
+      rcclx::relay::registeredAllReducePooledStateImportsForTest();
+  const size_t grownImports = imports + static_cast<size_t>(numRanks - 1);
+
+  uint16_t* largeIn = nullptr;
+  uint16_t* largeOut = nullptr;
+  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
+  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  std::vector<uint16_t> host;
+  auto runLarge = [&](int generation) {
+    ASSERT_EQ(
+        rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
+    ASSERT_EQ(
+        rcclx::relay::registeredAllReduceInit(
+            request, largeIn, largeOut, kLarge),
+        ncclSuccess);
+    input = largeIn;
+    output = largeOut;
+    for (size_t bytes : {kHalfMiB, kOneMiB}) {
+      fillInputAsync(bytes, generation, host);
+      clearOutputAsync(bytes);
+      execute(bytes);
+      syncStream("large-capacity request");
+      expectOutput(bytes, generation, "large-capacity request");
+    }
+    finalizeRequest();
+    input = fixtureIn;
+    output = fixtureOut;
+  };
+
+  runLarge(120);
+  EXPECT_EQ(
+      rcclx::relay::registeredAllReducePooledStateImportsForTest(),
+      grownImports);
+  createRequest();
+  EXPECT_EQ(
+      rcclx::relay::registeredAllReducePooledStateImportsForTest(),
+      grownImports);
+  finalizeRequest();
+  runLarge(121);
+  EXPECT_EQ(
+      rcclx::relay::registeredAllReducePooledStateImportsForTest(),
+      grownImports);
+
+  HIPCHECK_TEST(hipFree(largeOut));
+  HIPCHECK_TEST(hipFree(largeIn));
+  EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
+}
+
 // The fused epilogue ([redacted]'s decode path, where the freed-state
 // corruption was first seen) on requests registered over freshly allocated
 // input, output and epilogue buffers, finalized and freed every round: outputs
