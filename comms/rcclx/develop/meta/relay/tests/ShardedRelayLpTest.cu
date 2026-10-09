@@ -151,7 +151,7 @@ std::vector<float> blockAbsMaxPerElement(const std::vector<float>& v) {
   for (size_t b = 0; b * kBlock < v.size(); b++) {
     float m = 0.0f;
     for (size_t i = 0; i < kBlock; i++) {
-      m = std::max(m, std::fabs(v[b * kBlock + i]));
+      m = std::max(m, std::abs(v[b * kBlock + i]));
     }
     for (size_t i = 0; i < kBlock; i++) {
       out[b * kBlock + i] = m;
