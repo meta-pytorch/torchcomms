@@ -170,11 +170,14 @@ or in hooks placed identically on both versions.
    stay dumpable) and the comms-monitor tests assert it. Consequences:
    - `commsMap_` grows for the process lifetime, pinning every trace object,
      including a running CollTrace poll thread per destroyed comm.
-   - `registerCommImpl` uses `emplace`, a no-op when the key exists. When a new
-     `ncclComm` reuses a destroyed comm's address (observed in the v2_32 test
-     suites), the new comm is never registered and `ncclCommDump` /
-     `commDumpAll` return the dead comm's snapshot: wrong `commHash`, rank and
-     traces. A follow-up replaces stale entries on address reuse.
+   - (Fixed for both versions.) Entries are keyed on the comm pointer, so a
+     new `ncclComm` can reuse a destroyed comm's address (it does
+     deterministically in the v2_32 test suites). `registerCommImpl` therefore
+     replaces the stale entry: with `emplace` the new comm was never registered
+     and `ncclCommDump` / `commDumpAll` returned the dead comm's snapshot. The
+     stale entry is swapped out under the registry lock and destroyed after it
+     is released, since it may hold the last reference to the dead comm's
+     CollTrace. The dead comm's own entry is lost when its address is reused.
    - `commDumpAllImpl` has no `status == ALIVE` filter, so `ncclCommDumpAll`
      includes dead communicators.
 2. **`deregisterComm` runs before the null guard in `ncclCommFinalize`.** A
@@ -204,6 +207,9 @@ build without its symbols. On v2_32:
 | `meta/colltrace/tests:dump_new_colltrace_ut` | `dumpNewCollTrace` | passes |
 | `meta/colltrace/tests:baseline_cudagraph_colltrace_dist` | `waitForCollTraceDrain`, `dumpNewCollTrace` | 2/2; in-kernel graph timestamps verified end to end |
 
+`comms_monitor_ut` (which now clears the registry per case and covers the
+stale-entry replacement) and `meta/tests:comm_dump_test` are enabled on v2_32.
+
 It also fixes `testOneCommDump` and `testMultipleCommDump` in shared
 `CommsMonitorDist.cc`, which failed identically on v2_30: with no hints the
 result always has a `"GlobalInfo"` entry beside the commHash keys, but the cases
@@ -211,12 +217,6 @@ expected exactly 1 and 4 entries. Both now `erase("GlobalInfo")` first.
 
 Still excluded on v2_32 although they use this row's symbols:
 
-- `meta/comms-monitor/tests:comms_monitor_ut` and `meta/tests:comm_dump_test`
-  hit the address reuse in *Known issues* 1: `comms_monitor_ut`'s
-  `TestRegisterDeregisterComm` gets `TestRegisterComm`'s destroyed comm address
-  and the monitored count does not grow; `comm_dump_test`'s `DumpAfterSendRecv`
-  reads a dead comm's snapshot and sees 0 CT records in-suite (it passes alone).
-  The follow-up re-enables both.
 - `new_colltrace_dist_nolocal` needs the ncclx RMA window API
   (`ncclWinAllocate`, `ncclWinSharedQuery`), not yet on v2_32.
   `new_colltrace_dist_local` and `dump_algo_stat_ctran_test` are enabled.

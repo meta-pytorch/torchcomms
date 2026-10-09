@@ -223,11 +223,9 @@ globs `meta/colltrace/*.cc`; v2_32's does not list any `meta/` sources yet.
 
 - `meta/colltrace/tests:proxy_mock_ut` is re-enabled on v2_32. It uses
   hand-built `ncclProxySubArgs`, so it exercises no baseline hook.
-- `meta/tests:comm_dump_test` stays excluded on v2_32: `CommsMonitor` never
-  erases entries and registers with `emplace`, so a new comm that reuses a dead
-  comm's address is not registered and dumps return the dead comm's snapshot
-  (`DumpAfterSendRecv` sees 0 CollTrace records in-suite, passes alone). A
-  follow-up replaces stale entries on address reuse and re-enables it.
+- `meta/tests:comm_dump_test` is enabled on v2_32. Its `DumpAfterSendRecv`
+  checks the `PT_*` keys but runs on P2P/SHM, so it does not exercise the
+  `net.cc` hooks unless run with `NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=1`.
 - `meta/colltrace/tests:proxytrace_dist_fastinit` stays excluded: every case
   skips unless `comm->nNodes >= 2`, and the target runs one node. Its expected
   opCounts assume v2_30's per-plan counting and are unverified on v2_32.
