@@ -16,9 +16,6 @@ constexpr int kPeerGatherLanes =
     kRegisteredAllReduceThreads / kRegisteredAllReduceRanks;
 static_assert(kElementsPerVector == 8);
 static_assert(kPeerGatherLanes == 128);
-static_assert(
-    kRegisteredAllReduceMaxScratchBytes == 256 * 1024,
-    "A four-rank 1 MiB all-reduce stages one 256 KiB shard per rank");
 
 // BF16 vectors are loaded and stored; sums accumulate in FP32 and round to
 // BF16 (nearest even) once, as AITER's custom all-reduce does.
@@ -260,7 +257,8 @@ __device__ __forceinline__ void runTwoStage(
   Vec reduced;
   if (group == 0) {
     reduced = reduceVector(inputs, rank, own, shardOffset, vector);
-    reinterpret_cast<Vec*>(states.state[rank]->scratch)[vector] = reduced;
+    reinterpret_cast<Vec*>(
+        registeredAllReduceScratch(states.state[rank]))[vector] = reduced;
     drainWaveStores();
   }
 
@@ -272,8 +270,8 @@ __device__ __forceinline__ void runTwoStage(
   if (group == 0) {
     destination[vector] = reduced;
   } else {
-    destination[vector] =
-        reinterpret_cast<const Vec*>(states.state[shard]->scratch)[vector];
+    destination[vector] = reinterpret_cast<const Vec*>(
+        registeredAllReduceScratch(states.state[shard]))[vector];
   }
 }
 
@@ -509,7 +507,8 @@ __global__ void __launch_bounds__(kRegisteredAllReduceNormThreads)
   }
   __syncthreads();
   const uint32_t calls = callsShared;
-  Vec* ownerScratch = reinterpret_cast<Vec*>(states.state[owner]->scratch) +
+  Vec* ownerScratch =
+      reinterpret_cast<Vec*>(registeredAllReduceScratch(states.state[owner])) +
       static_cast<size_t>(row - owner * kRegisteredAllReduceRowsPerRank) *
           kRowVectors;
 

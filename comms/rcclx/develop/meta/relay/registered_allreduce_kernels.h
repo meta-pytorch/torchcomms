@@ -19,7 +19,10 @@ constexpr int kRegisteredAllReduceRanks = 4;
 constexpr int kRegisteredAllReduceThreads = 512;
 constexpr int kRegisteredAllReduceHalfMiBBlocks = 64;
 constexpr int kRegisteredAllReduceOneMiBBlocks = 128;
-constexpr int kRegisteredAllReduceMaxBlocks = kRegisteredAllReduceOneMiBBlocks;
+// Every kernel's grid is capped here; each CTA owns one protocol slot.
+constexpr int kRegisteredAllReduceMaxBlocks = 256;
+static_assert(
+    kRegisteredAllReduceOneMiBBlocks <= kRegisteredAllReduceMaxBlocks);
 constexpr size_t kRegisteredAllReduceHalfMiBBytes = 512 * 1024;
 constexpr size_t kRegisteredAllReduceOneMiBBytes = 1024 * 1024;
 constexpr size_t kRegisteredAllReduceMaxScratchBytes =
@@ -58,7 +61,12 @@ constexpr int kRegisteredAllReduceWideNormHidden = 4608;
 constexpr int kRegisteredAllReduceWideNormThreads = 512;
 constexpr int kRegisteredAllReduceWideNormMaxRows = 64;
 static_assert(
-    kRegisteredAllReduceWideNormMaxRows <= kRegisteredAllReduceOneMiBBlocks);
+    kRegisteredAllReduceWideNormMaxRows <= kRegisteredAllReduceMaxBlocks);
+
+// Epilogue rows with their own protocol line (the SBD verify forward carries up
+// to 448 rows).
+constexpr int kRegisteredAllReduceMaxRows = 512;
+static_assert(kRegisteredAllReduceRows <= kRegisteredAllReduceMaxRows);
 
 // Protocol words of one epilogue row CTA, on their own 256-byte line. The row
 // owner collects start epochs from the other ranks and publishes the midpoint
@@ -69,12 +77,32 @@ struct alignas(256) RegisteredAllReduceRowState {
   uint32_t calls;
 };
 
+// The fixed protocol header of a state region. A four-rank request's scratch
+// (one shard, capacity / 4) follows it in the same allocation, so the region
+// size follows the request's capacity.
 struct alignas(256) RegisteredAllReduceStateRegion {
-  alignas(16) unsigned char scratch[kRegisteredAllReduceMaxScratchBytes];
   RegisteredAllReduceBlockState block[kRegisteredAllReduceMaxBlocks];
-  RegisteredAllReduceRowState row[kRegisteredAllReduceRows];
+  RegisteredAllReduceRowState row[kRegisteredAllReduceMaxRows];
   uint64_t sentinel;
 };
+
+// The largest shard of a four-rank request: a quarter of its 16-byte vectors,
+// plus the up to three vectors the last quarter takes when the count does not
+// divide by four (AITER's split).
+constexpr size_t registeredAllReduceScratchBytes(
+    size_t capacityBytes,
+    int nRanks) {
+  return nRanks == kRegisteredAllReduceRanks
+      ? (capacityBytes / 16 / kRegisteredAllReduceRanks +
+         kRegisteredAllReduceRanks - 1) *
+          16
+      : 0;
+}
+
+__host__ __device__ inline unsigned char* registeredAllReduceScratch(
+    RegisteredAllReduceStateRegion* state) {
+  return reinterpret_cast<unsigned char*>(state + 1);
+}
 
 struct RegisteredAllReduceInputTable {
   const __nv_bfloat16* input[kRegisteredAllReduceRanks];
