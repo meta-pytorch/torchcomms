@@ -264,6 +264,7 @@ void ncclCommPushFree(struct ncclComm* comm, void* obj) {
 }
 
 static ncclResult_t ncclDestructorFnCudaFree(struct ncclDestructor* dtor) {
+  memLogMetaData = dtor->comm->logMetaData; // [NCCLX] attribute the free
   NCCLCHECK(ncclCudaFree(dtor->obj, dtor->comm->memManager));
   return ncclSuccess;
 }
@@ -768,6 +769,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->deviceStream,
                                         /*concurrent=*/false, &deviceStream),
                 ret, fail);
+  memLogMetaData = comm->logMetaData;
   NCCLCHECKGOTO(ncclCudaCallocAsync(&devCommAndChans, 1, deviceStream, comm->memManager), ret, fail);
   ncclCommPushCudaFree(comm, devCommAndChans);
 
@@ -775,6 +777,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   if (comm->lazySetupChannels) {
     comm->devCommAndChans = devCommAndChans;
   }
+  memLogMetaData = comm->logMetaData;
   NCCLCHECKGOTO(ncclCudaCallocAsync(&tmpCommAndChans.comm.rankToLocalRank, comm->nRanks, deviceStream,
                                     comm->memManager),
                 ret, fail);
@@ -858,6 +861,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
     NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->hostCountersBlock, 1), ret, fail);
     ncclCommPushCudaHostFree(comm, comm->hostCountersBlock);
     // Allocate this communicator's device counter block.
+    memLogMetaData = comm->logMetaData; // [NCCLX]
     NCCLCHECKGOTO(ncclCudaCallocAsync(&comm->deviceCountersBlock, 1, deviceStream, comm->memManager), ret, fail);
     ncclCommPushCudaFree(comm, comm->deviceCountersBlock);
     tmpCommAndChans.comm.progressCounters = comm->deviceCountersBlock;
@@ -869,6 +873,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   }
 
   if (comm->denseToUserRank != nullptr) {
+    memLogMetaData = comm->logMetaData; // [NCCLX]
     NCCLCHECKGOTO(ncclCudaCallocAsync(&tmpCommAndChans.comm.denseToUserRank, nRanks, deviceStream, comm->memManager),
                   ret, fail);
     ncclCommPushCudaFree(comm, tmpCommAndChans.comm.denseToUserRank);
@@ -2282,6 +2287,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->cudaArch = cudaArch;
   comm->maxSharedMemOptin = maxSharedMem;
 
+  // [META] Populate the logging identity every NCCLX subsystem reads. Allocation
+  // tracing stages it before each comm allocation, and CollTrace and ProxyTrace
+  // key their records on it, so it has to be filled before initTransportsRank.
   comm->logMetaData.commId = commIdHash;
   comm->logMetaData.commHash = comm->commHash;
   comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);

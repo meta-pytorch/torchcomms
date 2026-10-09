@@ -62,8 +62,9 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
     CUresult err;
 
     // Allocate FABRIC handle compatible memory
-    ncclResult_t ret =
-      ncclCuMemAlloc(&ptr, &handle, CU_MEM_HANDLE_TYPE_FABRIC, CUDA_IPC_MIN, comm->memManager, ncclMemOffload);
+    memLogMetaData = comm->logMetaData;
+    ncclResult_t ret = ncclCuMemAlloc(&ptr, &handle, CU_MEM_HANDLE_TYPE_FABRIC, CUDA_IPC_MIN, comm->memManager,
+                                      "ncclMnnvlCheck", ncclMemOffload);
     if (ret != ncclSuccess) {
       // Return an error if this is a MNNVL capable system but FABRIC handles are not supported
       ERR(ncclSystemError, "MNNVL (cliqueSize %d) is available but not working on this system. Check the IMEX channel configuration "
@@ -76,6 +77,7 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
         (err = CUPFN(cuMemImportFromShareableHandle(&handle, &cuDesc, CU_MEM_HANDLE_TYPE_FABRIC))) != CUDA_SUCCESS) {
       const char* errStr;
       (void)pfn_cuGetErrorString(err, &errStr);
+      memLogMetaData = comm->logMetaData; // [NCCLX] attribute the free
       NCCLCHECK(ncclCuMemFree(ptr, comm->memManager));
       // Return an error if this is a MNNVL capable system but it's not working
       ERR(ncclSystemError, "MNNVL (cliqueSize %d) is available but not working on this system. Check the IMEX configuration "
@@ -83,6 +85,7 @@ ncclResult_t ncclMnnvlCheck(struct ncclComm* comm) {
            comm->clique.size);
       return ncclSystemError;
     }
+    memLogMetaData = comm->logMetaData; // [NCCLX] attribute the free
     NCCLCHECK(ncclCuMemFree(ptr, comm->memManager));
 
     // Force the CUMEM handle type to be FABRIC for MNNVL

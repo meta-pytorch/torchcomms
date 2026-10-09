@@ -17,6 +17,7 @@
 struct ncclComm;
 #include "os.h"
 #include <memory>
+#include <utility>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,6 +29,12 @@ struct ncclComm;
 #if defined(NCCL_OS_LINUX)
 #include <unistd.h>
 #endif
+
+// [NCCLX] Allocation tracing. fmt is included explicitly rather than relied on
+// transitively for the fmt::format callsite strings below.
+#include <fmt/format.h>
+#include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 uint64_t clockNano(); // from utils.h with which we have a circular dependency
 
@@ -54,6 +61,22 @@ template <typename T>
 using ncclUniquePtr = std::unique_ptr<T, ncclDeleterFree>;
 template <typename T>
 using ncclUniqueArrayPtr = std::unique_ptr<T[], ncclDeleterFree>;
+
+// [NCCLX] Per-thread comm attribution for the next allocation. Callers stage the
+// owning comm's log metadata here immediately before an alloc.
+//
+// Always consume it with ncclTakeMemLogMetaData() at function entry, never by
+// reading it and resetting at exit: an allocation that returns early (a failure,
+// or a guard such as `nelem > 0`) would otherwise leave the slot populated and
+// mis-attribute the next unrelated allocation on the same thread. A wrapper that
+// drains the slot and then calls another allocator that also drains it (the
+// debug wrappers calling ncclCuMemAlloc) must re-stage it right before that call.
+inline thread_local CommLogData memLogMetaData;
+
+// Drains the staging slot. Safe on paths that then do not allocate.
+inline CommLogData ncclTakeMemLogMetaData() {
+  return std::exchange(memLogMetaData, CommLogData{});
+}
 
 #if CUDART_VERSION >= 12020
 
@@ -311,7 +334,9 @@ fail:
 
 static inline ncclResult_t ncclCuMemAlloc(void** ptr, CUmemGenericAllocationHandle* handlep,
                                           CUmemAllocationHandleType type, size_t size, struct ncclMemManager* manager,
+                                          const char* callsite = "",
                                           ncclMemType_t memType = ncclMemPersist) {
+  const CommLogData logMeta = ncclTakeMemLogMetaData();
   ncclResult_t result = ncclSuccess;
   size_t granularity = 0;
   CUdevice currentDev;
@@ -342,10 +367,13 @@ static inline ncclResult_t ncclCuMemAlloc(void** ptr, CUmemGenericAllocationHand
   if (manager != nullptr) {
     ncclMemTrack(manager, *ptr, size, handle, type, memType);
   }
+  meta::comms::memtrace::recordAlloc(logMeta, callsite, "ncclCuMemAlloc", reinterpret_cast<uintptr_t>(*ptr), size);
   return result;
 }
 
 static inline ncclResult_t ncclCuMemFree(void* ptr, struct ncclMemManager* manager, int numSegments = 1) {
+  // Drain before the NULL check so a staged slot cannot leak into the next alloc.
+  const CommLogData logMeta = ncclTakeMemLogMetaData();
   if (ptr == NULL) return ncclSuccess;
   ncclResult_t result = ncclSuccess;
   size_t totalSize = 0;
@@ -382,6 +410,12 @@ static inline ncclResult_t ncclCuMemFree(void* ptr, struct ncclMemManager* manag
 
 fail:
   CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, totalSize));
+  // Recorded once per call against the base pointer, and only after a full release.
+  // v2_30 emits this from inside the per-segment loop, which double-counts whenever
+  // numSegments > 1.
+  if (result == ncclSuccess) {
+    meta::comms::memtrace::recordFree(logMeta, "", "ncclCuMemFree", reinterpret_cast<uintptr_t>(ptr));
+  }
   return result;
 }
 
@@ -442,7 +476,8 @@ static inline ncclResult_t ncclCuMemGetAddressRange(CUdeviceptr userBuff, size_t
 extern int ncclCuMemEnable();
 
 static inline ncclResult_t ncclCuMemAlloc(void** ptr, void* handlep, int type, size_t size,
-                                          struct ncclMemManager* manager, ncclMemType_t memType = ncclMemScratch) {
+                                          struct ncclMemManager* manager, const char* callsite = "",
+                                          ncclMemType_t memType = ncclMemScratch) {
   WARN("CUMEM not supported prior to CUDA 11.3");
   return ncclInternalError;
 }
@@ -473,13 +508,16 @@ static inline ncclResult_t ncclCuMemGetAddressRange(CUdeviceptr userBuff, size_t
 template <typename T>
 ncclResult_t ncclCudaMallocDebug(T** ptr, size_t nelem, const char* file, int line, const char* callerFunc,
                                  struct ncclMemManager* manager, ncclMemType_t memType = ncclMemPersist) {
+  const CommLogData logMeta = ncclTakeMemLogMetaData();
   ncclResult_t result = ncclSuccess;
+  const std::string callsite = fmt::format("{}:{}", file, line);
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
     if (ncclCuMemEnable()) {
-      NCCLCHECKGOTO(ncclCuMemAlloc((void**)ptr, NULL, ncclCuMemHandleType, nelem * ncclSizeOfT<T>(), manager, memType),
+      memLogMetaData = logMeta; // ncclCuMemAlloc drains the slot again; see above.
+      NCCLCHECKGOTO(ncclCuMemAlloc((void**)ptr, NULL, ncclCuMemHandleType, nelem * ncclSizeOfT<T>(), manager, callsite.c_str(), memType),
                     result, finish);
     } else {
       CUDACHECKGOTO(cudaMalloc(ptr, nelem * ncclSizeOfT<T>()), result, finish);
@@ -490,6 +528,12 @@ finish:
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA malloc %ld bytes", nelem * ncclSizeOfT<T>());
   INFO_LOC_FN(NCCL_ALLOC, file, line, callerFunc, "Cuda Alloc Size %ld pointer %p memType %d", nelem * ncclSizeOfT<T>(),
               *ptr, memType);
+  // Only when something was actually allocated: the failure and nelem==0 paths
+  // reach here too, and would otherwise book a phantom allocation at address 0.
+  if (!ncclCuMemEnable() && *ptr != nullptr) {
+    meta::comms::memtrace::recordAlloc(logMeta, callsite.c_str(), "ncclCudaMalloc", reinterpret_cast<uintptr_t>(*ptr),
+                                       nelem * ncclSizeOfT<T>());
+  }
   return result;
 }
 #define ncclCudaMalloc(ptr, nelem, manager, ...) \
@@ -498,7 +542,9 @@ finish:
 template <typename T>
 ncclResult_t ncclCudaCallocDebug(T** ptr, size_t nelem, const char* file, int line, const char* callerFunc,
                                  struct ncclMemManager* manager, ncclMemType_t memType = ncclMemPersist) {
+  const CommLogData logMeta = ncclTakeMemLogMetaData();
   ncclResult_t result = ncclSuccess;
+  const std::string callsite = fmt::format("{}:{}", file, line);
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
@@ -507,7 +553,8 @@ ncclResult_t ncclCudaCallocDebug(T** ptr, size_t nelem, const char* file, int li
     cudaStream_t stream;
     CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), result, finish);
     if (ncclCuMemEnable()) {
-      NCCLCHECKGOTO(ncclCuMemAlloc((void**)ptr, NULL, ncclCuMemHandleType, nelem * ncclSizeOfT<T>(), manager, memType),
+      memLogMetaData = logMeta; // ncclCuMemAlloc drains the slot again; see above.
+      NCCLCHECKGOTO(ncclCuMemAlloc((void**)ptr, NULL, ncclCuMemHandleType, nelem * ncclSizeOfT<T>(), manager, callsite.c_str(), memType),
                     result, finish);
     } else {
       CUDACHECKGOTO(cudaMalloc(ptr, nelem * ncclSizeOfT<T>()), result, finish);
@@ -521,6 +568,12 @@ finish:
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA calloc %ld bytes", nelem * ncclSizeOfT<T>());
   INFO_LOC_FN(NCCL_ALLOC, file, line, callerFunc, "Cuda Calloc Size %ld pointer %p memType %d",
               nelem * ncclSizeOfT<T>(), *ptr, memType);
+  // Only when something was actually allocated: the failure and nelem==0 paths
+  // reach here too, and would otherwise book a phantom allocation at address 0.
+  if (!ncclCuMemEnable() && *ptr != nullptr) {
+    meta::comms::memtrace::recordAlloc(logMeta, callsite.c_str(), "ncclCudaCalloc", reinterpret_cast<uintptr_t>(*ptr),
+                                       nelem * ncclSizeOfT<T>());
+  }
   return result;
 }
 #define ncclCudaCalloc(ptr, nelem, manager, ...) \
@@ -530,13 +583,16 @@ template <typename T>
 ncclResult_t ncclCudaCallocAsyncDebug(T** ptr, size_t nelem, cudaStream_t stream, const char* file, int line,
                                       const char* callerFunc, struct ncclMemManager* manager,
                                       ncclMemType_t memType = ncclMemPersist) {
+  const CommLogData logMeta = ncclTakeMemLogMetaData();
   ncclResult_t result = ncclSuccess;
+  const std::string callsite = fmt::format("{}:{}", file, line);
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
     if (ncclCuMemEnable()) {
-      NCCLCHECKGOTO(ncclCuMemAlloc((void**)ptr, NULL, ncclCuMemHandleType, nelem * ncclSizeOfT<T>(), manager, memType),
+      memLogMetaData = logMeta; // ncclCuMemAlloc drains the slot again; see above.
+      NCCLCHECKGOTO(ncclCuMemAlloc((void**)ptr, NULL, ncclCuMemHandleType, nelem * ncclSizeOfT<T>(), manager, callsite.c_str(), memType),
                     result, finish);
     } else {
       CUDACHECKGOTO(cudaMalloc(ptr, nelem * ncclSizeOfT<T>()), result, finish);
@@ -548,6 +604,12 @@ finish:
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA calloc async %ld bytes", nelem * ncclSizeOfT<T>());
   INFO_LOC_FN(NCCL_ALLOC, file, line, callerFunc, "Cuda CallocAsync Size %ld pointer %p memType %d",
               nelem * ncclSizeOfT<T>(), *ptr, memType);
+  // Only when something was actually allocated: the failure and nelem==0 paths
+  // reach here too, and would otherwise book a phantom allocation at address 0.
+  if (!ncclCuMemEnable() && *ptr != nullptr) {
+    meta::comms::memtrace::recordAlloc(logMeta, callsite.c_str(), "ncclCudaCallocAsync", reinterpret_cast<uintptr_t>(*ptr),
+                                       nelem * ncclSizeOfT<T>());
+  }
   return result;
 }
 #define ncclCudaCallocAsync(ptr, nelem, stream, manager, ...) \
@@ -582,11 +644,13 @@ finish:
 
 template <typename T>
 ncclResult_t ncclCudaFree(T* ptr, struct ncclMemManager* manager, int numSegments = 1) {
+  const CommLogData logMeta = ncclTakeMemLogMetaData();
   ncclResult_t result = ncclSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   TRACE(NCCL_ALLOC, "Cuda Free pointer %p", ptr);
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (ncclCuMemEnable()) {
+    memLogMetaData = logMeta; // ncclCuMemFree drains the slot again and records the free.
     NCCLCHECKGOTO(ncclCuMemFree((void*)ptr, manager, numSegments), result, finish);
   } else {
     if (numSegments > 1) {
@@ -597,6 +661,9 @@ ncclResult_t ncclCudaFree(T* ptr, struct ncclMemManager* manager, int numSegment
     }
   }
 finish:
+  if (!ncclCuMemEnable() && result == ncclSuccess && ptr != nullptr) {
+    meta::comms::memtrace::recordFree(logMeta, "", "ncclCudaFree", reinterpret_cast<uintptr_t>(ptr));
+  }
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   return result;
 }

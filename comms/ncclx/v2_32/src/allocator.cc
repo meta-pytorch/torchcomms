@@ -10,6 +10,9 @@
 #include "group.h"
 #include "nvtx.h"
 #include "utils.h"
+#include <optional>
+#include "comms/utils/commSpecs.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
 
 NCCL_PARAM(ShadowMempoolMaxSize, "SHADOW_MEMPOOL_MAX_SIZE", 1LL << 30);
 
@@ -90,6 +93,8 @@ ncclResult_t ncclMemAlloc(void** ptr, size_t size) {
       }
       if (0 == p2p && i != cudaDev) INFO(NCCL_ALLOC, "P2P not supported between GPU%d and GPU%d", cudaDev, i);
     }
+    meta::comms::memtrace::recordAlloc(CommLogData{}, "", "ncclMemAlloc", reinterpret_cast<uintptr_t>(*ptr),
+                                       handleSize);
     goto exit;
   }
 
@@ -99,6 +104,9 @@ fallback:
   // we want CUDA to return an error to the caller.
   // coverity[var_deref_model]
   CUDACHECKGOTO(cudaMalloc(ptr, size), ret, fail);
+  if (*ptr != nullptr) {
+    meta::comms::memtrace::recordAlloc(CommLogData{}, "", "ncclMemAlloc", reinterpret_cast<uintptr_t>(*ptr), size);
+  }
 
 exit:
   return ret;
@@ -130,6 +138,11 @@ ncclResult_t ncclMemFree(void* ptr) {
 fallback:
 #endif
   CUDACHECKGOTO(cudaFree(ptr), ret, fail);
+  // Pairs with the non-CUMEM recordAlloc above; the CUMEM side is recorded by
+  // ncclCuMemFree. Only after a successful free of a real pointer.
+  if (ptr != nullptr) {
+    meta::comms::memtrace::recordFree(CommLogData{}, "", "ncclMemFree", reinterpret_cast<uintptr_t>(ptr), std::nullopt);
+  }
 
 exit:
   CUDACHECK(cudaSetDevice(saveDevice));
