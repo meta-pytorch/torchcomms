@@ -77,6 +77,11 @@ uint16_t floatToBfloat16(float value) {
 }
 
 constexpr uint16_t kAdversarialInputs[][kMaxRanks] = {
+    // 1 + 1/256 + 1/256 + 0: 1.0078125 when accumulated in FP32, 1.0 when
+    // rounded to BF16 after every add.
+    {0x3f80, 0x3b80, 0x3b80, 0x0000},
+    // 2^24, 1, -2^24, 1: FP32 sums of 1, 2, 2 and 0 when started at ranks 0-3.
+    {0x4b80, 0x3f80, 0xcb80, 0x3f80},
     {0x3f4c, 0xc336, 0x3d04, 0x4329},
     {0xc1e2, 0x4218, 0xbf03, 0xc0dd},
     {0x4417, 0xc3cd, 0xc0fa, 0xc12b},
@@ -97,7 +102,7 @@ float bfloat16ToFloat(uint16_t value) {
 }
 
 uint16_t expectedInputBits(int rank, size_t element, int generation) {
-  // Standard RCCL does not promise the registered kernel's stepwise BF16 order.
+  // Standard RCCL does not promise the registered kernel's summation order.
   if (generation == 14) {
     return floatToBfloat16(static_cast<float>(rank + 1 + (element % 4)));
   }
@@ -106,14 +111,37 @@ uint16_t expectedInputBits(int rank, size_t element, int generation) {
   return kAdversarialInputs[pattern][rank];
 }
 
-uint16_t expectedOutputBits(int nRanks, size_t element, int generation) {
-  uint16_t accumulator = expectedInputBits(0, element, generation);
-  for (int rank = 1; rank < nRanks; ++rank) {
-    accumulator = floatToBfloat16(
-        bfloat16ToFloat(accumulator) +
-        bfloat16ToFloat(expectedInputBits(rank, element, generation)));
+// The registered all-reduce contract: contributions accumulate in FP32 and
+// round to BF16 once, in AITER custom all-reduce order. A four-rank payload of
+// at least 160 KiB is split into four 16-byte-vector quarters and quarter q is
+// summed starting at rank q; smaller payloads, and two-rank ones, start at
+// rank 0.
+int firstSummand(int nRanks, size_t element, size_t count) {
+  constexpr size_t kTwoStageMinBytes = 160 * 1024;
+  constexpr size_t kElementsPerVector = 8;
+  if (nRanks != 4 || count * sizeof(uint16_t) < kTwoStageMinBytes) {
+    return 0;
   }
-  return accumulator;
+  const size_t part = count / kElementsPerVector / 4;
+  const size_t vector = element / kElementsPerVector;
+  return vector < 3 * part ? static_cast<int>(vector / part) : 3;
+}
+
+template <typename BitsOf>
+uint16_t reducedBits(int nRanks, size_t element, size_t count, BitsOf bitsOf) {
+  const int first = firstSummand(nRanks, element, count);
+  float sum = bfloat16ToFloat(bitsOf(first));
+  for (int step = 1; step < nRanks; ++step) {
+    sum = sum + bfloat16ToFloat(bitsOf((first + step) % nRanks));
+  }
+  return floatToBfloat16(sum);
+}
+
+uint16_t
+expectedOutputBits(int nRanks, size_t element, int generation, size_t count) {
+  return reducedBits(nRanks, element, count, [&](int rank) {
+    return expectedInputBits(rank, element, generation);
+  });
 }
 
 // Wide-row epilogue reference (4608-element rows): the specified order emulated
@@ -410,7 +438,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
     for (size_t i = 0; i < count; ++i) {
       const uint16_t expected = inputBuffer
           ? expectedInputBits(globalRank, i, generation)
-          : expectedOutputBits(numRanks, i, generation);
+          : expectedOutputBits(numRanks, i, generation, count);
       if (host[i] != expected) {
         ADD_FAILURE() << "R" << globalRank << " " << what << " index " << i
                       << " expected BF16 bits " << expected << " got "
@@ -545,7 +573,7 @@ class RegisteredAllReduceTest : public ::testing::Test {
 
   // Bit-exact wide-row epilogue check: fills inputs, runs the fused call, and
   // compares output, residual, and router copy with the device reference
-  // applied to the canonical reduced rows.
+  // applied to the reduced rows.
   struct WideCase {
     size_t rows;
     bool postWeight;
@@ -559,19 +587,11 @@ class RegisteredAllReduceTest : public ::testing::Test {
     std::vector<uint16_t> contribution(count);
     std::vector<uint16_t> reduced(count);
     for (size_t i = 0; i < count; ++i) {
-      uint16_t accumulator = 0;
-      for (int rank = 0; rank < numRanks; ++rank) {
-        const uint16_t bits =
-            floatToBfloat16(wideMixed(wide.seed + rank, i) * (1.0f + rank));
-        if (rank == globalRank) {
-          contribution[i] = bits;
-        }
-        accumulator = rank == 0
-            ? bits
-            : floatToBfloat16(
-                  bfloat16ToFloat(accumulator) + bfloat16ToFloat(bits));
-      }
-      reduced[i] = accumulator;
+      const auto bitsOf = [&](int rank) {
+        return floatToBfloat16(wideMixed(wide.seed + rank, i) * (1.0f + rank));
+      };
+      contribution[i] = bitsOf(globalRank);
+      reduced[i] = reducedBits(numRanks, i, count, bitsOf);
     }
     std::vector<float> residual(count);
     for (size_t i = 0; i < count; ++i) {
