@@ -29,6 +29,8 @@
 #include <cfloat> // FLT_MAX
 
 #include "meta/transport/transportConnect.h"
+#include "meta/colltrace/CollTraceWrapper.h" // @manual
+#include "meta/colltrace/ProxyTraceFunc.h" // @manual
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
@@ -145,6 +147,7 @@ ncclResult_t ncclAddProxyOpIfNeeded(struct ncclComm* comm, struct ncclKernelPlan
   if (needed) {
     struct ncclProxyOp* q = ncclMemoryPoolAlloc<struct ncclProxyOp>(&comm->memPool_ncclProxyOp, &comm->memPermanent);
     *q = *op; // C++ struct assignment
+    ncclx::colltrace::proxyTraceInfoCopy(*q, comm);
     ncclIntruQueueEnqueue(&comm->planner.wipPlan.channels[op->channelId].proxyOpQueue, q);
   }
   return ncclSuccess;
@@ -733,6 +736,10 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
       uint32_t chunkSize, directFlags = 0;
       NCCLCHECK(calcCollChunking(comm, task, nChannels, globalBytesPerElement * task->count, &chunkSize, &directFlags,
                                  &proxyOp));
+      // NCCLX - ProxyTrace. task->func, not proxyOp.task.coll->func:
+      // calcCollChunking() memsets proxyOp, and proxyOp.task.coll is not
+      // assigned until the per-channel loop below.
+      ncclx::colltrace::proxyTraceAddBasicInfo(proxyOp, nChannels, task->func);
       devWork->channelLo = 0;
       devWork->channelHi = nChannels - 1;
       task->channelLo = 0;
@@ -877,6 +884,8 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
         proxyOp->task.coll = task;
         proxyOp->rank = comm->rank;
         proxyOp->ringAlgo = NULL;
+        // NCCLX - ProxyTrace
+        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], task->func);
         if (proxyOp->reg && task->algorithm == NCCL_ALGO_RING && (task->recvNetHandles[c] || task->sendNetHandles[c])) {
           if (task->func == ncclFuncAllGather) {
             proxyOp->ringAlgo =
@@ -1164,6 +1173,10 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
     op->task.p2p = p2pTasks[dir];
     op->rank = comm->rank;
     op->eActivationMask = p2pTasks[dir] ? p2pTasks[dir]->eActivationMask : 0;
+
+    // NCCLX - ProxyTrace. Both directions are built even for a one-sided send or
+    // recv, so op->coll is 0 (== ncclFuncBroadcast) for the unused one.
+    ncclx::colltrace::proxyTraceAddBasicInfo(*op, nChannels[dir], static_cast<ncclFunc_t>(op->coll));
     // The following are modified per channel part in addWorkToChannels():
     // op->buffer, op->nbytes, op->nsteps = ...;
   }
@@ -1917,6 +1930,15 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   void* extra[] = {CU_LAUNCH_PARAM_BUFFER_POINTER, plan->kernelArgs, CU_LAUNCH_PARAM_BUFFER_SIZE, &plan->kernelArgsSize,
                    CU_LAUNCH_PARAM_END};
 
+  // [META] Colltrace handle creation and in-kernel graph timestamp arming. The
+  // handle and its guard must both be declared ahead of the first
+  // `goto do_return` below: jumping over their initialization is ill-formed.
+  auto colltraceHandle = ncclx::colltrace::prepareNcclKernelColltrace(plan, launchStream, comm->compCap);
+  // A `goto do_return` taken before AfterEnqueueKernel means no kernel was
+  // enqueued; the guard cancels the record so the next collective does not
+  // inherit a stale pending trace.
+  meta::comms::colltrace::CollTraceEnqueueGuard colltraceEnqueueGuard{colltraceHandle};
+
   int driverVersion;
   NCCLCHECKGOTO(ncclCudaDriverVersion(&driverVersion), ret, do_return);
 
@@ -2004,7 +2026,10 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
       WARN("CUDA launch-completion events require CUDA 12.3 or newer; recording the user event before launch");
       CUDACHECKGOTO(cudaEventRecord(plan->launchCompletionEvent, launchStream), ret, do_return);
     }
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernelEx(&launchConfig, fn, nullptr, extra), ret, do_return);
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
+    colltraceEnqueueGuard.disarm();
     if (relayUserLaunchCompletionEvent) {
       CUDACHECKGOTO(cudaStreamWaitEvent(relayStream, comm->sharedRes->launchEvent, 0), ret, do_return);
       CUDACHECKGOTO(cudaEventRecord(plan->launchCompletionEvent, relayStream), ret, do_return);
@@ -2016,9 +2041,12 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
       WARN("CUDA launch-completion events require CUDA 12.3 or newer; recording the user event before launch");
       CUDACHECKGOTO(cudaEventRecord(plan->launchCompletionEvent, launchStream), ret, do_return);
     }
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernel(fn, grid.x, grid.y, grid.z, block.x, block.y, block.z, smem, launchStream, nullptr,
                                extra),
                 ret, do_return);
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
+    colltraceEnqueueGuard.disarm();
   }
 
 do_return:
