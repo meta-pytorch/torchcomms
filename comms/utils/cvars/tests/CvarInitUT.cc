@@ -62,6 +62,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_P2P_DISABLE");
     unsetenv("CUDA_LAUNCH_BLOCKING");
     unsetenv("NCCL_MIN_CTAS");
+    unsetenv("MCCL_BOOTSTRAP_TOS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
     unsetenv("MCCL_IBGDA_COLLAPSED_CQ_MODE");
@@ -173,6 +174,21 @@ TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticParsesAllModes) {
     setenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC", value, 1);
     ncclCvarInit();
     EXPECT_EQ(MCCL_IBGDA_QP_ORDERING_SEMANTIC, expected);
+  }
+}
+
+TEST_F(CvarInitTest, McclBootstrapTosDisabledByDefault) {
+  MCCL_BOOTSTRAP_TOS = "140";
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_BOOTSTRAP_TOS, "-1");
+}
+
+TEST_F(CvarInitTest, McclBootstrapTosPreservesInputForValidation) {
+  for (const auto* value : {"0", "140", "143", "255", "oops", "1junk"}) {
+    SCOPED_TRACE(value);
+    setenv("MCCL_BOOTSTRAP_TOS", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_BOOTSTRAP_TOS, value);
   }
 }
 

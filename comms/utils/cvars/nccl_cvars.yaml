@@ -3653,6 +3653,16 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
+ - name        : MCCL_BOOTSTRAP_TOS
+   type        : string
+   default     : "-1"
+   description : |-
+     IPv4 ToS / IPv6 traffic-class byte for MCCL bootstrap TCP sockets,
+     including listeners. A decimal -1 leaves marking unchanged; 0-255 sets
+     the byte directly. Stored as text for strict validation at communicator
+     creation; empty or malformed values are rejected. The kernel manages
+     TCP ECN bits. The NIC/fabric determine the queue; RDMA is unchanged.
+
  - name        : MCCL_BOOTSTRAP_SOCKET_HEALTH_POLL_ENABLED
    type        : bool
    default     : true
