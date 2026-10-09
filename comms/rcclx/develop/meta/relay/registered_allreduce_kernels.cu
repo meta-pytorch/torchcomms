@@ -31,6 +31,7 @@ constexpr size_t kAiterTwoStageMinBytes = 160 * 1024;
 enum class Phase : int {
   Start = 0,
   Midpoint = 1,
+  Relay = 2,
 };
 
 __device__ __forceinline__ bool epochReached(uint32_t got, uint32_t want) {
@@ -404,6 +405,228 @@ int twoStageBlocks(size_t vectors) {
   return static_cast<int>(
       blocks < kRegisteredAllReduceMaxBlocks ? blocks
                                              : kRegisteredAllReduceMaxBlocks);
+}
+
+// Per-CTA all-rank exchange of the relay route. Every wave drains its stores
+// (staged chunks in helper HBM) before the signal; with uncached state and
+// staging those stores are then visible to any GPU. Otherwise the stores and
+// the signal are fenced at system scope, since staging lives on a third GPU.
+__device__ __forceinline__ void relayBarrier(
+    const RegisteredAllReduceStateTable& states,
+    int rank,
+    Phase phase,
+    const uint32_t* targetEpochs,
+    const uint32_t* sourceEpochs) {
+  drainWaveStores();
+  if constexpr (!kUncachedState) {
+    __threadfence_system();
+  }
+  __syncthreads();
+  if (threadIdx.x < kRegisteredAllReduceRanks && threadIdx.x != rank) {
+    const auto peer = threadIdx.x;
+    uint32_t* remoteSignal =
+        &blockState(states, peer).phase[static_cast<int>(phase)][rank];
+    const uint32_t* localSignal =
+        &blockState(states, rank).phase[static_cast<int>(phase)][peer];
+    if constexpr (kUncachedState) {
+      peerStore<true, __ATOMIC_RELAXED>(remoteSignal, targetEpochs[peer]);
+    } else {
+      peerStore<true, __ATOMIC_RELEASE>(remoteSignal, targetEpochs[peer]);
+    }
+    while (!epochReached(
+        peerLoad<true, __ATOMIC_RELAXED>(localSignal), sourceEpochs[peer])) {
+    }
+    if constexpr (!kUncachedState) {
+      __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_SYSTEM);
+    }
+  }
+  __syncthreads();
+}
+
+// The relay route of a four-rank two-stage all-reduce (see
+// RegisteredAllReduceRelayRoute). The first gridDim.x - helperBlocks CTAs run
+// the two-stage kernel over the direct chunks. The other CTAs serve helper
+// h = id / lanes: each rank stages its contribution to every other owner's
+// relayed chunks in its buffer on h; after an exchange each owner sums the
+// three staged contributions and its own, in AITER's order, into its output
+// and its buffer's reduced slots; after a second exchange every rank copies the
+// other owners' reduced chunks. Chunk-to-CTA assignment is the same on every
+// rank, so the per-CTA handshakes order every staging and scratch access, and
+// the next call's start handshake fences their reuse.
+constexpr int kRelayLanes = 128;
+constexpr int kRelayThreads = kRelayLanes * kRegisteredAllReduceRanks;
+static_assert(kRelayLanes == kRegisteredAllReduceRelayChunkVectors);
+
+__global__ void __launch_bounds__(kRelayThreads) registeredAllReduceRelayKernel(
+    __nv_bfloat16* __restrict__ output,
+    int rank,
+    RegisteredAllReduceInputTable inputs,
+    RegisteredAllReduceStateTable states,
+    size_t vectors,
+    RegisteredAllReduceRelayRoute route) {
+  __shared__ uint32_t targetEpochs[kRegisteredAllReduceRanks];
+  __shared__ uint32_t sourceEpochs[kRegisteredAllReduceRanks];
+  __shared__ uint32_t relayTarget[kRegisteredAllReduceRanks];
+  __shared__ uint32_t relaySource[kRegisteredAllReduceRanks];
+  __shared__ Vec staged[kRegisteredAllReduceRanks][kRelayLanes];
+  constexpr int kRanks = kRegisteredAllReduceRanks;
+  const size_t part = vectors / kRanks;
+  const auto quarterCount = [part, vectors](int q) {
+    return q == kRanks - 1 ? vectors - (kRanks - 1) * part : part;
+  };
+  const size_t cycle = static_cast<size_t>(route.directWeight) + route.helpers;
+  const int directBlocks = static_cast<int>(gridDim.x) - route.helperBlocks;
+  const auto group = threadIdx.x / kRelayLanes;
+  const auto lane = threadIdx.x % kRelayLanes;
+  const auto input = [&inputs](int r) {
+    return reinterpret_cast<const Vec*>(inputs.input[r]);
+  };
+  Vec* destination = reinterpret_cast<Vec*>(output);
+  const size_t ownBegin = rank * part;
+  const size_t ownCount = quarterCount(rank);
+
+  startHandshake<true>(rank, states, targetEpochs, sourceEpochs);
+
+  if (static_cast<int>(blockIdx.x) < directBlocks) {
+    const auto directChunk = [&](size_t k) {
+      return (k / route.directWeight) * cycle + k % route.directWeight;
+    };
+    Vec* scratch =
+        reinterpret_cast<Vec*>(registeredAllReduceScratch(states.state[rank]));
+    const Vec* source = input((rank + group) % kRanks) + ownBegin;
+    for (size_t k = blockIdx.x;; k += directBlocks) {
+      const size_t i = directChunk(k) * kRelayLanes + lane;
+      if (i - lane >= ownCount) {
+        break;
+      }
+      if (i < ownCount) {
+        staged[group][lane] = source[i];
+      }
+      __syncthreads();
+      if (group == 0 && i < ownCount) {
+        Acc sum = widen(staged[0][lane]);
+        sum += widen(staged[1][lane]);
+        sum += widen(staged[2][lane]);
+        sum += widen(staged[3][lane]);
+        const Vec reduced = narrow(sum);
+        scratch[i] = reduced;
+        destination[ownBegin + i] = reduced;
+      }
+      __syncthreads();
+    }
+    drainWaveStores();
+    midpointBarrier<true>(states, rank, targetEpochs, sourceEpochs);
+    if (group != 0) {
+      const int owner = (rank + group) % kRanks;
+      const Vec* ownerScratch = reinterpret_cast<const Vec*>(
+          registeredAllReduceScratch(states.state[owner]));
+      const size_t begin = owner * part;
+      const size_t count = quarterCount(owner);
+      for (size_t k = blockIdx.x;; k += directBlocks) {
+        const size_t i = directChunk(k) * kRelayLanes + lane;
+        if (i - lane >= count) {
+          break;
+        }
+        if (i < count) {
+          destination[begin + i] = ownerScratch[i];
+        }
+      }
+    }
+    return;
+  }
+
+  const int id = static_cast<int>(blockIdx.x) - directBlocks;
+  const int lanesPerHelper = route.helperBlocks / route.helpers;
+  const int h = id / lanesPerHelper;
+  const int first = id % lanesPerHelper;
+  const auto helperChunk = [&](size_t k) {
+    return k * cycle + route.directWeight + h;
+  };
+  const auto slot = [&](int r, size_t s, size_t k) {
+    return static_cast<Vec*>(route.staging[r][h]) +
+        (s * route.slotChunks + k) * kRelayLanes + lane;
+  };
+
+  // Stage this rank's contribution to the other owners' relayed chunks.
+  if (group != 0) {
+    const int owner = (rank + group) % kRanks;
+    const Vec* mine = input(rank) + owner * part;
+    const size_t count = quarterCount(owner);
+    for (size_t k = first;; k += lanesPerHelper) {
+      const size_t i = helperChunk(k) * kRelayLanes + lane;
+      if (i - lane >= count) {
+        break;
+      }
+      if (i < count) {
+        *slot(rank, owner, k) = mine[i];
+      }
+    }
+  }
+  relayBarrier(states, rank, Phase::Midpoint, targetEpochs, sourceEpochs);
+
+  // Sum this rank's relayed chunks: group g holds source rank + g.
+  const int from = (rank + group) % kRanks;
+  for (size_t k = first;; k += lanesPerHelper) {
+    const size_t i = helperChunk(k) * kRelayLanes + lane;
+    if (i - lane >= ownCount) {
+      break;
+    }
+    if (i < ownCount) {
+      staged[group][lane] =
+          group == 0 ? input(rank)[ownBegin + i] : *slot(from, rank, k);
+    }
+    __syncthreads();
+    if (group == 0 && i < ownCount) {
+      Acc sum = widen(staged[0][lane]);
+      sum += widen(staged[1][lane]);
+      sum += widen(staged[2][lane]);
+      sum += widen(staged[3][lane]);
+      const Vec reduced = narrow(sum);
+      destination[ownBegin + i] = reduced;
+      *slot(rank, kRanks, k) = reduced;
+    }
+    __syncthreads();
+  }
+  // The second exchange counts helper calls only (see relaySeq).
+  RegisteredAllReduceBlockState& local = blockState(states, rank);
+  if (threadIdx.x < kRanks && threadIdx.x != rank) {
+    relayTarget[threadIdx.x] = local.relaySeq[threadIdx.x] + 1u;
+    relaySource[threadIdx.x] = local.relaySeen[threadIdx.x] + 1u;
+  }
+  relayBarrier(states, rank, Phase::Relay, relayTarget, relaySource);
+  if (threadIdx.x < kRanks && threadIdx.x != rank) {
+    local.relaySeq[threadIdx.x] = relayTarget[threadIdx.x];
+    local.relaySeen[threadIdx.x] = relaySource[threadIdx.x];
+  }
+
+  if (group != 0) {
+    const int owner = (rank + group) % kRanks;
+    const size_t begin = owner * part;
+    const size_t count = quarterCount(owner);
+    for (size_t k = first;; k += lanesPerHelper) {
+      const size_t i = helperChunk(k) * kRelayLanes + lane;
+      if (i - lane >= count) {
+        break;
+      }
+      if (i < count) {
+        destination[begin + i] = *slot(owner, kRanks, k);
+      }
+    }
+  }
+}
+
+int relayDirectBlocks(size_t vectors, const RegisteredAllReduceRelayRoute& r) {
+  const size_t largestQuarter = vectors -
+      (kRegisteredAllReduceRanks - 1) * (vectors / kRegisteredAllReduceRanks);
+  const size_t chunks = (largestQuarter + kRelayLanes - 1) / kRelayLanes;
+  const size_t cycle = static_cast<size_t>(r.directWeight) + r.helpers;
+  const size_t tail = chunks % cycle;
+  const size_t direct = (chunks / cycle) * r.directWeight +
+      (tail < static_cast<size_t>(r.directWeight) ? tail : r.directWeight);
+  const size_t room =
+      static_cast<size_t>(kRegisteredAllReduceMaxBlocks - r.helperBlocks);
+  const size_t blocks = direct < room ? direct : room;
+  return static_cast<int>(blocks > 0 ? blocks : 1);
 }
 
 // Gated-residual-norm epilogue with a fixed arithmetic order, matching the
@@ -1096,6 +1319,40 @@ hipError_t launchRegisteredAllReduceProbe(
       addresses,
       count,
       out);
+  return hipPeekAtLastError();
+}
+
+hipError_t launchRegisteredAllReduceRelayKernel(
+    void* output,
+    RegisteredAllReduceInputTable inputs,
+    RegisteredAllReduceStateTable states,
+    int rank,
+    size_t count,
+    const RegisteredAllReduceRelayRoute& route,
+    hipStream_t stream) {
+  const size_t bytes = count * sizeof(__nv_bfloat16);
+  if (output == nullptr || rank < 0 || rank >= kRegisteredAllReduceRanks ||
+      bytes < kAiterTwoStageMinBytes || bytes % sizeof(Vec) != 0 ||
+      route.helpers < 1 ||
+      route.helpers > kRegisteredAllReduceRelayMaxHelpers ||
+      route.directWeight < 1 || route.helperBlocks < route.helpers ||
+      route.helperBlocks % route.helpers != 0 ||
+      route.helperBlocks >= kRegisteredAllReduceMaxBlocks) {
+    return hipErrorInvalidValue;
+  }
+  const size_t vectors = bytes / sizeof(Vec);
+  hipLaunchKernelGGL(
+      registeredAllReduceRelayKernel,
+      dim3(relayDirectBlocks(vectors, route) + route.helperBlocks),
+      dim3(kRelayThreads),
+      0,
+      stream,
+      reinterpret_cast<__nv_bfloat16*>(output),
+      rank,
+      inputs,
+      states,
+      vectors,
+      route);
   return hipPeekAtLastError();
 }
 

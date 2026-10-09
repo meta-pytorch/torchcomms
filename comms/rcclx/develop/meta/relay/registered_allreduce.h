@@ -73,11 +73,13 @@ ncclResult_t registeredAllReduceInit(
  * not synchronize the stream; completion and cross-call ordering remain the
  * caller's responsibility until collective finalization.
  *
- * Two-rank requests whose capacity reaches NCCL_REGISTERED_AR_RELAY_MIN_BYTES
- * (default 2 MiB) also get a relay route at registration: payloads of at least
- * that size, without norm, relay part of their traffic through the node's
- * other GPUs (staging rings the two ranks allocate in those GPUs' HBM; nothing
- * runs there). It is bitwise identical to the one-shot result and can be
+ * Requests whose capacity reaches NCCL_REGISTERED_AR_RELAY_MIN_BYTES (two
+ * ranks, default 2 MiB) or NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES (four ranks,
+ * default 1 MiB + 16 B) also get a relay route at registration when the
+ * node's other GPUs are visible: payloads of at least that size, without norm,
+ * relay part of their traffic through those GPUs (staging the ranks allocate
+ * in their HBM; nothing runs there). It is bitwise identical to the direct
+ * result (rank order at two ranks, the two-stage kernel at four) and can be
  * captured like every other execution.
  *
  * norm is optional. It serves 1 MiB payloads viewed as 64 x 8192 rows on four
@@ -158,6 +160,13 @@ void registeredAllReduceSetIpcOpenFailureRankForTest(int rank);
 // an unknown handle), and relay-route launches so far in this process.
 int registeredAllReduceRelayHelpersForTest(void* request);
 uint64_t registeredAllReduceRelayLaunchesForTest();
+// Sets every CTA's start and midpoint epochs (its sequence counters and the
+// start and midpoint words peers write into this rank's state region) to
+// `epoch`, as after that many plain calls; relay words are left as they are.
+// Rank-local: call on every rank with the same value while no execution runs.
+ncclResult_t registeredAllReduceSetCtaEpochsForTest(
+    RegisteredAllReduce* request,
+    uint32_t epoch);
 // Starts a public request's relay sequence counters at `sequence` (see
 // registeredRelaySetSequenceForTest).
 ncclResult_t registeredAllReduceSetRelaySequenceForTest(

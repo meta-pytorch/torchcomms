@@ -1051,6 +1051,19 @@ ncclResult_t registeredAllReduceExecute(
     return ncclInvalidArgument;
   }
   if (norm == nullptr && registeredRelayServes(request->relay, bytes)) {
+    RegisteredAllReduceRelayRoute route;
+    if (registeredRelayRoute(request->relay, &route)) {
+      return hipToNccl(
+          launchRegisteredAllReduceRelayKernel(
+              output,
+              request->inputTable,
+              request->stateTable,
+              request->rank,
+              count,
+              route,
+              stream),
+          "registered all-reduce four-rank relay launch");
+    }
     return hipToNccl(
         registeredRelayLaunch(
             request->relay,
@@ -1346,6 +1359,40 @@ int registeredAllReduceRelayHelpersForTest(void* request) {
 
 uint64_t registeredAllReduceRelayLaunchesForTest() {
   return registeredRelayLaunchesForTest();
+}
+
+ncclResult_t registeredAllReduceSetCtaEpochsForTest(
+    RegisteredAllReduce* request,
+    uint32_t epoch) {
+  if (request == nullptr || request->localState == nullptr) {
+    return ncclInvalidArgument;
+  }
+  std::vector<RegisteredAllReduceBlockState> blocks(
+      kRegisteredAllReduceMaxBlocks);
+  const size_t bytes = blocks.size() * sizeof(RegisteredAllReduceBlockState);
+  if (hipMemcpy(
+          blocks.data(),
+          request->localState->block,
+          bytes,
+          hipMemcpyDeviceToHost) != hipSuccess) {
+    return ncclUnhandledCudaError;
+  }
+  for (RegisteredAllReduceBlockState& block : blocks) {
+    for (int peer = 0; peer < kRegisteredAllReduceRanks; ++peer) {
+      block.seq[peer] = epoch;
+      block.seen[peer] = epoch;
+      block.phase[0][peer] = epoch;
+      block.phase[1][peer] = epoch;
+    }
+  }
+  return hipMemcpy(
+             request->localState->block,
+             blocks.data(),
+             bytes,
+             hipMemcpyHostToDevice) == hipSuccess &&
+          hipDeviceSynchronize() == hipSuccess
+      ? ncclSuccess
+      : ncclUnhandledCudaError;
 }
 
 ncclResult_t registeredAllReduceSetRelaySequenceForTest(
