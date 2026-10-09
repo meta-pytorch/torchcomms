@@ -64,8 +64,11 @@ ncclResult_t ncclMcGroupDestroy(struct ncclMcGroup** group);
 
 // Locally bind a UC handle into a partition at offsetInPartition; the bind is
 // bounds-checked against the partition.
+// [NCCLX] The driver bind runs under the NVLS bind watchdog
+// (meta/nvls/NvlsBindWatchdog.h), which logs periodically while it is stuck.
 ncclResult_t ncclMcPartitionBindMem(const struct ncclMcPartition* partition, size_t offsetInPartition,
-                                    CUmemGenericAllocationHandle mem, size_t memOffset, size_t bindSize);
+                                    CUmemGenericAllocationHandle mem, size_t memOffset, size_t bindSize,
+                                    const struct ncclComm* watchdogComm);
 // Unbind; a binding surviving a failed unbind lasts only until ncclMcGroupDestroy,
 // so callers may keep tearing down.
 ncclResult_t ncclMcPartitionUnbind(const struct ncclMcPartition* partition, size_t offsetInPartition, size_t bindSize);

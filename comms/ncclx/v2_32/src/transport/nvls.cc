@@ -255,7 +255,8 @@ static ncclResult_t nvlsAllocBindUc(struct ncclComm* comm, const struct ncclMcPa
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
                                           comm->localRankToRank[0]),
                 ret, fail3);
-  NCCLCHECKGOTO(ncclMcPartitionBindMem(partition, 0 /*offsetInPartition*/, ucHandle, 0 /*memOffset*/, ucsize), ret,
+  NCCLCHECKGOTO(ncclMcPartitionBindMem(partition, 0 /*offsetInPartition*/, ucHandle, 0 /*memOffset*/, ucsize,
+                                       comm /*[NCCLX] NVLS bind watchdog*/), ret,
                 fail3);
 
   INFO(NCCL_NVLS, "NVLS rank %d (dev %d) bound UC ptr %p ucsize %zu into MC slice offset %zu (inputsize %zu)",
