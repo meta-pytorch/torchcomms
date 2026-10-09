@@ -707,9 +707,9 @@ setup_complete:
   memDescs[p2pRank].bytes = inPeerCount == 0 ? 0 : localBytes;
   if (inPeerCount > 0 && cudaUsable && stream != nullptr) {
     // A single owner-held reference is shared by all same-process mappings.
-    ncclResult_t allocRet =
-      ncclP2pAllocateShareableBuffer(localBytes, needsLocalHandle ? 1 : 0, &memDescs[p2pRank].ipcDesc,
-                                     (void**)&localSlots, -1, comm->memManager, ncclMemScratch);
+    ncclResult_t allocRet = ncclP2pAllocateShareableBuffer(
+      localBytes, needsLocalHandle ? 1 : 0, &memDescs[p2pRank].ipcDesc, (void**)&localSlots, comm,
+      "ncclDiagP2pRunDiagnostic", -1, comm->memManager, ncclMemScratch);
     if (ncclDiagP2pNcclSuccess(allocRet, "allocate local slots")) {
       localHandleRetained = needsLocalHandle;
       ncclResult_t ranksAllocRet = ncclCudaCalloc(&p2pRanksDev, p2pNRanks, comm->memManager, ncclMemScratch);
@@ -918,6 +918,7 @@ fail:
     NCCLCHECKIGNORE(ncclCudaFree(p2pRanksDev, comm->memManager), cleanupRet);
   }
   if (localSlots != nullptr) {
+    memLogMetaData = comm->logMetaData; // [NCCLX] pairs with the attributed allocation
     NCCLCHECKIGNORE(ncclCudaFree(localSlots, comm->memManager), cleanupRet);
   }
   if (stream != nullptr) {
