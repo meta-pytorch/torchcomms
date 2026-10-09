@@ -10,6 +10,8 @@
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
+#include "comms/torchcomms/AssertionError.hpp"
+
 // NCCL_SHRINK_ABORT was introduced in NCCL 2.27 alongside ncclCommShrink.
 // Define a fallback so dependents compile against older NCCL headers.
 #if NCCL_VERSION_CODE < NCCL_VERSION(2, 27, 0) && !defined(NCCL_SHRINK_ABORT)
@@ -28,7 +30,7 @@ namespace torch::comms {
 class NcclxApi;
 
 // Custom exception class for better error handling
-class NCCLXException : public std::exception {
+class NCCLXException : public AssertionError {
  public:
   NCCLXException(
       NcclxApi& api,
@@ -36,11 +38,9 @@ class NCCLXException : public std::exception {
       ncclResult_t result,
       ncclComm_t comm);
 
-  const char* what() const noexcept override;
   [[nodiscard]] ncclResult_t getResult() const noexcept;
 
  private:
-  std::string message_;
   ncclResult_t result_;
 };
 

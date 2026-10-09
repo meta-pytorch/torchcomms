@@ -21,15 +21,11 @@ NCCLXException::NCCLXException(
     const std::string& message,
     ncclResult_t result,
     ncclComm_t comm)
-    : message_(
+    : AssertionError(
           message + ": " + nccl_api.getErrorString(result) +
           " \nNCCL Last Error: " + nccl_api.getLastError(comm) +
           " \nBacktrace:\n" + folly::symbolizer::getStackTraceStr()),
       result_(result) {}
-
-const char* NCCLXException::what() const noexcept {
-  return message_.c_str();
-}
 
 ncclResult_t NCCLXException::getResult() const noexcept {
   return result_;

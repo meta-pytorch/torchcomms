@@ -25,6 +25,12 @@
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/utils/GraphCaptureSideStream.h"
 
+// CUDA_CHECK that throws AssertionError, like NCCLX_CHECK. Only for the raw
+// CUDA graph-capture calls; failures of operations that torch also provides
+// (events, streams, copies, device selection) stay RuntimeError, as in torch.
+#define NCCLX_CUDA_CHECK(cuda_api, call, err_str) \
+  CUDA_CHECK_THROW(cuda_api, call, err_str, ::torch::comms::AssertionError)
+
 namespace torch::comms {
 
 // Hint key names for NCCLX backend configuration

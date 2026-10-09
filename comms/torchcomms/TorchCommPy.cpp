@@ -8,6 +8,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/utils/pybind.h>
 
+#include "comms/torchcomms/AssertionErrorPy.hpp"
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/PyTorchCommBackend.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
@@ -54,6 +55,11 @@ auto py_opaque_class(py::module_& m, const char* name, Extra&&... extra) {
 
 PYBIND11_MODULE(_comms, m, py::mod_gil_not_used()) {
   m.doc() = "Python bindings for TorchComm";
+
+  // Global, to also cover functions bound in other modules (backends, c10d).
+  // Local too, so a catch-all translator registered later cannot shadow it.
+  py::register_exception_translator(&translateAssertionError);
+  py::register_local_exception_translator(&translateAssertionError);
 
   // Bind RedOpType enum
   py::enum_<ReduceOp::RedOpType>(
@@ -3016,6 +3022,8 @@ Args:
         }
         try {
           std::rethrow_exception(ep);
+        } catch (const AssertionError& e) {
+          return py::handle(PyExc_AssertionError)(e.what());
         } catch (const std::exception& e) {
           return py::handle(PyExc_RuntimeError)(e.what());
         }

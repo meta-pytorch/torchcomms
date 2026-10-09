@@ -360,6 +360,20 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
   // Graph timeout detection is handled by the watchdog thread at
   // graph_timeout_check_interval_ms, so no synchronous check is needed here.
 
+  // Without this, an async error that the watchdog has not polled yet would
+  // be reported by the next NCCLX call as an NCCLXException.
+  if (comm_state_ == CommState::NORMAL) {
+    ncclResult_t asyncErr = ncclSuccess;
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error");
+    if (asyncErr != ncclSuccess) {
+      comm_state_ = CommState::ERROR;
+    }
+  }
+
   if (comm_state_ == CommState::TIMEOUT) {
     if (options_.enable_reconfigure) {
       revokeNcclComm();
@@ -375,28 +389,34 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
       }
     }
   } else if (comm_state_ == CommState::ERROR) {
+    if (nccl_comm_ == nullptr) {
+      throw std::runtime_error("NCCLX Async Error: communicator was aborted");
+    }
     ncclResult_t asyncErr;
     NCCLX_CHECK(
         nccl_api_,
         nccl_comm_,
         nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
         "failed to get async error");
-    NCCLXException ncclException(
-        *nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_);
+    // Surfaced as a RuntimeError, like a timeout. NCCLXException
+    // (AssertionError) is for NCCLX calls that fail synchronously.
+    const std::runtime_error asyncError(
+        NCCLXException(*nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_)
+            .what());
     if (options_.enable_reconfigure) {
       // In reconfigurable mode we never abort the process: revoke the comm so
       // it can be reconfigured and surface the error to the caller.
       revokeNcclComm();
-      throw ncclException;
+      throw asyncError;
     }
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "
-                          << ncclException.what();
+                          << asyncError.what();
       runAbortHooks();
       std::abort();
     } else {
-      throw ncclException;
+      throw asyncError;
     }
   }
 }
