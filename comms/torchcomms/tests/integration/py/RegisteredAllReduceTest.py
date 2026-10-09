@@ -231,14 +231,27 @@ class RegisteredAllReduceTest(unittest.TestCase):
             )
         request.close()
 
-        too_small = torch.empty((1024,), dtype=torch.bfloat16, device=self.device)
-        too_small_out = torch.empty_like(too_small)
+        # Any positive multiple of 16 bytes registers; 2002 bytes does not.
+        unaligned = torch.empty((1001,), dtype=torch.bfloat16, device=self.device)
+        unaligned_out = torch.empty_like(unaligned)
         with self.assertRaises(RuntimeError):
-            self.comm.registered_all_reduce(too_small, too_small_out, too_small.nbytes)
+            self.comm.registered_all_reduce(unaligned, unaligned_out, unaligned.nbytes)
 
     def test_gated_residual_norm_epilogue_interleaves_with_plain(self) -> None:
-        rows = 64
-        hidden = 8192
+        self._check_gated_residual_norm(rows=64, hidden=8192, post_weight=True)
+
+    def test_gated_residual_norm_epilogue_without_post_weight(self) -> None:
+        # [redacted] decode (8192-wide) and SBD BS8 draft (4096-wide) rows, without
+        # a post-norm weight as [redacted] builds the epilogue.
+        if self.size != 4:
+            self.skipTest("8192- and 4096-wide epilogue rows are four-rank only")
+        for rows, hidden in ((10, 8192), (64, 8192), (112, 4096), (160, 4096)):
+            with self.subTest(rows=rows, hidden=hidden):
+                self._check_gated_residual_norm(rows, hidden, post_weight=False)
+
+    def _check_gated_residual_norm(
+        self, rows: int, hidden: int, post_weight: bool
+    ) -> None:
         elements = rows * hidden
         input_tensor = torch.full(
             (elements,), float(self.rank + 1), dtype=torch.bfloat16, device=self.device
@@ -253,7 +266,9 @@ class RegisteredAllReduceTest(unittest.TestCase):
         def rand(*shape: int) -> torch.Tensor:
             return torch.randn(*shape, generator=generator, device=self.device)
 
-        post_weight = (1.0 + 0.2 * rand(hidden)).to(torch.bfloat16)
+        post_norm_weight = (
+            (1.0 + 0.2 * rand(hidden)).to(torch.bfloat16) if post_weight else None
+        )
         pre_weight = (1.0 + 0.2 * rand(hidden)).to(torch.bfloat16)
         gate = rand(hidden) / 0.3
         gate_beta = torch.sigmoid(gate)
@@ -266,7 +281,7 @@ class RegisteredAllReduceTest(unittest.TestCase):
         norm = torchcomms.RegisteredAllReduceGatedResidualNorm(
             residual_in,
             residual_out,
-            post_weight,
+            post_norm_weight,
             pre_weight,
             gate_alpha,
             gate_beta,
@@ -295,9 +310,10 @@ class RegisteredAllReduceTest(unittest.TestCase):
             return torch.rsqrt(mean + eps).float()
 
         branch = torch.full((rows, hidden), expected_sum, device=self.device)
-        normed = (branch * rms_scale(branch, 1e-8) * post_weight.float()).to(
-            torch.bfloat16
-        )
+        normed = branch * rms_scale(branch, 1e-8)
+        if post_norm_weight is not None:
+            normed = normed * post_norm_weight.float()
+        normed = normed.to(torch.bfloat16)
         stream = (
             gate_alpha * residual_in.view(rows, hidden) + gate_beta * normed.float()
         )
