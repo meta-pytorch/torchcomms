@@ -11,6 +11,7 @@
 #include "meta/DeviceRackSerial.h" // @manual
 #include "meta/colltrace/CollTraceWrapper.h" // @manual
 #include "meta/comms-monitor/CommsMonitor.h" // @manual
+#include "meta/MnnvlCliqueId.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
@@ -1001,7 +1002,16 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
       }
       memcpy(&uuid0, info->fabricInfo.clusterUuid, sizeof(uuid0));
       memcpy(&uuid1, info->fabricInfo.clusterUuid + sizeof(uuid0), sizeof(uuid1));
-      if (ncclParamMNNVLCliqueId() == -2) {
+      if (NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE && NCCL_MNNVL_CLIQUE_SIZE <= 0) {
+        WARN("NCCL_MNNVL_CLIQUE_SIZE must be set to a positive integer when NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE "
+             "is set");
+        return ncclInvalidArgument;
+      }
+      if (NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE && NCCL_MNNVL_CLIQUE_SIZE > 0) {
+        int cliqueId = -1;
+        ncclx::assignMnnvlCliqueIdBasedOnCliqueSize(&cliqueId);
+        info->fabricInfo.cliqueId = cliqueId;
+      } else if (ncclParamMNNVLCliqueId() == -2) {
         nvmlPlatformInfo_t platformInfo = {0};
         NCCLCHECK(ncclNvmlDeviceGetPlatformInfo(nvmlDev, &platformInfo));
         INFO(NCCL_INIT, "MNNVL rack serial %s slot %d tray %d hostId %d peerType %d moduleId %d",
