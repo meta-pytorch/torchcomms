@@ -4,6 +4,7 @@
 
 #include <boost/icl/discrete_interval.hpp>
 #include <boost/icl/interval_map.hpp>
+#include <folly/Synchronized.h>
 #include <folly/concurrency/UnboundedQueue.h>
 #include <chrono>
 #include <memory>
@@ -54,7 +55,7 @@ class NetworkPerfMonitor {
   void storeCommInfo(CommLogData logMetadata, int cudaDev, int busId) {
     CommInfo commInfo = {
         .logMetaData = logMetadata, .cudaDev = cudaDev, .busId = busId};
-    commHashToCommInfo_[logMetadata.commHash] = commInfo;
+    (*commHashToCommInfo_.wlock())[logMetadata.commHash] = std::move(commInfo);
   }
 
   // Check if we need to record RDMA event
@@ -74,8 +75,10 @@ class NetworkPerfMonitor {
 
   folly::UMPSCQueue<RDMACompletionEvent, false /*mayBlock*/> queue_;
   folly::Synchronized<NetworkPerfStats> networkPerfStats_;
-  std::unordered_map<uint64_t, CommInfo>
-      commHashToCommInfo_; // commHash to commInfo
+  // commHash to commInfo. Written by communicator init threads, read by the
+  // dump and Scuba paths.
+  folly::Synchronized<std::unordered_map<uint64_t, CommInfo>>
+      commHashToCommInfo_;
   // to calculate bandwidth for the rank
   EventsAggregator eventsAggregator_;
   // per commHash bandwidth
