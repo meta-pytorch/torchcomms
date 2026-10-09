@@ -3511,8 +3511,9 @@ cvars:
    choices     : ibgda, ibrc
    description : |-
      Select the IB backend used by Pipes MultiPeerTransport for non-NVL peers.
-     ibgda - use GPU-posted IBGDA.
-     ibrc - use CPU-posted IBRC.
+     ibgda - use GPU-posted IBGDA, the only device-side IB backend.
+     ibrc - host-proxy only (CPU-posted IBRC, no device transport); rejected by
+     MCCL communicators.
 
  - name        : MCCL_IBGDA_RELIABLE_DOORBELL_MODE
    type        : enum
