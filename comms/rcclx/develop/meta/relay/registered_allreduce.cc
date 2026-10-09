@@ -226,6 +226,8 @@ struct StatePool {
     RegisteredAllReduceStateRegion* state;
     hipIpcMemHandle_t handle;
     uint64_t id;
+    // Header plus scratch; a slot serves any request needing at most this.
+    size_t bytes;
     bool busy;
   };
   struct Import {
@@ -534,17 +536,20 @@ ncclResult_t openPeerInput(
   return ncclSuccess;
 }
 
-// Binds a free pooled state region to the request, allocating one if every
-// region is in use. Finalize drained every kernel of a region's previous
-// request on all ranks, and peers write to it only after Init completes, so
-// resetting it here is safe.
+// Binds a free pooled state region at least as large as the request needs,
+// allocating one if none is free. Finalize drained every kernel of a region's
+// previous request on all ranks, and peers write to it only after Init
+// completes, so resetting its protocol header here is safe. Scratch is always
+// written before it is read within a call, so it is not cleared.
 ncclResult_t allocateLocalState(
     RegisteredAllReduce& request,
     InitRecord& record) {
   StatePool& pool = *request.pool;
+  const size_t needed = sizeof(RegisteredAllReduceStateRegion) +
+      registeredAllReduceScratchBytes(request.capacityBytes, request.nRanks);
   int slot = -1;
   for (size_t k = 0; k < pool.slots.size(); ++k) {
-    if (!pool.slots[k].busy) {
+    if (!pool.slots[k].busy && pool.slots[k].bytes >= needed) {
       slot = static_cast<int>(k);
       break;
     }
@@ -553,9 +558,7 @@ ncclResult_t allocateLocalState(
   if (slot < 0) {
     StatePool::Slot fresh{};
     hipResult = hipExtMallocWithFlags(
-        reinterpret_cast<void**>(&fresh.state),
-        sizeof(RegisteredAllReduceStateRegion),
-        kStateAllocFlags);
+        reinterpret_cast<void**>(&fresh.state), needed, kStateAllocFlags);
     if (hipResult != hipSuccess) {
       return hipToNccl(hipResult, "hipExtMallocWithFlags(state)");
     }
@@ -565,6 +568,7 @@ ncclResult_t allocateLocalState(
       return hipToNccl(hipResult, "hipIpcGetMemHandle(state)");
     }
     fresh.id = pool.nextId++;
+    fresh.bytes = needed;
     pool.slots.push_back(fresh);
     slot = static_cast<int>(pool.slots.size()) - 1;
   }
