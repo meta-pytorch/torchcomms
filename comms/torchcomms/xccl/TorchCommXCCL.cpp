@@ -2215,9 +2215,10 @@ namespace {
 class XCCLRegistration {
  public:
   XCCLRegistration() {
-    torch::comms::TorchCommFactory::get().register_backend("xccl", []() {
-      return std::make_shared<torch::comms::TorchCommXCCL>();
-    });
+    torch::comms::TorchCommFactory::get().register_backend(
+        "xccl",
+        []() { return std::make_shared<torch::comms::TorchCommXCCL>(); },
+        torch::comms::TORCHCOMM_BACKEND_ABI_VERSION);
 
     // Register allocator factory with its own xccl_api instance
     torch::comms::TorchCommFactory::get().register_allocator_factory(

@@ -19,7 +19,9 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.5";
+// TorchWork's synchronized lifecycle state and terminal-status-producer
+// metadata are part of the cross-DSO backend ABI.
+inline constexpr char TORCHCOMM_BACKEND_ABI_VERSION[] = "1.6";
 
 // Epilogue applied to the all-reduced rows (one row per hidden-size slice):
 //   normed       = bf16(reduced * rsqrt(mean(reduced^2) + post_norm_eps) *

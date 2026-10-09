@@ -3314,9 +3314,10 @@ namespace {
 class RCCLXRegistration {
  public:
   RCCLXRegistration() {
-    torch::comms::TorchCommFactory::get().register_backend("rcclx", []() {
-      return std::make_shared<torch::comms::TorchCommRCCLX>();
-    });
+    torch::comms::TorchCommFactory::get().register_backend(
+        "rcclx",
+        []() { return std::make_shared<torch::comms::TorchCommRCCLX>(); },
+        torch::comms::TORCHCOMM_BACKEND_ABI_VERSION);
 
     // Register allocator factory with its own rcclx_api instance
     torch::comms::TorchCommFactory::get().register_allocator_factory(
