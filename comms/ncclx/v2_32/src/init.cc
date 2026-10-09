@@ -9,6 +9,7 @@
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxPerCommConfig.h" // @manual
 #include "meta/DeviceRackSerial.h" // @manual
+#include "meta/colltrace/CollTraceWrapper.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
@@ -2311,6 +2312,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
          comm->cudaDev);
   }
 
+  // [META] Before createCtranComm, which hands comm->newCollTrace to CTRAN.
+  NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
+
   if (comm->useCtran_) {
     NCCLCHECKGOTO(createCtranComm(comm), res, fail);
   }
@@ -3305,6 +3309,16 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
 
+  /*
+   * NCCLX - Resource Cleanup.
+   * commFree() releases the comm with a raw free(), so no destructor runs on
+   * ncclComm. This drops the comm's CollTrace reference (CTRAN's copy goes with
+   * destroyCtranComm below), and it has to happen before ncclProxyStop() and the
+   * intra-node barrier further down.
+   */
+  if (meta::comms::ncclx::newCollTraceDestroy(comm) != ncclSuccess) {
+    WARN("commDestroySync: comm %p rank %d failed to destroy CollTrace; continuing teardown", comm, comm->rank);
+  }
   NCCLCHECKGOTO(destroyCtranComm(comm), ret, fail);
 
   TRACE(NCCL_DESTROY, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank,
