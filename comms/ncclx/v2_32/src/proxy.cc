@@ -24,6 +24,8 @@
 #include <cinttypes>
 #include <thread>
 
+#include "meta/colltrace/ProxyTraceFunc.h" // @manual
+
 #define NCCL_MAX_PROXY_CONNECTIONS (NCCL_MAX_LOCAL_RANKS + 1)
 
 enum {
@@ -372,6 +374,7 @@ static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyAr
     return ncclInternalError;
   }
   // memset(sub, 0, sizeof(struct ncclProxySubArgs));
+  PROXY_TRACE_OP_TO_SUBARGS(sub, op);
   sub->connection = op->connection;
   sub->channelId = op->channelId;
   sub->nsteps = op->nsteps;
@@ -2121,6 +2124,7 @@ ncclResult_t ncclProxyInit(struct ncclComm* comm, struct ncclSocket* sock, union
   comm->proxyState->peerAddresses = peerAddresses;
   comm->proxyState->peerAddressesUDS = peerAddressesUDS;
   comm->proxyState->netAttr = NCCL_NET_ATTR_INIT;
+  NCCLCHECK(ncclx::colltrace::proxyTraceInit(comm->proxyState, comm));
 
   // UDS support
   NCCLCHECK(ncclIpcSocketInit(&comm->proxyState->ipcSock, comm->rank, peerAddressesUDS[comm->rank], comm->abortFlag));
@@ -2218,6 +2222,11 @@ ncclResult_t ncclProxyDestroy(struct ncclComm* comm) {
       WARN("Proxy state refCount is %d, expected 0", sharedProxyState->refCount);
       return ncclInternalError;
     }
+    // NCCLX - ProxyTrace. Deliberately inside the guard and after the refCount
+    // check: proxyTraceDestroy() dereferences state without a null check, and
+    // on the refCount != 0 path the state object survives with a progress thread
+    // that may still be reading trace through PROXY_TRACE_CALL.
+    NCCLCHECK(ncclx::colltrace::proxyTraceDestroy(sharedProxyState));
     free(sharedProxyState->peerAddresses);
     free(sharedProxyState->peerAddressesUDS);
     free(sharedProxyState->peerSocks);
