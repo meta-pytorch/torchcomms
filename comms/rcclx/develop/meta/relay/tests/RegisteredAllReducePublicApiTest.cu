@@ -950,7 +950,7 @@ TEST_F(RegisteredAllReduceTest, PublicExecForwardsGatedResidualNorm) {
   norm.preNormEpsilon = 0.0f;
 
   auto invalid = norm;
-  invalid.hiddenSize = kHidden / 2;
+  invalid.hiddenSize = kHidden / 4; // No epilogue serves 2048-wide rows.
   EXPECT_EQ(
       ncclRegisteredAllReduceExec(
           input,
@@ -1422,11 +1422,18 @@ TEST_F(RegisteredAllReduceTest, WideGatedResidualNormRejectsInvalidShapes) {
   noPre.preNormWeight = nullptr;
   EXPECT_EQ(result(8 * kWideHidden, noPre), ncclInvalidArgument);
   auto other = norm;
-  other.hiddenSize = 4096;
-  EXPECT_EQ(result(8 * 4096, other), ncclInvalidArgument);
-  auto noPostWide8192 = norm;
-  noPostWide8192.hiddenSize = 8192;
-  EXPECT_EQ(result(64 * 8192, noPostWide8192), ncclInvalidArgument);
+  other.hiddenSize = 2048;
+  EXPECT_EQ(result(8 * 2048, other), ncclInvalidArgument);
+  // 8192- and 4096-wide rows are four-rank only; a partial row never fits.
+  auto rows8192 = norm;
+  rows8192.hiddenSize = 8192;
+  auto rows4096 = norm;
+  rows4096.hiddenSize = 4096;
+  EXPECT_EQ(result(8192 + 8, rows8192), ncclInvalidArgument);
+  if (numRanks == 2) {
+    EXPECT_EQ(result(8 * 4096, rows4096), ncclInvalidArgument);
+    EXPECT_EQ(result(16 * 8192, rows8192), ncclInvalidArgument);
+  }
   finalizeRequest();
 }
 

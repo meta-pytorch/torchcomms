@@ -167,6 +167,16 @@ uint64_t registeredAllReduceRelayLaunchesForTest();
 ncclResult_t registeredAllReduceSetCtaEpochsForTest(
     RegisteredAllReduce* request,
     uint32_t epoch);
+// Sets one epilogue's per-row call counter and the words peers write into
+// this rank's state region for it to `epoch`, as after that many of its calls
+// on every row: the 64 x 8192 epilogue's (calls, start, midpoint) or, with
+// `rowEpilogue`, the row epilogue's (rowCalls, rowStart, quarter). The other
+// epilogue's words are left as they are. Rank-local, like
+// registeredAllReduceSetCtaEpochsForTest.
+ncclResult_t registeredAllReduceSetRowEpochsForTest(
+    RegisteredAllReduce* request,
+    uint32_t epoch,
+    bool rowEpilogue);
 // Starts a public request's relay sequence counters at `sequence` (see
 // registeredRelaySetSequenceForTest).
 ncclResult_t registeredAllReduceSetRelaySequenceForTest(

@@ -1054,6 +1054,258 @@ TEST_F(RegisteredAllReduceTest, GatedResidualNormInterleavesWithPlainAndGraph) {
   finalizeRequest();
 }
 
+// The row epilogue at its served shapes (1-64 rows of 8192, 1-160 rows of
+// 4096), with and without a post-norm weight: each fused execution must equal
+// the expected all-reduce followed by the row epilogue alone (whose arithmetic
+// is checked bit for bit against the production Triton kernel separately), on
+// all three outputs, eagerly and replayed from a graph between plain
+// executions. Larger row counts are rejected.
+TEST_F(RegisteredAllReduceTest, RowEpilogueMatchesReducedRowsThenEpilogue) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  constexpr size_t kMaxRows = rcclx::relay::kRegisteredAllReduceMaxRows;
+  constexpr size_t kMaxCount = kMaxRows * kNormHidden;
+  constexpr size_t kLarge = kMaxCount * sizeof(uint16_t);
+  uint16_t* largeIn = nullptr;
+  uint16_t* largeOut = nullptr;
+  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
+  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
+  struct Rows {
+    float* residualIn{nullptr};
+    float* residualOut{nullptr};
+    float* routerOut{nullptr};
+    uint16_t* reduced{nullptr};
+    uint16_t* expectedOutput{nullptr};
+    float* expectedResidual{nullptr};
+    float* expectedRouter{nullptr};
+    uint16_t* postWeight{nullptr};
+    uint16_t* preWeight{nullptr};
+    float* alpha{nullptr};
+    float* beta{nullptr};
+  } rows{};
+  for (float** buffer :
+       {&rows.residualIn,
+        &rows.residualOut,
+        &rows.routerOut,
+        &rows.expectedResidual,
+        &rows.expectedRouter}) {
+    HIPCHECK_TEST(hipMalloc(buffer, kMaxCount * sizeof(float)));
+  }
+  for (uint16_t** buffer : {&rows.reduced, &rows.expectedOutput}) {
+    HIPCHECK_TEST(hipMalloc(buffer, kLarge));
+  }
+  HIPCHECK_TEST(hipMalloc(&rows.postWeight, kNormHidden * sizeof(uint16_t)));
+  HIPCHECK_TEST(hipMalloc(&rows.preWeight, kNormHidden * sizeof(uint16_t)));
+  HIPCHECK_TEST(hipMalloc(&rows.alpha, kNormHidden * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&rows.beta, kNormHidden * sizeof(float)));
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
+      ncclSuccess);
+  input = largeIn;
+  output = largeOut;
+
+  int generation = 170;
+  auto prepare = [&](size_t hidden, size_t rowCount, bool postWeight) {
+    const size_t count = hidden * rowCount;
+    const uint32_t seed = static_cast<uint32_t>(generation);
+    std::vector<float> residual(count);
+    for (size_t i = 0; i < count; ++i) {
+      const float scale = (i / hidden) % 3 == 0 ? 50.0f : 1.0f;
+      residual[i] = scale * mixedUnit(seed * 4 + globalRank, i);
+    }
+    std::vector<uint16_t> post(hidden), pre(hidden);
+    std::vector<float> alpha(hidden), beta(hidden);
+    for (size_t channel = 0; channel < hidden; ++channel) {
+      post[channel] =
+          floatToBfloat16(1.0f + 0.2f * mixedUnit(seed + 101, channel));
+      pre[channel] =
+          floatToBfloat16(1.0f + 0.2f * mixedUnit(seed + 202, channel));
+      const float gate = 3.0f * mixedUnit(seed + 303, channel);
+      beta[channel] = 1.0f / (1.0f + std::exp(-gate));
+      alpha[channel] = std::sqrt(
+          std::fmax(
+              (1.0f / (1.0f + std::exp(gate))) * (1.0f + beta[channel]),
+              1e-3f));
+    }
+    std::vector<uint16_t> reduced(count);
+    for (size_t i = 0; i < count; ++i) {
+      reduced[i] = expectedOutputBits(i, generation, count);
+    }
+    HIPCHECK_TEST(hipMemcpy(
+        rows.residualIn, residual.data(), count * 4, hipMemcpyHostToDevice));
+    HIPCHECK_TEST(hipMemcpy(
+        rows.postWeight, post.data(), hidden * 2, hipMemcpyHostToDevice));
+    HIPCHECK_TEST(hipMemcpy(
+        rows.preWeight, pre.data(), hidden * 2, hipMemcpyHostToDevice));
+    HIPCHECK_TEST(
+        hipMemcpy(rows.alpha, alpha.data(), hidden * 4, hipMemcpyHostToDevice));
+    HIPCHECK_TEST(
+        hipMemcpy(rows.beta, beta.data(), hidden * 4, hipMemcpyHostToDevice));
+    HIPCHECK_TEST(hipMemcpy(
+        rows.reduced, reduced.data(), count * 2, hipMemcpyHostToDevice));
+    rcclx::relay::RegisteredAllReduceGatedResidualNormArgs args{};
+    args.residualIn = rows.residualIn;
+    args.residualOut = rows.expectedResidual;
+    args.routerOut = rows.expectedRouter;
+    args.postNormWeight = postWeight
+        ? reinterpret_cast<const __nv_bfloat16*>(rows.postWeight)
+        : nullptr;
+    args.preNormWeight = reinterpret_cast<const __nv_bfloat16*>(rows.preWeight);
+    args.gateAlpha = rows.alpha;
+    args.gateBeta = rows.beta;
+    args.postNormEpsilon = kPostNormEpsilon;
+    args.preNormEpsilon = kPreNormEpsilon;
+    HIPCHECK_TEST(
+        rcclx::relay::launchRegisteredAllReduceRowNormForTest(
+            rows.reduced,
+            rows.expectedOutput,
+            hidden,
+            static_cast<int>(rowCount),
+            args,
+            stream));
+    std::vector<uint16_t> host;
+    fillInputAsync(count * 2, generation, host);
+    clearOutputAsync(count * 2);
+    HIPCHECK_TEST(hipMemsetAsync(rows.residualOut, 0xff, count * 4, stream));
+    HIPCHECK_TEST(hipMemsetAsync(rows.routerOut, 0xff, count * 4, stream));
+    syncStream("row epilogue reference");
+  };
+  auto descriptor = [&](size_t hidden, bool postWeight) {
+    ncclRegisteredAllReduceGatedResidualNorm d{};
+    d.residualIn = rows.residualIn;
+    d.residualOut = rows.residualOut;
+    d.routerOut = rows.routerOut;
+    d.postNormWeight = postWeight ? rows.postWeight : nullptr;
+    d.preNormWeight = rows.preWeight;
+    d.gateAlpha = rows.alpha;
+    d.gateBeta = rows.beta;
+    d.hiddenSize = hidden;
+    d.postNormEpsilon = kPostNormEpsilon;
+    d.preNormEpsilon = kPreNormEpsilon;
+    return d;
+  };
+  auto matches = [&](size_t count, const char* what) {
+    bool ok = sameBits(output, rows.expectedOutput, count, what);
+    ok = sameBits(rows.residualOut, rows.expectedResidual, count, what) && ok;
+    return sameBits(rows.routerOut, rows.expectedRouter, count, what) && ok;
+  };
+
+  const std::vector<std::pair<size_t, size_t>> shapes = {
+      {8192, 1},
+      {8192, 10},
+      {8192, 33},
+      {8192, 64},
+      {4096, 1},
+      {4096, 20},
+      {4096, 112},
+      {4096, 159},
+      {4096, 160}};
+  for (const auto& [hidden, rowCount] : shapes) {
+    for (bool postWeight : {false, true}) {
+      prepare(hidden, rowCount, postWeight);
+      const auto d = descriptor(hidden, postWeight);
+      execute(hidden * rowCount * 2, &d);
+      syncStream("row epilogue eager");
+      EXPECT_TRUE(allVote(matches(hidden * rowCount, "row epilogue eager")))
+          << hidden << " x " << rowCount << " postWeight " << postWeight;
+      ++generation;
+    }
+  }
+
+  for (const auto& [hidden, rowCount] :
+       std::vector<std::pair<size_t, size_t>>{{8192, 65}, {4096, 161}}) {
+    const auto d = descriptor(hidden, false);
+    EXPECT_EQ(executeNormResult(d, hidden * rowCount * 2), ncclInvalidArgument)
+        << hidden << " x " << rowCount;
+  }
+
+  // Graph replays of the [redacted] decode (64 x 8192) and SBD BS8 draft
+  // (112 x 4096) shapes interleaved with plain calls.
+  for (const auto& [hidden, rowCount] :
+       std::vector<std::pair<size_t, size_t>>{{8192, 64}, {4096, 112}}) {
+    prepare(hidden, rowCount, false);
+    const auto d = descriptor(hidden, false);
+    GraphRun graph = captureExecute(hidden * rowCount * 2, &d);
+    for (int replay = 0; replay < 3; ++replay) {
+      prepare(hidden, rowCount, false);
+      HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+      syncStream("row epilogue graph");
+      EXPECT_TRUE(allVote(matches(hidden * rowCount, "row epilogue graph")))
+          << hidden << " x " << rowCount << ", replay " << replay;
+      ++generation;
+      std::vector<uint16_t> host;
+      fillInputAsync(3145728, generation, host);
+      clearOutputAsync(3145728);
+      execute(3145728);
+      syncStream("plain between replays");
+      expectOutput(3145728, generation, "plain between replays");
+      ++generation;
+    }
+    destroyGraph(graph);
+  }
+
+  // With a post-norm weight, 64 rows of 8192 run the 64 x 8192 epilogue and
+  // fewer rows the row epilogue, on the same rows' protocol words. Put one
+  // epilogue's epochs 2^31 + 37 calls ahead of the other's (as after that many
+  // of its calls), then alternate the two: each must still wait for its
+  // peers, so every output stays exact. Then the other way round.
+  const auto bothEpilogues = [&](const char* what) {
+    for (int round = 0; round < 4; ++round) {
+      for (size_t rowCount : {size_t{32}, size_t{64}, size_t{10}}) {
+        prepare(8192, rowCount, true);
+        const auto d = descriptor(8192, true);
+        execute(8192 * rowCount * 2, &d);
+        syncStream(what);
+        EXPECT_TRUE(allVote(matches(8192 * rowCount, what)))
+            << rowCount << " rows, round " << round;
+        ++generation;
+      }
+    }
+  };
+  bothEpilogues("both epilogues");
+  syncStream("before aging the 64 x 8192 epochs");
+  barrier();
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceSetRowEpochsForTest(
+          request, 0x80000000u + 37u, false),
+      ncclSuccess);
+  barrier();
+  bothEpilogues("after aged 64 x 8192 epochs");
+  syncStream("before aging the row epilogue epochs");
+  barrier();
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceSetRowEpochsForTest(
+          request, 0xC0000000u + 11u, true),
+      ncclSuccess);
+  barrier();
+  bothEpilogues("after aged row epilogue epochs");
+
+  finalizeRequest();
+  input = fixtureIn;
+  output = fixtureOut;
+  for (void* buffer :
+       {static_cast<void*>(rows.residualIn),
+        static_cast<void*>(rows.residualOut),
+        static_cast<void*>(rows.routerOut),
+        static_cast<void*>(rows.reduced),
+        static_cast<void*>(rows.expectedOutput),
+        static_cast<void*>(rows.expectedResidual),
+        static_cast<void*>(rows.expectedRouter),
+        static_cast<void*>(rows.postWeight),
+        static_cast<void*>(rows.preWeight),
+        static_cast<void*>(rows.alpha),
+        static_cast<void*>(rows.beta),
+        static_cast<void*>(largeOut),
+        static_cast<void*>(largeIn)}) {
+    HIPCHECK_TEST(hipFree(buffer));
+  }
+}
+
 TEST_F(RegisteredAllReduceTest, GatedResidualNormRejectsInvalidArguments) {
   if (!isSupportedTopology()) {
     GTEST_SKIP() << "Test requires the supported registered topology";
@@ -1067,8 +1319,9 @@ TEST_F(RegisteredAllReduceTest, GatedResidualNormRejectsInvalidArguments) {
     return executeNormResult(descriptor) == ncclInvalidArgument;
   };
 
-  EXPECT_EQ(executeNormResult(valid, kHalfMiB), ncclInvalidArgument);
-  EXPECT_TRUE(rejected([](auto& d) { d.hiddenSize = 4096; }));
+  // A partial row, and a row width no epilogue serves.
+  EXPECT_EQ(executeNormResult(valid, kHalfMiB + 16), ncclInvalidArgument);
+  EXPECT_TRUE(rejected([](auto& d) { d.hiddenSize = 2048; }));
   EXPECT_TRUE(rejected([](auto& d) { d.residualIn = nullptr; }));
   EXPECT_TRUE(rejected([](auto& d) { d.residualOut = nullptr; }));
   EXPECT_TRUE(rejected([](auto& d) { d.gateBeta = nullptr; }));
@@ -1435,7 +1688,8 @@ TEST_F(RegisteredAllReduceTest, StateRegionsGrowWithCapacity) {
   if (!isSupportedTopology()) {
     GTEST_SKIP() << "Test requires the supported registered topology";
   }
-  constexpr size_t kLarge = 7 * kOneMiB;
+  // Larger than any other request in this suite, so it cannot reuse a region.
+  constexpr size_t kLarge = 12 * kOneMiB;
   createRequest();
   finalizeRequest();
   const size_t imports =
@@ -1750,6 +2004,125 @@ TEST_F(RegisteredAllReduceTest, CommDestroyReleasesStatePool) {
 // GPUs (two-stage) and on one with the relay route (taken from
 // NCCL_REGISTERED_AR_TP4_RELAY_MIN_BYTES), with the tuned 0.5 / 1 MiB kernels
 // and their "+16 B" neighbours as calibration.
+// Opt-in: the row epilogue fused into the all-reduce against the plain
+// all-reduce, at [redacted] decode and SBD shapes (graph replays, per call).
+TEST_F(RegisteredAllReduceTest, Z_SbdEpilogueTiming) {
+  const char* on = getenv("REGISTERED_AR_SBD_PERF");
+  if (on == nullptr || on[0] != '1' || !isSupportedTopology()) {
+    GTEST_SKIP() << "set REGISTERED_AR_SBD_PERF=1 on four ranks";
+  }
+  constexpr size_t kMaxCount = 448 * 8192;
+  constexpr size_t kLarge = kMaxCount * sizeof(uint16_t);
+  uint16_t* largeIn = nullptr;
+  uint16_t* largeOut = nullptr;
+  float* residualIn = nullptr;
+  float* residualOut = nullptr;
+  float* routerOut = nullptr;
+  uint16_t* weight = nullptr;
+  float* gates = nullptr;
+  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
+  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
+  HIPCHECK_TEST(hipMalloc(&residualIn, kMaxCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&residualOut, kMaxCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&routerOut, kMaxCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&weight, 8192 * sizeof(uint16_t)));
+  HIPCHECK_TEST(hipMalloc(&gates, 8192 * sizeof(float)));
+  HIPCHECK_TEST(hipMemset(largeIn, 0x3c, kLarge));
+  HIPCHECK_TEST(hipMemset(residualIn, 0, kMaxCount * sizeof(float)));
+  HIPCHECK_TEST(hipMemset(weight, 0x3f, 8192 * sizeof(uint16_t)));
+  HIPCHECK_TEST(hipMemset(gates, 0, 8192 * sizeof(float)));
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
+      ncclSuccess);
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  input = largeIn;
+  output = largeOut;
+
+  constexpr int kReplays = 200;
+  const auto time = [&](size_t bytes,
+                        const ncclRegisteredAllReduceGatedResidualNorm* norm,
+                        float* result) {
+    GraphRun graph = captureExecute(bytes, norm);
+    for (int i = 0; i < 10; ++i) {
+      HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+    }
+    syncStream("epilogue timing warmup");
+    std::vector<float> samples;
+    for (int round = 0; round < 7; ++round) {
+      barrier();
+      hipEvent_t start = nullptr;
+      hipEvent_t end = nullptr;
+      HIPCHECK_TEST(hipEventCreate(&start));
+      HIPCHECK_TEST(hipEventCreate(&end));
+      HIPCHECK_TEST(hipEventRecord(start, stream));
+      for (int i = 0; i < kReplays; ++i) {
+        HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+      }
+      HIPCHECK_TEST(hipEventRecord(end, stream));
+      HIPCHECK_TEST(hipEventSynchronize(end));
+      float ms = 0;
+      HIPCHECK_TEST(hipEventElapsedTime(&ms, start, end));
+      samples.push_back(ms * 1000.0f / kReplays);
+      HIPCHECK_TEST(hipEventDestroy(start));
+      HIPCHECK_TEST(hipEventDestroy(end));
+    }
+    std::sort(samples.begin(), samples.end());
+    destroyGraph(graph);
+    *result = samples[samples.size() / 2];
+  };
+  for (const auto& [hidden, rows, router] :
+       std::vector<std::tuple<size_t, size_t, bool>>{
+           {8192, 10, true},
+           {8192, 32, true},
+           {8192, 64, true},
+           {4096, 20, false},
+           {4096, 64, false},
+           {4096, 112, false},
+           {4096, 160, false}}) {
+    ncclRegisteredAllReduceGatedResidualNorm norm{};
+    norm.residualIn = residualIn;
+    norm.residualOut = residualOut;
+    norm.routerOut = router ? routerOut : nullptr;
+    norm.preNormWeight = weight;
+    norm.gateAlpha = gates;
+    norm.gateBeta = gates;
+    norm.hiddenSize = hidden;
+    norm.postNormEpsilon = kPostNormEpsilon;
+    norm.preNormEpsilon = kPreNormEpsilon;
+    const size_t bytes = hidden * rows * sizeof(uint16_t);
+    float plain = 0;
+    float fused = 0;
+    time(bytes, nullptr, &plain);
+    time(bytes, &norm, &fused);
+    if (globalRank == 0) {
+      printf(
+          "SBD_EPILOGUE %4zu x %4zu router %d plain %8.2f us fused %8.2f us\n",
+          rows,
+          hidden,
+          router ? 1 : 0,
+          plain,
+          fused);
+      fflush(stdout);
+    }
+  }
+  finalizeRequest();
+  input = fixtureIn;
+  output = fixtureOut;
+  for (void* buffer :
+       {static_cast<void*>(largeIn),
+        static_cast<void*>(largeOut),
+        static_cast<void*>(residualIn),
+        static_cast<void*>(residualOut),
+        static_cast<void*>(routerOut),
+        static_cast<void*>(weight),
+        static_cast<void*>(gates)}) {
+    HIPCHECK_TEST(hipFree(buffer));
+  }
+}
+
 TEST_F(RegisteredAllReduceTest, Z_SbdPayloadTiming) {
   const char* on = getenv("REGISTERED_AR_SBD_PERF");
   if (on == nullptr || on[0] != '1' || !isSupportedTopology()) {

@@ -73,15 +73,33 @@ static_assert(
 // Epilogue rows with their own protocol line (the SBD verify forward carries up
 // to 448 rows).
 constexpr int kRegisteredAllReduceMaxRows = 512;
+
+// The row epilogue serves 1 to 64 rows of 8192 and 1 to 160 rows of 4096
+// elements on four ranks (post-norm weight optional), where it is faster than
+// the all-reduce followed by the reference Triton kernel; each rank's scratch
+// holds its quarter of every row.
+constexpr int kRegisteredAllReduceNarrowNormHidden = 4096;
+constexpr int kRegisteredAllReduceRowNormMaxRows = 64;
+constexpr int kRegisteredAllReduceNarrowRowNormMaxRows = 160;
+static_assert(
+    kRegisteredAllReduceNarrowRowNormMaxRows <= kRegisteredAllReduceMaxRows);
 static_assert(kRegisteredAllReduceRows <= kRegisteredAllReduceMaxRows);
 
-// Protocol words of one epilogue row CTA, on their own 256-byte line. The row
-// owner collects start epochs from the other ranks and publishes the midpoint
-// epoch once the reduced row is in its scratch.
+// Protocol words of one epilogue row CTA, on their own 256-byte line. The
+// 64 x 8192 epilogue counts its calls in `calls`: non-owners publish start
+// epochs (inputs ready) to the row owner, which publishes the midpoint epoch
+// once the reduced row is in its scratch. The row epilogue counts its calls in
+// `rowCalls`: every rank publishes `rowStart` epochs to every peer, then a
+// quarter epoch once its quarter of the row is in its scratch. Each epilogue
+// polls only words that every one of its calls advances, so a word trails its
+// waiter by at most one call however the two epilogues interleave on a row.
 struct alignas(256) RegisteredAllReduceRowState {
   uint32_t start[kRegisteredAllReduceRanks];
   uint32_t midpoint;
   uint32_t calls;
+  uint32_t rowStart[kRegisteredAllReduceRanks];
+  uint32_t quarter[kRegisteredAllReduceRanks];
+  uint32_t rowCalls;
 };
 
 // The fixed protocol header of a state region. A four-rank request's scratch
@@ -199,6 +217,17 @@ hipError_t launchRegisteredAllReduceKernel(
     hipStream_t stream,
     int nRanks = kRegisteredAllReduceRanks,
     size_t hiddenSize = kRegisteredAllReduceNormHidden);
+
+// Test-only: the row epilogue alone on already-reduced rows (as the four-rank
+// row epilogue applies it), for checking its arithmetic against the reference
+// kernel.
+hipError_t launchRegisteredAllReduceRowNormForTest(
+    const void* reducedRows,
+    void* output,
+    size_t hiddenSize,
+    int rows,
+    const RegisteredAllReduceGatedResidualNormArgs& norm,
+    hipStream_t stream);
 
 // Reads 16 bytes at each of `count` addresses (a device array) into out[2i],
 // out[2i + 1] with plain 16-byte loads, the way the kernels read peer inputs.
