@@ -7,10 +7,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -1487,6 +1489,70 @@ TEST_F(RegisteredAllReduceTest, StateRegionsGrowWithCapacity) {
   EXPECT_EQ(rcclx::relay::registeredAllReduceLiveStateAllocationsForTest(), 0u);
 }
 
+// Every four-rank payload from AITER's two-stage cutover runs the two-stage
+// kernel: the SBD decode sizes, a vector count that leaves the last quarter
+// longer, and the cutover itself, interleaved with the 0.5 / 1 MiB kernels on
+// one request, eagerly and replayed from a graph, all exact.
+TEST_F(RegisteredAllReduceTest, TwoStageServesPayloadsFromTheCutover) {
+  if (!isSupportedTopology()) {
+    GTEST_SKIP() << "Test requires the supported registered topology";
+  }
+  constexpr size_t kLarge = 7 * kOneMiB;
+  const std::vector<size_t> sizes = {
+      160 * 1024,
+      917504,
+      917504 + 16,
+      1966080,
+      kHalfMiB,
+      3145728,
+      kOneMiB,
+      7340032,
+      7340032 - 48,
+  };
+  uint16_t* largeIn = nullptr;
+  uint16_t* largeOut = nullptr;
+  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
+  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
+      ncclSuccess);
+  input = largeIn;
+  output = largeOut;
+  std::vector<uint16_t> host;
+  int generation = 130;
+  for (size_t bytes : sizes) {
+    fillInputAsync(bytes, generation, host);
+    clearOutputAsync(bytes);
+    execute(bytes);
+    syncStream("two-stage eager");
+    expectOutput(bytes, generation, "two-stage eager");
+    ++generation;
+  }
+
+  for (size_t bytes : {size_t{3145728}, size_t{7340032}}) {
+    GraphRun graph = captureExecute(bytes);
+    for (int replay = 0; replay < 3; ++replay) {
+      fillInputAsync(bytes, generation, host);
+      clearOutputAsync(bytes);
+      HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+      syncStream("two-stage graph");
+      expectOutput(bytes, generation, "two-stage graph");
+      ++generation;
+    }
+    destroyGraph(graph);
+  }
+
+  finalizeRequest();
+  input = fixtureIn;
+  output = fixtureOut;
+  HIPCHECK_TEST(hipFree(largeOut));
+  HIPCHECK_TEST(hipFree(largeIn));
+}
+
 // The fused epilogue ([redacted]'s decode path, where the freed-state
 // corruption was first seen) on requests registered over freshly allocated
 // input, output and epilogue buffers, finalized and freed every round: outputs
@@ -1573,6 +1639,97 @@ TEST_F(RegisteredAllReduceTest, CommDestroyReleasesStatePool) {
       rcclx::relay::registeredAllReducePooledStateImportsForTest(),
       importsBefore)
       << "ncclCommDestroy must release the pooled state";
+}
+
+// Opt-in timing at [redacted] SBD decode payloads (REGISTERED_AR_SBD_PERF=1):
+// one all-reduce per graph replay, the same measure as the SGLang SBD
+// benchmark's per-call column, with the 0.5 / 1 MiB kernels as calibration.
+// "+16 B" sizes run the two-stage kernel next to the tuned 0.5 / 1 MiB
+// kernels.
+TEST_F(RegisteredAllReduceTest, Z_SbdPayloadTiming) {
+  const char* on = getenv("REGISTERED_AR_SBD_PERF");
+  if (on == nullptr || on[0] != '1' || !isSupportedTopology()) {
+    GTEST_SKIP() << "set REGISTERED_AR_SBD_PERF=1 on four ranks";
+  }
+  constexpr size_t kLarge = 7 * kOneMiB;
+  uint16_t* largeIn = nullptr;
+  uint16_t* largeOut = nullptr;
+  HIPCHECK_TEST(hipMalloc(&largeIn, kLarge));
+  HIPCHECK_TEST(hipMalloc(&largeOut, kLarge));
+  HIPCHECK_TEST(hipMemset(largeIn, 0x3c, kLarge));
+  uint16_t* const fixtureIn = input;
+  uint16_t* const fixtureOut = output;
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReducePrepare(comm, &request), ncclSuccess);
+  ASSERT_EQ(
+      rcclx::relay::registeredAllReduceInit(request, largeIn, largeOut, kLarge),
+      ncclSuccess);
+  input = largeIn;
+  output = largeOut;
+
+  constexpr int kReplays = 200;
+  // rows x 8192 and rows x 4096 decode payloads from AITER's two-stage cutover
+  // to the largest SBD verify shape, plus the tuned kernels' neighbours.
+  std::vector<std::pair<std::string, size_t>> sizes = {
+      {"0.5 MiB tuned", kHalfMiB},
+      {"1 MiB tuned", kOneMiB},
+      {"0.5 MiB + 16 B", kHalfMiB + 16},
+      {"1 MiB + 16 B", kOneMiB + 16},
+  };
+  for (const auto& [width, rowsList] :
+       std::vector<std::pair<size_t, std::vector<size_t>>>{
+           {8192, {10, 16, 24, 48, 96, 120, 128, 192, 256, 320, 384, 448}},
+           {4096, {20, 40, 48, 96, 112, 160, 224, 256, 320, 384}}}) {
+    for (size_t rows : rowsList) {
+      sizes.emplace_back(
+          std::to_string(rows) + "x" + std::to_string(width),
+          rows * width * sizeof(uint16_t));
+    }
+  }
+  {
+    for (const auto& [label, bytes] : sizes) {
+      GraphRun graph = captureExecute(bytes);
+      for (int i = 0; i < 10; ++i) {
+        HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+      }
+      syncStream("timing warmup");
+      std::vector<float> samples;
+      for (int round = 0; round < 7; ++round) {
+        barrier();
+        hipEvent_t start = nullptr;
+        hipEvent_t end = nullptr;
+        HIPCHECK_TEST(hipEventCreate(&start));
+        HIPCHECK_TEST(hipEventCreate(&end));
+        HIPCHECK_TEST(hipEventRecord(start, stream));
+        for (int i = 0; i < kReplays; ++i) {
+          HIPCHECK_TEST(hipGraphLaunch(graph.exec, stream));
+        }
+        HIPCHECK_TEST(hipEventRecord(end, stream));
+        HIPCHECK_TEST(hipEventSynchronize(end));
+        float ms = 0;
+        HIPCHECK_TEST(hipEventElapsedTime(&ms, start, end));
+        samples.push_back(ms * 1000.0f / kReplays);
+        HIPCHECK_TEST(hipEventDestroy(start));
+        HIPCHECK_TEST(hipEventDestroy(end));
+      }
+      std::sort(samples.begin(), samples.end());
+      destroyGraph(graph);
+      if (globalRank == 0) {
+        printf(
+            "SBD_TIMING %-22s %8zu B median %8.2f us min %8.2f us\n",
+            label.c_str(),
+            bytes,
+            samples[samples.size() / 2],
+            samples.front());
+        fflush(stdout);
+      }
+    }
+  }
+  finalizeRequest();
+  input = fixtureIn;
+  output = fixtureOut;
+  HIPCHECK_TEST(hipFree(largeOut));
+  HIPCHECK_TEST(hipFree(largeIn));
 }
 
 int main(int argc, char* argv[]) {
