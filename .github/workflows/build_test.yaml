@@ -45,6 +45,14 @@ jobs:
         source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
 
         export ${{ matrix.build-flags }}
+        BUILD_JOBS=$(($(nproc) - 2))
+        if ((BUILD_JOBS < 1)); then
+          BUILD_JOBS=1
+        elif ((BUILD_JOBS > 32)); then
+          BUILD_JOBS=32
+        fi
+        export CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}"
+        export NCCL_BUILD_JOBS="${BUILD_JOBS}"
 
         # Build wheel
         pip install build
