@@ -79,18 +79,21 @@ bool validEpsilon(float epsilon) {
   return std::isfinite(epsilon) && epsilon >= 0.0f;
 }
 
-// Epilogue shapes: 64 rows of 8192 on four ranks with a post-norm weight, or
-// 1 to 64 rows of 4608 on two or four ranks with an optional post-norm weight.
+// Epilogue shapes: 1 to 64 rows of 8192 or 1 to 160 rows of 4096 on four
+// ranks, or 1 to 64 rows of 4608 on two or four ranks; the post-norm weight is
+// optional.
 bool supportedNormShape(
     size_t count,
     const ncclRegisteredAllReduceGatedResidualNorm& norm,
     int nRanks) {
-  if (norm.hiddenSize == kRegisteredAllReduceNormHidden) {
+  if (norm.hiddenSize == kRegisteredAllReduceNormHidden ||
+      norm.hiddenSize == kRegisteredAllReduceNarrowNormHidden) {
+    const size_t rows = count / norm.hiddenSize;
+    const size_t maxRows = norm.hiddenSize == kRegisteredAllReduceNormHidden
+        ? kRegisteredAllReduceRowNormMaxRows
+        : kRegisteredAllReduceNarrowRowNormMaxRows;
     return nRanks == kRegisteredAllReduceRanks &&
-        count ==
-        static_cast<size_t>(kRegisteredAllReduceRows) *
-            kRegisteredAllReduceNormHidden &&
-        norm.postNormWeight != nullptr;
+        count % norm.hiddenSize == 0 && rows > 0 && rows <= maxRows;
   }
   if (norm.hiddenSize == kRegisteredAllReduceWideNormHidden) {
     const size_t rows = count / kRegisteredAllReduceWideNormHidden;
@@ -1359,6 +1362,48 @@ int registeredAllReduceRelayHelpersForTest(void* request) {
 
 uint64_t registeredAllReduceRelayLaunchesForTest() {
   return registeredRelayLaunchesForTest();
+}
+
+ncclResult_t registeredAllReduceSetRowEpochsForTest(
+    RegisteredAllReduce* request,
+    uint32_t epoch,
+    bool rowEpilogue) {
+  if (request == nullptr || request->localState == nullptr) {
+    return ncclInvalidArgument;
+  }
+  std::vector<RegisteredAllReduceRowState> rows(kRegisteredAllReduceMaxRows);
+  const size_t bytes = rows.size() * sizeof(RegisteredAllReduceRowState);
+  if (hipMemcpy(
+          rows.data(),
+          request->localState->row,
+          bytes,
+          hipMemcpyDeviceToHost) != hipSuccess) {
+    return ncclUnhandledCudaError;
+  }
+  for (RegisteredAllReduceRowState& row : rows) {
+    if (rowEpilogue) {
+      row.rowCalls = epoch;
+    } else {
+      row.calls = epoch;
+      row.midpoint = epoch;
+    }
+    for (int peer = 0; peer < kRegisteredAllReduceRanks; ++peer) {
+      if (rowEpilogue) {
+        row.rowStart[peer] = epoch;
+        row.quarter[peer] = epoch;
+      } else {
+        row.start[peer] = epoch;
+      }
+    }
+  }
+  return hipMemcpy(
+             request->localState->row,
+             rows.data(),
+             bytes,
+             hipMemcpyHostToDevice) == hipSuccess &&
+          hipDeviceSynchronize() == hipSuccess
+      ? ncclSuccess
+      : ncclUnhandledCudaError;
 }
 
 ncclResult_t registeredAllReduceSetCtaEpochsForTest(
