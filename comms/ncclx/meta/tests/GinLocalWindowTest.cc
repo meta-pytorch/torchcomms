@@ -4,6 +4,7 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <vector>
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -125,7 +126,23 @@ TEST_F(GinLocalWindowTest, PutFromLocalOnlyWindow) {
   EXPECT_EQ(ncclSuccess, ncclMemFree(recvBuf));
 }
 
-// Needs no GIN backend, so it runs wherever the 2-rank target runs.
+// Upstream defaults NCCL_GIN_ENABLE to 1; NCCLX keeps it at 0. Needs no RDMA
+// NIC.
+TEST_F(GinLocalWindowTest, GinIsOffByDefault) {
+  if (getenv("NCCL_GIN_ENABLE") != nullptr) {
+    GTEST_SKIP()
+        << "NCCL_GIN_ENABLE is set; the 1x2_gin_default config checks the default";
+  }
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get());
+  ASSERT_NE(nullptr, comm.get());
+  ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+  ASSERT_EQ(ncclSuccess, ncclCommQueryProperties(comm, &props));
+  EXPECT_EQ(NCCL_GIN_TYPE_NONE, props.ginType);
+}
+
+// Needs no GIN backend, but needs the device API: without it window
+// registration is a no-op that returns ncclSuccess.
 TEST_F(
     GinLocalWindowTest,
     LocalOnlyIsRejectedWithoutGinAndWithCollectiveFlags) {
@@ -135,6 +152,11 @@ TEST_F(
     ncclx::test::NcclCommRAII comm(
         globalRank, numRanks, localRank, bootstrap_.get());
     ASSERT_NE(nullptr, comm.get());
+    ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
+    ASSERT_EQ(ncclSuccess, ncclCommQueryProperties(comm, &props));
+    if (!props.deviceApiSupport) {
+      GTEST_SKIP() << "needs the device API";
+    }
     ASSERT_EQ(ncclSuccess, ncclMemAlloc(&buf, bytes));
 
     // Non-collective, so rank 0 alone can be rejected without the other ranks.
