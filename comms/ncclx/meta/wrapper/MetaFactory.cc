@@ -3,10 +3,8 @@
 #include <stdexcept>
 
 #include "comm.h"
-#include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
-#include "comms/ctran/window/WinHintUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "meta/NcclxChecks.h"
 #include "meta/NcclxConfig.h" // @manual
@@ -17,20 +15,6 @@
 using namespace ctran;
 
 #define NCCLCHECK_COMM(call) NCCLCHECK(metaCommToNccl(call))
-
-meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
-  meta::comms::Hints ret;
-  std::string v;
-  for (const auto& k : meta::comms::hints::AllToAllPHintUtils::keys()) {
-    NCCLX_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
-    NCCLX_COMMCHECKTHROW(ret.set(k, v));
-  }
-  for (const auto& k : meta::comms::hints::WinHintUtils::keys()) {
-    NCCLX_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
-    NCCLX_COMMCHECKTHROW(ret.set(k, v));
-  }
-  return ret;
-}
 
 namespace {
 

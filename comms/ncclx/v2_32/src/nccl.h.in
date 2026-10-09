@@ -60,10 +60,25 @@ extern "C" {
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
 typedef struct ncclWindow_vidmem* ncclWindow_t;
+// [NCCLX] Legacy window handle name used by consumers gated on
+// NCCL_RMA_SUPPORTED; kept until the NCCLX PG is deprecated.
+typedef ncclWindow_t ncclWin_t;
 #define NCCL_COMM_NULL NULL
 
 #define NCCL_UNIQUE_ID_BYTES 128
 typedef struct { char internal[NCCL_UNIQUE_ID_BYTES]; } ncclUniqueId;
+
+/* [NCCLX] Window attributes for the RMA path. */
+#define NCCL_RMA_SUPPORTED
+typedef enum {
+  ncclWinAccessUnified = 0,
+  ncclWinAccessSeparate = 1,
+} ncclWinAccessType;
+typedef struct {
+  // attributes of the window
+  ncclWinAccessType accessType;
+} ncclWinAttr;
+typedef ncclWinAttr* ncclWinAttr_t;
 
 /* Error type */
 typedef enum { ncclSuccess                 =  0,
@@ -550,6 +565,14 @@ ncclResult_t pncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win);
 /* Get the user pointer from the window */
 ncclResult_t ncclWinGetUserPtr(ncclComm_t comm, ncclWindow_t win, void** outUserPtr);
 ncclResult_t pncclWinGetUserPtr(ncclComm_t comm, ncclWindow_t win, void** outUserPtr);
+
+/* [NCCLX] Query the address of the shared memory on a remote peer */
+ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr);
+ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr);
+
+/* [NCCLX] Query the window attributes. On success *attr is allocated with new;
+ * the caller owns it and releases it with delete. */
+ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
 
 /* Reduction operation selector */
 typedef enum { ncclNumOps_dummy = 5 } ncclRedOp_dummy_t;
@@ -1038,6 +1061,18 @@ class Hints {
 
 } // namespace ncclx
 
+/* [NCCLX] Allocate memory at each rank and register it as a window (meta/rma/
+ * window.cc). Declared here, not with the other window calls, because the
+ * default ncclx::Hints argument is not valid C.
+ * Accepted hints:
+ *   window_buffer_location: {cpu, gpu} (default: gpu)
+ * Kept for consumers gated on NCCL_RMA_SUPPORTED until the NCCLX PG is
+ * deprecated. */
+__attribute__((deprecated("Use ncclCommWindowRegister instead")))
+ncclResult_t  ncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
+__attribute__((deprecated("Use ncclCommWindowRegister instead")))
+ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
+
 #endif
 
 /*
@@ -1167,6 +1202,76 @@ ncclResult_t pncclParamGetAllParameterKeys(const char*** table, int* tableLen);
 void ncclParamDumpAll(void);
 void pncclParamDumpAll(void);
 
+/*
+ * [NCCLX] Retained ABI entry points for the retired CTRAN PRiMS device surface.
+ * These functions return ncclInvalidUsage without allocating resources or
+ * entering communicator collectives.
+ */
+ncclResult_t ncclWinCreateDeviceWin(
+    ncclWindow_t win,
+    int signal_count,
+    int counter_count,
+    int barrier_count,
+    void** outDevicePtr);
+
+/* Retired compatibility stub; returns ncclInvalidUsage. */
+ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr);
+
+/*
+ * Retained for source and symbol compatibility only.
+ */
+ncclResult_t ncclGetMultiPeerDeviceHandle(
+    ncclComm_t comm,
+    void** outTransportsPtr,
+    int* outMyRank,
+    int* outNRanks,
+    int* outNumNvlPeers,
+    int* outNumIbPeers);
+
+/*
+ * Layout retained for source and ABI compatibility with callers compiled
+ * against the former device surface.
+ */
+#define NCCLX_MAX_NICS_PER_GPU 2
+
+/*
+ * Retained per-NIC lkey layout for source and ABI compatibility.
+ *
+ *   values[0..size) — per-NIC RDMA local keys in network byte order.
+ *   size            — actual NIC count populated [0, NCCLX_MAX_NICS_PER_GPU].
+ *                     0 indicates no IBGDA peers (NVL-only topology); the
+ *                     caller must NOT index into values[] in that case.
+ *
+ * The retired registration API no longer populates this record.
+ */
+typedef struct {
+  uint32_t values[NCCLX_MAX_NICS_PER_GPU];
+  int size;
+} ncclLkeyPerDevice;
+
+/*
+ * Retired compatibility stub; returns ncclInvalidUsage without registering
+ * the buffer.
+ */
+ncclResult_t ncclWinLocalRegisterBuffer(
+    ncclComm_t comm,
+    void* ptr,
+    size_t size,
+    ncclLkeyPerDevice* outLkeys);
+
+/* Retired compatibility stub; returns ncclInvalidUsage. */
+ncclResult_t ncclWinLocalDeregisterBuffer(
+    ncclComm_t comm,
+    void* ptr);
+
+/* [NCCLX] Free a window from ncclWinAllocate and its memory (meta/rma/window.cc).
+ * Kept for consumers gated on NCCL_RMA_SUPPORTED until the NCCLX PG is
+ * deprecated. */
+__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
+ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWindow_t win);
+__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
+ncclResult_t pncclWinFree(ncclComm_t comm, ncclWindow_t win);
+
 #ifdef __cplusplus
 } // end extern "C"
 #endif
@@ -1261,6 +1366,66 @@ namespace ncclx {
  */
 // [META:COMM_SET_CONFIG]
 ncclResult_t commSetConfig(ncclComm_t comm, const ncclConfig_t* config);
+
+/*
+ * [NCCLX] Window-based RMA API.
+ *
+ * These use the window-based model with ncclWindow_t handles. They live in the
+ * ncclx namespace, and outside the extern "C" block above, to avoid colliding
+ * with the upstream comm-based ncclPutSignal / ncclSignal / ncclWaitSignal,
+ * which take different arguments.
+ *
+ * Defined in meta/rma/rma.cc.
+ */
+
+/*
+ * One-side put from a local buffer to a remote peer's pre-allocated and
+ * registered buffer within a NCCL window.
+ */
+ncclResult_t ncclPutSignal(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * As ncclPutSignal, without signalling.
+ */
+ncclResult_t ncclPut(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * One-side get from a remote peer's pre-allocated and registered buffer into a
+ * local buffer within a NCCL window. Without signalling.
+ */
+ncclResult_t ncclGet(
+    void* targetBuff,
+    size_t targetDisp,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * Wait for a signal from a remote peer to complete the put.
+ */
+ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+
+/*
+ * One-sided signal to a remote peer's signal region, at the offset
+ * corresponding to the local rank id.
+ */
+ncclResult_t ncclSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 
 } // namespace ncclx
 
