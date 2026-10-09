@@ -29,6 +29,7 @@
 #include <cfloat> // FLT_MAX
 
 #include "meta/transport/transportConnect.h"
+#include "meta/colltrace/CollTraceWrapper.h" // @manual
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
@@ -1917,6 +1918,15 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   void* extra[] = {CU_LAUNCH_PARAM_BUFFER_POINTER, plan->kernelArgs, CU_LAUNCH_PARAM_BUFFER_SIZE, &plan->kernelArgsSize,
                    CU_LAUNCH_PARAM_END};
 
+  // [META] Colltrace handle creation and in-kernel graph timestamp arming. The
+  // handle and its guard must both be declared ahead of the first
+  // `goto do_return` below: jumping over their initialization is ill-formed.
+  auto colltraceHandle = ncclx::colltrace::prepareNcclKernelColltrace(plan, launchStream, comm->compCap);
+  // A `goto do_return` taken before AfterEnqueueKernel means no kernel was
+  // enqueued; the guard cancels the record so the next collective does not
+  // inherit a stale pending trace.
+  meta::comms::colltrace::CollTraceEnqueueGuard colltraceEnqueueGuard{colltraceHandle};
+
   int driverVersion;
   NCCLCHECKGOTO(ncclCudaDriverVersion(&driverVersion), ret, do_return);
 
@@ -2004,7 +2014,10 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
       WARN("CUDA launch-completion events require CUDA 12.3 or newer; recording the user event before launch");
       CUDACHECKGOTO(cudaEventRecord(plan->launchCompletionEvent, launchStream), ret, do_return);
     }
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernelEx(&launchConfig, fn, nullptr, extra), ret, do_return);
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
+    colltraceEnqueueGuard.disarm();
     if (relayUserLaunchCompletionEvent) {
       CUDACHECKGOTO(cudaStreamWaitEvent(relayStream, comm->sharedRes->launchEvent, 0), ret, do_return);
       CUDACHECKGOTO(cudaEventRecord(plan->launchCompletionEvent, relayStream), ret, do_return);
@@ -2016,9 +2029,12 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
       WARN("CUDA launch-completion events require CUDA 12.3 or newer; recording the user event before launch");
       CUDACHECKGOTO(cudaEventRecord(plan->launchCompletionEvent, launchStream), ret, do_return);
     }
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernel(fn, grid.x, grid.y, grid.z, block.x, block.y, block.z, smem, launchStream, nullptr,
                                extra),
                 ret, do_return);
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
+    colltraceEnqueueGuard.disarm();
   }
 
 do_return:
