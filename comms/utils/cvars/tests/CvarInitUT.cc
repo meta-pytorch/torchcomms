@@ -62,6 +62,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_P2P_DISABLE");
     unsetenv("CUDA_LAUNCH_BLOCKING");
     unsetenv("NCCL_MIN_CTAS");
+    unsetenv("MCCL_BOOTSTRAP_TOS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
     unsetenv("MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
@@ -191,6 +192,23 @@ TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticParsesAllModes) {
     setenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC", value, 1);
     ncclCvarInit();
     EXPECT_EQ(MCCL_IBGDA_QP_ORDERING_SEMANTIC, expected);
+  }
+}
+
+TEST_F(CvarInitTest, McclBootstrapTosDisabledByDefault) {
+  MCCL_BOOTSTRAP_TOS = 140;
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_BOOTSTRAP_TOS, -1);
+}
+
+TEST_F(CvarInitTest, McclBootstrapTosParsesIntegerValues) {
+  const std::vector<std::pair<const char*, int>> values{
+      {"-1", -1}, {"0", 0}, {"140", 140}, {"143", 143}, {"255", 255}};
+  for (const auto& [value, expected] : values) {
+    SCOPED_TRACE(value);
+    setenv("MCCL_BOOTSTRAP_TOS", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_BOOTSTRAP_TOS, expected);
   }
 }
 
