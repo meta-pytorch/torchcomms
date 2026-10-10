@@ -1,24 +1,21 @@
-# Explicit source list, never a glob. See README.md before adding to it.
-
-add_library(observatory SHARED
-    colltrace/LifecycleFeedRegistry.cc
+# libobservatory.so.1 is built once, by comms/utils/Makefile, and shipped by
+# the commsutils package beside libcommsutils.so.1 (see README.md: one copy per
+# process). This tree never builds a second copy: libctran/libmccl link the
+# prebuilt one from COMMSUTILS_LIBRARY_DIR (the commsutils wheel's lib dir in a
+# wheel build), else the environment's lib dir, where the conda package
+# installs it.
+find_library(OBSERVATORY_LIBRARY
+    NAMES observatory
+    HINTS ENV COMMSUTILS_LIBRARY_DIR ${CONDA_LIB}
 )
-
-target_compile_features(observatory PRIVATE cxx_std_20)
-# PRIVATE: the target is exported, and an exported target may not carry a raw
-# source path in its interface. Consumers get ${ROOT} from their own build.
-target_include_directories(observatory PRIVATE ${ROOT})
-
-# No PREFIX override: the default gives libobservatory.so, matching how the
-# backend shared libraries name their artifacts.
+if(NOT OBSERVATORY_LIBRARY)
+    message(FATAL_ERROR
+        "libobservatory.so not found (COMMSUTILS_LIBRARY_DIR=$ENV{COMMSUTILS_LIBRARY_DIR}, "
+        "CONDA_LIB=${CONDA_LIB}); it is installed by the commsutils package.")
+endif()
+add_library(observatory SHARED IMPORTED GLOBAL)
 set_target_properties(observatory PROPERTIES
-    OUTPUT_NAME observatory
-    SOVERSION 1
-    POSITION_INDEPENDENT_CODE ON
-    INSTALL_RPATH "$ORIGIN"
-    BUILD_WITH_INSTALL_RPATH ON
-    # Default visibility, and deliberately no version script or -Bsymbolic:
-    # consumers must resolve these symbols here rather than locally.
-    CXX_VISIBILITY_PRESET default
-    LINK_FLAGS "-Wl,--no-undefined"
+    IMPORTED_LOCATION "${OBSERVATORY_LIBRARY}"
 )
+# Consumers get ${ROOT} from their own build; the headers are the ones in this
+# source tree, the same revision the library was built from.

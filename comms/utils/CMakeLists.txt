@@ -17,39 +17,36 @@ if(NOT spdlog_FOUND)
     FetchContent_MakeAvailable(spdlog)
 endif()
 
-file(GLOB_RECURSE UTILS_SOURCES
-    "*.cc"
-    "*.cu"
+# libcommsutils.so: comms/utils -- the cvars table, the logger, the trainer
+# context, memtrace, colltrace and the shared helpers -- as one shared library
+# per process, built once by comms/utils/Makefile and shipped by the commsutils
+# package. This tree never builds a second copy: libctran/libmccl link the
+# prebuilt one, so NCCLX and MCCL share NCCL's configuration and trainer state
+# at runtime. The headers are the ones in this source tree, which is the same
+# revision the library was built from. COMMSUTILS_LIBRARY_DIR names the
+# directory holding it (the commsutils wheel's lib dir in a wheel build);
+# otherwise it is looked up in the environment's lib dir, where the conda
+# package installs it.
+find_library(COMMSUTILS_LIBRARY
+    NAMES commsutils
+    HINTS ENV COMMSUTILS_LIBRARY_DIR ${CONDA_LIB}
 )
-file(GLOB_RECURSE UTILS_CU_SOURCES
-    "*.cu"
+if(NOT COMMSUTILS_LIBRARY)
+    message(FATAL_ERROR
+        "libcommsutils.so not found (COMMSUTILS_LIBRARY_DIR=$ENV{COMMSUTILS_LIBRARY_DIR}, "
+        "CONDA_LIB=${CONDA_LIB}); it is installed by the commsutils package.")
+endif()
+add_library(commsutils SHARED IMPORTED GLOBAL)
+set_target_properties(commsutils PROPERTIES
+    IMPORTED_LOCATION "${COMMSUTILS_LIBRARY}"
 )
-list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/tests/.*")
-list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
-list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/tests/.*")
-list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
-
-add_library(utils OBJECT
-    ${UTILS_SOURCES}
-    ${UTILS_CU_SOURCES}
-)
-
-target_compile_features(utils PRIVATE cxx_std_20)
-target_compile_options(utils PRIVATE
-    -fPIC
-)
-target_compile_definitions(utils PRIVATE
+target_compile_definitions(commsutils INTERFACE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
     SPDLOG_FMT_EXTERNAL
 )
-set_target_properties(utils PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_RESOLVE_DEVICE_SYMBOLS ON
-    POSITION_INDEPENDENT_CODE ON
-)
-target_include_directories(utils PUBLIC
+target_include_directories(commsutils INTERFACE
     ${ROOT}
     ${CONDA_INCLUDE}
     ${CUDA_INCLUDE_DIRS}
 )
-target_link_libraries(utils PUBLIC spdlog::spdlog_header_only)
+target_link_libraries(commsutils INTERFACE spdlog::spdlog_header_only)
