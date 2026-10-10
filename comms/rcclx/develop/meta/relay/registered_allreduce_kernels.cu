@@ -217,7 +217,7 @@ __device__ __forceinline__ void midpointBarrier(
         peerLoad<true, __ATOMIC_RELAXED>(localSignal), sourceEpochs[peer])) {
     }
     if constexpr (!kUncachedState) {
-      __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_DEVICE);
+      __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "agent");
     }
   }
   __syncthreads();
@@ -437,7 +437,7 @@ __device__ __forceinline__ void relayBarrier(
         peerLoad<true, __ATOMIC_RELAXED>(localSignal), sourceEpochs[peer])) {
     }
     if constexpr (!kUncachedState) {
-      __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_SYSTEM);
+      __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "");
     }
   }
   __syncthreads();
@@ -861,7 +861,7 @@ __global__ void __launch_bounds__(kRegisteredAllReduceNormThreads)
           peerLoad<true, __ATOMIC_RELAXED>(&local.midpoint), calls)) {
       }
       if constexpr (!kUncachedState) {
-        __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_DEVICE);
+        __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "agent");
       }
     }
     __syncthreads();
@@ -1573,7 +1573,7 @@ __global__ void __launch_bounds__(Threads) registeredAllReduceRowNormKernel(
         peerLoad<true, __ATOMIC_RELAXED>(&local.quarter[threadIdx.x]), calls)) {
     }
     if constexpr (!kUncachedState) {
-      __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_DEVICE);
+      __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "agent");
     }
   }
   __syncthreads();
