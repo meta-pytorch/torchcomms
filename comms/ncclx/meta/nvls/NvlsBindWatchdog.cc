@@ -138,15 +138,19 @@ void logBindStuck(const NvlsBindWatchdogState& state) {
       static_cast<unsigned long long>(state.ucHandle));
 }
 
+// Named (not a lambda) so NCCL_NAMED_THREAD_START_EXT logs a real function in
+// __func__ instead of operator().
+void logBindWatchThreadStart(const NvlsBindWatchdogState& state) {
+  NCCL_NAMED_THREAD_START_EXT(
+      "NVLSBindWatch", state.rank, state.commHash, state.commDesc);
+}
+
 template <typename Call>
 CUresult runUnderWatchdog(NvlsBindWatchdogState& state, Call call) {
   ncclx::nvls::StuckWatchdog watchdog{
       std::chrono::seconds(state.watchdogSec),
       [&state] { logBindStuck(state); },
-      [&state] {
-        NCCL_NAMED_THREAD_START_EXT(
-            "NVLSBindWatch", state.rank, state.commHash, state.commDesc);
-      }};
+      [&state] { logBindWatchThreadStart(state); }};
   if (watchdog.launchFailed()) {
     WARN(
         "NVLS %s watchdog thread launch failed for rank %d localRank %d cudaDev %d: %s",
