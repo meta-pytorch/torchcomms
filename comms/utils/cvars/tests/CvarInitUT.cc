@@ -64,7 +64,6 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_MIN_CTAS");
     unsetenv("MCCL_BOOTSTRAP_TOS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
-    unsetenv("MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
     unsetenv("MCCL_IBGDA_COLLAPSED_CQ_MODE");
     unsetenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
@@ -85,23 +84,6 @@ TEST_F(CvarInitTest, McclAlgoDefaultsToExplicitRingSimple) {
   EXPECT_NO_THROW(ncclCvarInit());
   EXPECT_EQ(MCCL_ALGO, "allreduce:ring:simple");
   EXPECT_EQ(MCCL_ALGO_DEFAULTCVARVALUE, "allreduce:ring:simple");
-}
-
-TEST_F(CvarInitTest, McclAllQpsErrorBeforeDestroyDefaultsToDisabled) {
-  MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY = true;
-
-  EXPECT_NO_THROW(ncclCvarInit());
-
-  EXPECT_FALSE(MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY);
-  EXPECT_FALSE(MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY_DEFAULT_LITERAL);
-}
-
-TEST_F(CvarInitTest, McclAllQpsErrorBeforeDestroyCanBeEnabled) {
-  setenv("MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY", "true", 1);
-
-  EXPECT_NO_THROW(ncclCvarInit());
-
-  EXPECT_TRUE(MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY);
 }
 
 TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeDefaultsToAuto) {
