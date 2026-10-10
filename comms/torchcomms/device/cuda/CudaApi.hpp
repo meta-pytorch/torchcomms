@@ -129,6 +129,7 @@ class CudaApi {
       cudaStream_t stream,
       unsigned int flags) = 0;
   [[nodiscard]] virtual cudaError_t eventQuery(cudaEvent_t event) = 0;
+  [[nodiscard]] virtual cudaError_t eventSynchronize(cudaEvent_t event) = 0;
 
   // Error handling
   virtual const char* getErrorString(cudaError_t error) = 0;
@@ -232,6 +233,7 @@ class DefaultCudaApi : public CudaApi {
       cudaStream_t stream,
       unsigned int flags) override;
   [[nodiscard]] cudaError_t eventQuery(cudaEvent_t event) override;
+  [[nodiscard]] cudaError_t eventSynchronize(cudaEvent_t event) override;
 
   // Error handling
   const char* getErrorString(cudaError_t error) override;
