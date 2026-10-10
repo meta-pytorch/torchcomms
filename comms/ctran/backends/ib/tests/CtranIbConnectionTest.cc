@@ -119,7 +119,6 @@ class CtranIbConnectionTest : public ::testing::Test {
 
       // Perform RDMA put
       CtranIbRequest putRequest;
-      CtranIbConfig config;
 
       if (doTransfer) {
         commResult_t putResult = ctranIb->iput(
@@ -130,7 +129,6 @@ class CtranIbConnectionTest : public ::testing::Test {
             regElem, // local registration element
             remoteKey, // remote access key
             true, // notify
-            &config, // config
             &putRequest, // request
             false // fast
         );

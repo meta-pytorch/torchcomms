@@ -173,7 +173,6 @@ struct PutIbMsg {
   void* ibRegElem;
   CtranIbRemoteAccessKey remoteAccessKey;
   bool notify;
-  CtranIbConfig* config;
   CtranIbRequest* req;
 };
 
@@ -291,7 +290,9 @@ class CtranIbVirtualConn {
   }
 
   // Implementation to put data from local sbuf to a dbuf in remote rank over
-  // the established IB connection.
+  // the established IB connection. The per-call config selects the QP
+  // settings for this op; CtranIb always passes its ambient per-collective
+  // config (set via setActiveIbConfig), null selects the VC defaults.
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t iput(
       const void* sbuf,
@@ -300,7 +301,7 @@ class CtranIbVirtualConn {
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
       bool notify,
-      CtranIbConfig* config,
+      const CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast) {
     return iputImpl<PerfConfig>(
@@ -308,8 +309,10 @@ class CtranIbVirtualConn {
   }
 
   template <typename PerfConfig = DefaultPerfCollConfig>
-  inline commResult_t iputBatch(const std::vector<PutIbMsg>& msgs) {
-    return iputBatchImpl<PerfConfig>(msgs);
+  inline commResult_t iputBatch(
+      const std::vector<PutIbMsg>& msgs,
+      const CtranIbConfig* ambient = nullptr) {
+    return iputBatchImpl<PerfConfig>(msgs, ambient);
   }
 
   // Implementation to get data from a sbuf in remote rank to a local dbuf over
@@ -321,7 +324,7 @@ class CtranIbVirtualConn {
       std::size_t len,
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
-      CtranIbConfig* config,
+      const CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast) {
     return igetImpl<PerfConfig>(
@@ -409,7 +412,7 @@ class CtranIbVirtualConn {
   }
 
   // Getter function for vcMode_
-  inline enum NCCL_CTRAN_IB_VC_MODE getVcMode() {
+  inline enum NCCL_CTRAN_IB_VC_MODE getVcMode() const {
     return vcMode_;
   }
 
@@ -506,8 +509,8 @@ class CtranIbVirtualConn {
   template <typename OpPtr>
   inline uint64_t nextWqeSize(const OpPtr& op) {
     const uint64_t remData = op->len - op->offset;
-    const auto opQps = std::min(getOpQps(op->config), maxNumQps_);
-    return std::min(remData, maxWqeSizeFor(op->config, op->len, opQps));
+    const auto opQps = std::min(op->numQps, maxNumQps_);
+    return std::min(remData, maxWqeSizeFor(op->qpScalingTh, op->len, opQps));
   }
 
   // Returns the IB device that hosts the control QPs for this VC.
@@ -665,16 +668,19 @@ class CtranIbVirtualConn {
   // else an equal split (len / qps); clamped to [mtu_, maxMsgSize_]. The
   // single-WQE fast path passes qps=1 (no QP scaling, so the fallback is the
   // whole message).
+  inline uint64_t maxWqeSizeFor(size_t qpScalingTh, uint64_t len, int qps) {
+    const uint64_t raw = qpScalingTh > 0 ? qpScalingTh : len / std::max(qps, 1);
+    return std::min(maxMsgSize_, std::max(raw, mtu_));
+  }
+
   inline uint64_t
   maxWqeSizeFor(const CtranIbConfig* config, uint64_t len, int qps) {
-    const auto scalingTh = getOpScalingTh(config);
-    const uint64_t raw = scalingTh > 0 ? scalingTh : len / std::max(qps, 1);
-    return std::min(maxMsgSize_, std::max(raw, mtu_));
+    return maxWqeSizeFor(getOpScalingTh(config), len, qps);
   }
 
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline bool
-  isFastPutValid(CtranIbConfig* config, size_t len, size_t numMessages) {
+  isFastPutValid(const CtranIbConfig* config, size_t len, size_t numMessages) {
     if (outstandingPuts_.size() > 0 || pendingPuts_.size() > 0) {
       CTRAN_LOG(
           INFO,
@@ -748,7 +754,9 @@ class CtranIbVirtualConn {
   }
 
   template <typename PerfConfig = DefaultPerfCollConfig>
-  inline commResult_t iputBatchImpl(const std::vector<PutIbMsg>& msgs) {
+  inline commResult_t iputBatchImpl(
+      const std::vector<PutIbMsg>& msgs,
+      const CtranIbConfig* ambient = nullptr) {
     std::vector<ibverbx::ibv_send_wr> sendBatchWrs(msgs.size());
     std::vector<ibverbx::ibv_sge> sendBatchSges(msgs.size());
 
@@ -759,7 +767,7 @@ class CtranIbVirtualConn {
     bool sendChained = true;
     // first check if all the messages can be sent over the fast path
     for (auto& put : msgs) {
-      if (!isFastPutValid<PerfConfig>(put.config, put.len, msgs.size())) {
+      if (!isFastPutValid<PerfConfig>(ambient, put.len, msgs.size())) {
         // Fallback to slow path and non batched writes
         sendChained = false;
         break;
@@ -781,7 +789,7 @@ class CtranIbVirtualConn {
                 put.ibRegElem,
                 put.remoteAccessKey,
                 put.notify,
-                put.config,
+                ambient,
                 put.req,
                 false));
       }
@@ -832,7 +840,7 @@ class CtranIbVirtualConn {
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
       bool notify,
-      CtranIbConfig* config,
+      const CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast) {
     std::vector<uint32_t> lkeys;
@@ -879,7 +887,6 @@ class CtranIbVirtualConn {
           .ibRegElem = ibRegElem,
           .remoteAccessKey = remoteAccessKey,
           .notify = notify,
-          .config = config,
           .req = req};
       int device = getIbDevFromQpIdx(iputFastQpIdx_);
 
@@ -918,7 +925,9 @@ class CtranIbVirtualConn {
               std::move(rkeys),
               notify,
               req,
-              config,
+              getOpQps(config),
+              getOpMaxQpMsgs(config),
+              getOpScalingTh(config),
               getOpVcMode(config),
               putId));
       FB_COMMCHECK(tryToPostOp(
@@ -938,7 +947,7 @@ class CtranIbVirtualConn {
       std::size_t len,
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
-      CtranIbConfig* config,
+      const CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast) {
     std::vector<uint32_t> lkeys;
@@ -1037,7 +1046,9 @@ class CtranIbVirtualConn {
               std::move(lkeys),
               std::move(rkeys),
               req,
-              config,
+              getOpQps(config),
+              getOpMaxQpMsgs(config),
+              getOpScalingTh(config),
               getOpVcMode(config),
               getId));
       FB_COMMCHECK(tryToPostOp(
@@ -1382,8 +1393,8 @@ class CtranIbVirtualConn {
     while (sent && (pendingOpQueue.size() > 0)) {
       sent = false;
       auto& op = pendingOpQueue.front();
-      auto qps = std::min(getOpQps(op->config), maxNumQps_);
-      auto maxmsgs = std::min(getOpMaxQpMsgs(op->config), maxQpMsgs_);
+      auto qps = std::min(op->numQps, maxNumQps_);
+      auto maxmsgs = std::min(op->qpMsgs, maxQpMsgs_);
       // Interleave this op's WQEs across NICs only when enabled, the VC spans
       // >1 NIC, and each WQE is large enough to be bandwidth-bound. Small WQEs
       // (<= qpInterleaveMinWqeSize_) are latency-bound; spreading them across
@@ -1428,7 +1439,7 @@ class CtranIbVirtualConn {
     uint64_t remData = put->len - put->offset;
     // Write WQEs of max size qpScalingTh_, else divide the message among QPs.
     uint64_t maxWqeSize = maxWqeSizeFor(
-        put->config, put->len, std::min(getOpQps(put->config), maxNumQps_));
+        put->qpScalingTh, put->len, std::min(put->numQps, maxNumQps_));
     auto toSend = std::min(remData, maxWqeSize);
     bool finalWriteOfPut = toSend == remData;
 
@@ -1509,7 +1520,7 @@ class CtranIbVirtualConn {
     uint64_t remData = get->len - get->offset;
     // Write WQEs of max size qpScalingTh_, else divide the message among QPs.
     uint64_t maxWqeSize = maxWqeSizeFor(
-        get->config, get->len, std::min(getOpQps(get->config), maxNumQps_));
+        get->qpScalingTh, get->len, std::min(get->numQps, maxNumQps_));
     auto toSend = std::min(remData, maxWqeSize);
     bool finalReadOfGet = toSend == remData;
 
@@ -1784,6 +1795,10 @@ class CtranIbVirtualConn {
     std::deque<std::unique_ptr<ControlPostedRecvWr>> enqueuedWrs_;
   } recvCtrl_;
 
+  // Per-call IB config values are snapshotted (not the pointer) at issue
+  // time: progress paths (tryToPostOp, queueWrite/ReadOnQp) drain an op over
+  // many polls, and must observe the config that was in effect when the op
+  // was issued even if the ambient per-collective config changes afterwards.
   struct PutInfo {
     PutInfo(
         const void* sbuf,
@@ -1793,7 +1808,9 @@ class CtranIbVirtualConn {
         std::vector<uint32_t> rkeys,
         bool notify,
         CtranIbRequest* req,
-        CtranIbConfig* config,
+        int numQps,
+        int qpMsgs,
+        size_t qpScalingTh,
         enum NCCL_CTRAN_IB_VC_MODE vcMode,
         const uint64_t putId)
         : sbuf(sbuf),
@@ -1803,7 +1820,9 @@ class CtranIbVirtualConn {
           rkeys(std::move(rkeys)),
           notify(notify),
           req(req),
-          config(config),
+          numQps(numQps),
+          qpMsgs(qpMsgs),
+          qpScalingTh(qpScalingTh),
           vcMode(vcMode),
           putId{putId} {}
     const void* sbuf;
@@ -1813,7 +1832,9 @@ class CtranIbVirtualConn {
     std::vector<uint32_t> rkeys;
     bool notify;
     CtranIbRequest* req;
-    CtranIbConfig* config;
+    int numQps;
+    int qpMsgs;
+    size_t qpScalingTh;
     enum NCCL_CTRAN_IB_VC_MODE vcMode;
 
     size_t offset{0};
@@ -1830,7 +1851,9 @@ class CtranIbVirtualConn {
         std::vector<uint32_t> lkeys,
         std::vector<uint32_t> rkeys,
         CtranIbRequest* req,
-        CtranIbConfig* config,
+        int numQps,
+        int qpMsgs,
+        size_t qpScalingTh,
         enum NCCL_CTRAN_IB_VC_MODE vcMode,
         const uint64_t getId)
         : sbuf(sbuf),
@@ -1839,7 +1862,9 @@ class CtranIbVirtualConn {
           lkeys(std::move(lkeys)),
           rkeys(std::move(rkeys)),
           req(req),
-          config(config),
+          numQps(numQps),
+          qpMsgs(qpMsgs),
+          qpScalingTh(qpScalingTh),
           vcMode(vcMode),
           getId{getId} {}
     const void* sbuf;
@@ -1848,7 +1873,9 @@ class CtranIbVirtualConn {
     std::vector<uint32_t> lkeys;
     std::vector<uint32_t> rkeys;
     CtranIbRequest* req;
-    CtranIbConfig* config;
+    int numQps;
+    int qpMsgs;
+    size_t qpScalingTh;
     enum NCCL_CTRAN_IB_VC_MODE vcMode;
 
     size_t offset{0};

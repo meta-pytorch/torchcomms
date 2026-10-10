@@ -103,6 +103,24 @@ class VcState {
     connectedPeerMap_.at(peerRank) = true;
   }
 
+  // True if any established VC's default QP mode is spray. Used by the
+  // spray-forced flush path: spray data writes need a receiver-side flush
+  // for GPU visibility even when NCCL_CTRAN_NET_FORCE_FLUSH=0. VC defaults
+  // are fixed at construction (setDefaultQPConfig), so reading vcMode_
+  // under the maps lock without per-VC mutexes is safe.
+  inline bool anyVcDefaultUsesSpray() const {
+    auto locked = vcStateMaps_.rlock();
+    for (const auto& [peerRank, vcs] : locked->rankToVcs) {
+      (void)peerRank;
+      for (const auto& vc : vcs) {
+        if (vc != nullptr && vc->getVcMode() == NCCL_CTRAN_IB_VC_MODE::spray) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   // Whether connectedPeerMap_ has been sized (non-empty means nRanks is
   // known). Used by preConnect() to early-out when no comm is associated.
   inline bool hasConnectedPeerMap() const {
