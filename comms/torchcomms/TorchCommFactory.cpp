@@ -262,6 +262,7 @@ void TorchCommFactory::register_allocator_factory(
 }
 
 TorchCommFactory& TorchCommFactory::get() {
+  TorchCommBackend::ensureLoggingInit();
   static TorchCommFactory instance;
   return instance;
 }
