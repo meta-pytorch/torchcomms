@@ -69,6 +69,10 @@ keeping for its own sake: it is what lets the value types in
 - Files live under `comms/observatory/`, outside the directories the backend
   builds glob. That keeps them out of the backends structurally, instead of by
   an exclusion regex someone can break.
+- The shared-object build is `comms/utils/Makefile`, which produces
+  `libobservatory.so.1` beside `libcommsutils.so.1`; the `commsutils` package
+  (conda feedstock and wheel) ships both, and the backends link the installed
+  copies rather than building their own.
 - The registry holder is deliberately leaked. A function-local static would be
   destroyed at exit ahead of anything constructed earlier, and a communicator
   torn down by a later static destructor deregisters from here.
