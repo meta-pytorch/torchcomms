@@ -50,5 +50,15 @@ Example:
               comm: The communicator to register with.
           )",
           py::arg("comm"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "flush",
+          &ClogHook::flush,
+          R"(
+          Force any buffered log lines to disk.
+
+          Log writes are flushed on a bounded cadence, not per line; call this
+          before reading the log file while the process is still running.
+          )",
           py::call_guard<py::gil_scoped_release>());
 }

@@ -36,6 +36,9 @@ class TestClog(unittest.TestCase):
             clog_handle = clog(output=log_path, events=["ALL"])
 
             # -- Version header --
+            # Log writes are flushed on a bounded cadence, so flush before
+            # reading the file mid-run.
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             self.assertGreater(len(lines), 0)
             self.assertTrue(lines[0].startswith("V|1|base_timestamp="))
@@ -49,6 +52,7 @@ class TestClog(unittest.TestCase):
             )
             clog_handle.register_with_comm(comm)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             self.assertTrue(
                 _has_line_containing(lines, "new_comm|comm=test_clog_comm"),
@@ -60,6 +64,7 @@ class TestClog(unittest.TestCase):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             sig_count = _count_lines_containing(
                 lines,
@@ -75,6 +80,7 @@ class TestClog(unittest.TestCase):
             t_bcast = torch.ones(256, device=self.device)
             comm.broadcast(t_bcast, root=0, async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             self.assertTrue(
                 _has_line_containing(
@@ -87,6 +93,7 @@ class TestClog(unittest.TestCase):
             # -- barrier --
             comm.barrier(async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             self.assertTrue(
                 _has_line_containing(lines, "sig|barrier|async_op=f"),
@@ -97,6 +104,7 @@ class TestClog(unittest.TestCase):
             t_f16 = torch.ones(128, device=self.device, dtype=torch.float16)
             comm.all_reduce(t_f16, op=torchcomms.ReduceOp.SUM, async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             self.assertTrue(
                 _has_line_containing(lines, "dtype=f16|red_op=sum"),
@@ -139,6 +147,7 @@ class TestClog(unittest.TestCase):
             comm_a.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
             comm_b.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             self.assertTrue(
                 _has_line_containing(lines, "comm=comm_a"),
@@ -179,6 +188,8 @@ class TestClog(unittest.TestCase):
             comm_a.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
             comm_b.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
+            clog_a.flush()
+            clog_b.flush()
             lines_a = _read_log_lines(path_a)
             lines_b = _read_log_lines(path_b)
 
@@ -224,6 +235,7 @@ class TestClogCudaGraph(unittest.TestCase):
             # Eager collective (should produce C<id>|Q|, not G<id>|C<id>|Q|)
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             q_before = _count_lines_containing(lines, "|Q|")
             graph_q_before = len([x for x in lines if x.startswith("G") and "|Q|" in x])
@@ -237,6 +249,7 @@ class TestClogCudaGraph(unittest.TestCase):
             with torch.cuda.graph(g):
                 comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             graph_q_after_capture = len(
                 [x for x in lines if x.startswith("G") and "|Q|" in x]
@@ -254,6 +267,7 @@ class TestClogCudaGraph(unittest.TestCase):
             g.reset()
             comm.finalize()
 
+            clog_handle.flush()
             lines = _read_log_lines(log_path)
             graph_q_after_replay = len(
                 [x for x in lines if x.startswith("G") and "|Q|" in x]
