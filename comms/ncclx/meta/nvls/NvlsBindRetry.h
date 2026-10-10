@@ -13,6 +13,20 @@ struct ncclComm;
 
 namespace ncclx::nvls {
 
+// Test seam for the intra-node bootstrap and proxy calls on the NVLS retry
+// path. Production code calls through gNvlsBootstrap, which defaults to the
+// real functions; the retry unit tests replace the pointers per case. This
+// keeps the tests independent of link style: --wrap only intercepts references
+// linked into the test binary itself, which silently stops working when the
+// library builds shared (dev).
+struct NvlsBootstrapOps {
+  ncclResult_t (*allGather)(void*, int*, int, int, void*, int);
+  ncclResult_t (*barrier)(void*, int*, int, int, int);
+  ncclResult_t (*broadcast)(void*, int*, int, int, int, void*, int);
+  ncclResult_t (*getProxyFd)(ncclComm*, int, void*, int*);
+};
+extern NvlsBootstrapOps gNvlsBootstrap;
+
 ncclResult_t collectiveBindResult(
     const ncclComm* comm,
     CUresult localResult,
@@ -52,7 +66,12 @@ ncclResult_t multicastMapWithRetry(
 
 // Agree on teardown success before the barrier and configured backoff, so no
 // rank rebuilds the group while a peer is exiting after a cleanup failure.
-ncclResult_t finishNvlsTeamRetry(const ncclComm* comm, CUresult cleanupResult);
+// cleanupOp names the failed operation (cuMemAddressFree/cuMemRelease) for the
+// report; the caller tracks which step produced cleanupResult.
+ncclResult_t finishNvlsTeamRetry(
+    const ncclComm* comm,
+    const char* cleanupOp,
+    CUresult cleanupResult);
 #endif
 
 } // namespace ncclx::nvls

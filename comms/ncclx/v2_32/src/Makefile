@@ -117,6 +117,7 @@ endif
 # call sites and shared implementation are compatible with this baseline.
 ifneq ($(wildcard ${SHAREDDIR}/meta/nvls/StuckWatchdog.h),)
 LIBSRCFILES += ${SHAREDDIR}/meta/nvls/NvlsBindWatchdog.cc
+LIBSRCFILES += ${SHAREDDIR}/meta/nvls/NvlsBindRetry.cc
 endif
 
 #### Shared support and CTran source files
