@@ -59,14 +59,12 @@ struct CtranMapperRemoteAccessKey {
 };
 
 struct KernelElem;
-struct CtranIbConfig;
 
 struct CtranMapperConfig {
   void* memHdl_{nullptr};
   CtranMapperRemoteAccessKey remoteAccessKey_{CtranMapperBackend::UNSET};
   bool notify_{false};
   KernelElem* kernElem_{nullptr};
-  CtranIbConfig* ibConfig_{nullptr};
   bool ibFastPath_{false};
 };
 
