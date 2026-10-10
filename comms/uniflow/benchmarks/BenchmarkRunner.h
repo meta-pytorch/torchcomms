@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,8 @@ struct BenchmarkConfig {
   std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
   bool dataDirect{false}; // Register GPU memory over the mlx5 Data Direct path.
+  // RdmaTransportConfig::requestTimeout; nullopt leaves request timeouts off.
+  std::optional<std::chrono::milliseconds> rdmaRequestTimeout;
   std::string direction{"both"};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"}; // "fanout", "fanin"

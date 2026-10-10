@@ -8,9 +8,15 @@
 
 #include <dirent.h>
 #include <mpi.h>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <future>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -49,6 +55,99 @@ class SegmentTest {
     return remote;
   }
 };
+
+class CompletionHoldingIbvApi final : public IbvApi {
+ public:
+  Status postSend(ibv_qp* qp, ibv_send_wr* wr, ibv_send_wr** badWr) override {
+    postCount_.fetch_add(1, std::memory_order_relaxed);
+    if (holdNextPost_.exchange(false, std::memory_order_acq_rel)) {
+      auto* completionWr = wr;
+      while (completionWr->next != nullptr) {
+        completionWr = completionWr->next;
+      }
+      std::lock_guard lock(mutex_);
+      heldWrId_ = completionWr->wr_id;
+    }
+    return IbvApi::postSend(qp, wr, badWr);
+  }
+
+  Result<int> pollCq(ibv_cq* cq, int numEntries, ibv_wc* wcs) override {
+    pollCount_.fetch_add(1, std::memory_order_relaxed);
+    auto result = IbvApi::pollCq(cq, numEntries, wcs);
+    if (result.hasError()) {
+      return result;
+    }
+
+    std::lock_guard lock(mutex_);
+    int visible = 0;
+    for (int i = 0; i < result.value(); ++i) {
+      if (heldWrId_ && wcs[i].wr_id == *heldWrId_) {
+        heldCompletion_ = wcs[i];
+        heldWrId_.reset();
+        completionCv_.notify_all();
+      } else {
+        wcs[visible++] = wcs[i];
+      }
+    }
+    return visible;
+  }
+
+  void holdNextPostCompletion() {
+    std::lock_guard lock(mutex_);
+    heldCompletion_.reset();
+    holdNextPost_.store(true, std::memory_order_release);
+  }
+
+  bool waitForCompletionHeld(std::chrono::milliseconds timeout) {
+    std::unique_lock lock(mutex_);
+    return completionCv_.wait_for(
+        lock, timeout, [this] { return heldCompletion_.has_value(); });
+  }
+
+  bool heldCompletionSucceeded() {
+    std::lock_guard lock(mutex_);
+    return heldCompletion_ && heldCompletion_->status == IBV_WC_SUCCESS;
+  }
+
+  uint64_t pollCount() const {
+    return pollCount_.load(std::memory_order_relaxed);
+  }
+  uint64_t postCount() const {
+    return postCount_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable completionCv_;
+  std::atomic<bool> holdNextPost_{false};
+  std::atomic<uint64_t> pollCount_{0};
+  std::atomic<uint64_t> postCount_{0};
+  std::optional<uint64_t> heldWrId_;
+  std::optional<ibv_wc> heldCompletion_;
+};
+
+static void boundedMpiBarrier(std::chrono::seconds timeout) {
+  MPI_Request request;
+  if (MPI_Ibarrier(MPI_COMM_WORLD, &request) != MPI_SUCCESS) {
+    ADD_FAILURE() << "MPI_Ibarrier failed";
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  int complete = 0;
+  while (!complete && std::chrono::steady_clock::now() < deadline) {
+    if (MPI_Test(&request, &complete, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      ADD_FAILURE() << "MPI_Test failed";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    std::this_thread::yield();
+  }
+  if (!complete) {
+    ADD_FAILURE() << "MPI barrier timed out";
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+}
 
 /// Exchange a variable-length byte vector between rank 0 and rank 1 via MPI.
 /// Each rank sends its own data and receives the peer's data.
@@ -119,7 +218,7 @@ class CrossHostTest : public MpiBaseTestFixture {
     MpiBaseTestFixture::SetUp();
     ASSERT_EQ(numRanks, 2) << "CrossHostTest requires exactly 2 MPI ranks";
 
-    ibvApi_ = std::make_shared<IbvApi>();
+    ibvApi_ = makeIbvApi();
     auto initStatus = ibvApi_->init();
     ASSERT_FALSE(initStatus.hasError())
         << "Failed to init IbvApi: " << initStatus.error().message();
@@ -184,6 +283,10 @@ class CrossHostTest : public MpiBaseTestFixture {
     RegisteredSegment local;
     RemoteRegisteredSegment remote;
   };
+
+  virtual std::shared_ptr<IbvApi> makeIbvApi() {
+    return std::make_shared<IbvApi>();
+  }
 
   /// Register a local segment, exchange registration payloads via MPI,
   /// import the remote segment, and return both registered segments.
@@ -261,24 +364,27 @@ class CrossHostTest : public MpiBaseTestFixture {
 
     pair.factory =
         std::make_unique<RdmaTransportFactory>(nicVec, evb, config, ibvApi_);
+    pair.transport = connectTransport(*pair.factory);
+    return pair;
+  }
 
-    // Exchange topology via MPI.
-    auto localTopo = pair.factory->getTopology();
+  /// Create a transport from `factory` and connect it to the peer's, using MPI
+  /// to exchange topology and connection info.
+  std::unique_ptr<Transport> connectTransport(RdmaTransportFactory& factory) {
+    auto localTopo = factory.getTopology();
     auto remoteTopo = mpiExchange(localTopo, globalRank);
 
-    auto transportResult = pair.factory->createTransport(remoteTopo);
+    auto transportResult = factory.createTransport(remoteTopo);
     EXPECT_TRUE(transportResult.hasValue())
         << "createTransport failed: " << transportResult.error().message();
-    pair.transport = std::move(transportResult.value());
+    auto transport = std::move(transportResult.value());
 
-    // Exchange TransportInfo via MPI.
-    auto localInfo = pair.transport->bind();
+    auto localInfo = transport->bind();
     auto remoteInfo = mpiExchange(localInfo, globalRank);
-    auto connectStatus = pair.transport->connect(remoteInfo);
+    auto connectStatus = transport->connect(remoteInfo);
     EXPECT_FALSE(connectStatus.hasError())
         << "connect failed: " << connectStatus.error().message();
-
-    return pair;
+    return transport;
   }
 
   std::shared_ptr<IbvApi> ibvApi_;
@@ -297,6 +403,135 @@ TEST_F(CrossHostTest, TransportsConnectAcrossHosts) {
   pair.transport->shutdown();
   EXPECT_EQ(pair.transport->state(), TransportState::Disconnected);
 }
+
+enum class HeldCompletionOp { Put, Get };
+
+class TerminalTimeoutCrossHostTest
+    : public CrossHostTest,
+      public ::testing::WithParamInterface<HeldCompletionOp> {
+ protected:
+  std::shared_ptr<IbvApi> makeIbvApi() override {
+    completionApi_ = std::make_shared<CompletionHoldingIbvApi>();
+    return completionApi_;
+  }
+
+  std::shared_ptr<CompletionHoldingIbvApi> completionApi_;
+};
+
+// Verifies that withholding a real PUT or GET CQE fires the configured timeout,
+// stops verbs work on that transport, and a new transport from the same
+// factory then completes a PUT.
+TEST_P(
+    TerminalTimeoutCrossHostTest,
+    HeldCompletionTimesOutThenNewTransportWorks) {
+  using namespace std::chrono_literals;
+  constexpr size_t kTransferSize = 4096;
+  constexpr auto kWaitTimeout = 5s;
+
+  RdmaTransportConfig config;
+  config.requestTimeout = 1s;
+  auto pair = connectCrossHost(/*numNics=*/1, config);
+  std::vector<char> localBuf(kTransferSize, 0);
+  auto segments = registerAndExchangeSegments(
+      *pair.factory, localBuf.data(), localBuf.size(), MemoryType::DRAM);
+  if (!segments) {
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return;
+  }
+  const std::vector<TransferRequest> requests = {{
+      .local = segments->local.span(size_t{0}, kTransferSize),
+      .remote = segments->remote.span(size_t{0}, kTransferSize),
+  }};
+  boundedMpiBarrier(15s);
+
+  uint64_t terminalPollCount = 0;
+  uint64_t terminalPostCount = 0;
+  if (globalRank == 0) {
+    completionApi_->holdNextPostCompletion();
+    auto future = GetParam() == HeldCompletionOp::Put
+        ? pair.transport->put(requests)
+        : pair.transport->get(requests);
+
+    if (!completionApi_->waitForCompletionHeld(kWaitTimeout)) {
+      ADD_FAILURE() << "failed to retain the selected CQE";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    EXPECT_TRUE(completionApi_->heldCompletionSucceeded());
+    if (future.wait_for(kWaitTimeout) != std::future_status::ready) {
+      ADD_FAILURE() << "operation did not reach its terminal deadline";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+
+    const auto status = future.get();
+    if (!status.hasError()) {
+      ADD_FAILURE() << "operation completed without a terminal error";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    EXPECT_EQ(status.error().code(), ErrCode::Timeout);
+    terminalPollCount = completionApi_->pollCount();
+    terminalPostCount = completionApi_->postCount();
+
+    auto rejected = GetParam() == HeldCompletionOp::Put
+        ? pair.transport->put(requests)
+        : pair.transport->get(requests);
+    if (rejected.wait_for(kWaitTimeout) != std::future_status::ready) {
+      ADD_FAILURE() << "post-timeout operation did not complete";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    const auto rejectedStatus = rejected.get();
+    if (!rejectedStatus.hasError()) {
+      ADD_FAILURE() << "post-timeout operation was accepted";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    EXPECT_EQ(rejectedStatus.error().code(), ErrCode::Aborted);
+  }
+
+  boundedMpiBarrier(15s);
+  pair.transport->shutdown();
+  EXPECT_EQ(pair.transport->state(), TransportState::Disconnected);
+  pair.transport.reset();
+  EXPECT_EQ(
+      pair.factory->counters()->timeoutsFired.load(),
+      uint64_t{globalRank == 0 ? 1u : 0u});
+  if (globalRank == 0) {
+    EXPECT_EQ(completionApi_->pollCount(), terminalPollCount);
+    EXPECT_EQ(completionApi_->postCount(), terminalPostCount);
+  }
+
+  auto replacement = connectTransport(*pair.factory);
+  boundedMpiBarrier(15s);
+  if (globalRank == 0) {
+    auto healthy = replacement->put(requests);
+    if (healthy.wait_for(kWaitTimeout) != std::future_status::ready) {
+      ADD_FAILURE() << "PUT on the new transport did not complete";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    const auto healthyStatus = healthy.get();
+    EXPECT_FALSE(healthyStatus.hasError()) << healthyStatus.error().message();
+  }
+
+  boundedMpiBarrier(15s);
+  replacement->shutdown();
+  EXPECT_EQ(replacement->state(), TransportState::Disconnected);
+  evbThread_.reset();
+  replacement.reset();
+  segments.reset();
+  pair.factory.reset();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PostedOperation,
+    TerminalTimeoutCrossHostTest,
+    ::testing::Values(HeldCompletionOp::Put, HeldCompletionOp::Get),
+    [](const ::testing::TestParamInfo<HeldCompletionOp>& info) {
+      return info.param == HeldCompletionOp::Put ? "Put" : "Get";
+    });
 
 // --- Parameterized transfer tests ---
 

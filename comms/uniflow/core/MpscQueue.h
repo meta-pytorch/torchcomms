@@ -145,7 +145,9 @@ class MpscQueue {
 
  private:
   void enqueue(Node* node) noexcept {
-    Node* prev = tail_.exchange(node, std::memory_order_release);
+    // ACQ_REL: acquire so writing prev->next happens after the producer that
+    // enqueued `prev` constructed it.
+    Node* prev = tail_.exchange(node, std::memory_order_acq_rel);
     prev->next.store(node, std::memory_order_release);
   }
 

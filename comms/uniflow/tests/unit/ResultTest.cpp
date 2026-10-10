@@ -24,6 +24,7 @@ TEST(ErrCodeTest, ErrorCodeToStringReturnsCorrectNames) {
   EXPECT_STREQ(errorCodeToString(ErrCode::Timeout), "Timeout");
   EXPECT_STREQ(
       errorCodeToString(ErrCode::ResourceExhausted), "ResourceExhausted");
+  EXPECT_STREQ(errorCodeToString(ErrCode::Aborted), "Aborted");
 }
 
 // --- Err tests ---
