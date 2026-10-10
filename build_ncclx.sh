@@ -339,6 +339,19 @@ fi
 # make variable; the quotes keep $ORIGIN from the recipe's shell.
 THIRD_PARTY_LDFLAGS+="-Wl,-rpath,'\$\$ORIGIN' "
 
+# BOLT-able binary support:
+# To make binaries compatible with BOLT optimization, we need:
+# 1. --emit-relocs: Emit relocation information in the binary for BOLT to use
+# 2. -fno-jump-tables: Disable jump tables on arm64 (required for BOLT)
+#    See: https://fburl.com/code/3xpb6kha (fbcode/tools/build/buck/wrappers/defs.bzl)
+#    On arm64, jump tables prevent BOLT from properly analyzing control flow.
+if [[ -n "${EMIT_RELOCS}" ]]; then
+  THIRD_PARTY_LDFLAGS+=" -Wl,--emit-relocs"
+fi
+if [[ -n "${FNO_JUMP_TABLES}" ]]; then
+  export CXXFLAGS="${CXXFLAGS} -fno-jump-tables"
+fi
+
 echo "$THIRD_PARTY_LDFLAGS"
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then
