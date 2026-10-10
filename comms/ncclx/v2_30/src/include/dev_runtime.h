@@ -32,8 +32,9 @@ struct ncclDevrWindow {
 
 // Local-only window for source buffers (non-collective registration).
 // Uses parent's PD but skips rkey allGather. Can only be used as source for put.
-// NOTE: The first 5 fields (memory through winFlags) must match ncclDevrWindow
-// layout so that winFlags can be checked to distinguish window types.
+// NOTE: The first 7 fields (memory through vidmem) must match ncclDevrWindow
+// layout. winSorted[] stores both types via reinterpret_cast; code checks
+// winFlags & NCCL_WIN_LOCAL_ONLY before accessing type-specific fields.
 struct ncclDevrLocalWindow {
   void* memory;      // nullptr for local-only windows (no ncclDevrMemory)
   void* userPtr;
@@ -45,6 +46,10 @@ struct ncclDevrLocalWindow {
   void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS];
   ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS];
 };
+static_assert(offsetof(ncclDevrWindow, winFlags) == offsetof(ncclDevrLocalWindow, winFlags),
+              "ncclDevrWindow and ncclDevrLocalWindow must have winFlags at the same offset");
+static_assert(offsetof(ncclDevrWindow, vidmem) == offsetof(ncclDevrLocalWindow, vidmem),
+              "ncclDevrWindow and ncclDevrLocalWindow must have vidmem at the same offset");
 struct ncclDevrWindowSorted;
 struct ncclDevrTeam;
 
