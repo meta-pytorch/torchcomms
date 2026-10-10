@@ -182,6 +182,7 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
     auto comm = std::make_shared<TestTorchCommNCCLX>();
     comm->setCudaApi(cuda_mock_);
     comm->setNcclApi(nccl_mock_);
+    comm->setCtranApi(ctran_mock_);
 
     // Mock getDeviceCount to return a valid device count (needed for rank %
     // device_count)
@@ -229,6 +230,7 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
     auto comm = std::make_shared<TestTorchCommNCCLX>();
     comm->setCudaApi(cuda_mock_);
     comm->setNcclApi(nccl_mock_);
+    comm->setCtranApi(ctran_mock_);
 
     // Mock CUDA API to return error for device ID that's too large
     EXPECT_CALL(*cuda_mock_, setDevice(127))
