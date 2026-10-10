@@ -705,6 +705,9 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/relay/sharded_relay_reduce_scatter.cc
   comms/rcclx/develop/meta/relay/sharded_relay_reduce_scatter.h
   comms/rcclx/develop/meta/relay/sharded_relay_route.h
+  comms/rcclx/develop/meta/hierarchical/hierarchical_allreduce.cc
+  comms/rcclx/develop/meta/hierarchical/hierarchical_allreduce.h
+  comms/rcclx/develop/meta/hierarchical/hierarchical_geometry.h
 )
 
 # find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
