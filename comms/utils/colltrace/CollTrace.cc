@@ -7,6 +7,7 @@
 #include <utility>
 
 #include <fmt/core.h>
+#include <folly/ScopeGuard.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <folly/executors/GlobalExecutor.h>
@@ -16,6 +17,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/CudaRAII.h"
 #include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
@@ -139,41 +141,28 @@ CollTrace::CollTrace(
       [this](uint32_t collId) { return cancelGraphCollective(collId); });
   if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH &&
       graphColltraceSupported(logPrefix_, config_.loggerName)) {
-    // Eagerly initialize the globaltimer calibration singleton now (outside
-    // graph capture) so it is ready when GraphCudaWaitEvent is constructed
-    // during capture.
-    ::hrdw_ring_buffer::GlobaltimerCalibration::get();
-
-    // 2x the max plugin retention ensures the ring holds at least the last
-    // max_retention collective entries (each collective has 1x start + 1x end
-    // event). The ring ctor rounds up to the next power of 2.
-    int64_t maxRetention = 0;
-    for (const auto& plugin : plugins_) {
-      maxRetention = std::max(maxRetention, plugin->maxEventRetention());
-    }
-    uint32_t ringSize =
-        std::max(kDefaultRingSize, static_cast<uint32_t>(maxRetention) * 2);
-    COMMS_LOG_IMPL(
-        *logger_,
-        ::spdlog::level::debug,
-        COMMS_LOGGER_DEBUG,
-        "{}: graph ring buffer sized to {} entries (max plugin retention={}, "
-        "default={})",
-        logPrefix_,
-        ringSize,
-        maxRetention,
-        kDefaultRingSize);
-
-    ringBuffer_ = std::make_shared<
-        ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>(ringSize);
-    if (ringBuffer_->valid()) {
-      ringReader_.emplace(*ringBuffer_);
+    if (NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP) {
+      // Bring up graph tracing on a dedicated thread: the first call pays the
+      // process-cold CUDA cost (~750ms on GB300), which must not block
+      // communicator init. Graph records rendezvous with it via
+      // graphWarmupDone_; the poll thread adopts the ring once published.
+      graphWarmupThread_ =
+          std::thread(&CollTrace::warmupGraphTracing, this, threadSetupFunc);
     } else {
-      COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 1)
-          << logPrefix_ << ": Failed to allocate shared ring buffer";
-      ringBuffer_.reset();
+      // The calling thread already has the communicator's device current;
+      // threadSetupFunc would also rename it and change its capture mode.
+      warmupGraphTracing([]() -> CommsMaybeVoid { return folly::unit; });
     }
+  } else {
+    graphWarmupDone_.count_down();
   }
+  // A joinable std::thread member would std::terminate during unwind if the
+  // rest of construction throws.
+  auto joinWarmupOnThrow = folly::makeGuard([this]() {
+    if (graphWarmupThread_.joinable()) {
+      graphWarmupThread_.join();
+    }
+  });
 
   // pluginByName_ is not used in the colltrace thread. It is okay to initialize
   // it after the colltrace thread starts
@@ -183,12 +172,75 @@ CollTrace::CollTrace(
     pluginByName_.emplace(plugin->getName(), *plugin);
   }
 
-  // Start the poll thread after ring buffer initialization because it reads
-  // the shared pointer on its first iteration.
+  // The poll thread tolerates a not-yet-published ring (graph warmup runs
+  // concurrently), so it can start immediately.
   traceCollThread_ =
       std::thread(&CollTrace::collTraceThread, this, threadSetupFunc);
 
   threadStarted_.wait();
+  joinWarmupOnThrow.dismiss();
+}
+
+void CollTrace::warmupGraphTracing(
+    const std::function<CommsMaybeVoid(void)>& threadSetupFunc) {
+  // This can overlap a capture the user starts right after init returns, so
+  // keep its CUDA calls out of that capture regardless of what
+  // threadSetupFunc does to the capture mode.
+  StreamCaptureModeGuard captureGuard{cudaStreamCaptureModeRelaxed};
+  // The latch below is counted down exactly once on every path that returns,
+  // so record-side waits terminate on recoverable failures (which leave
+  // ringBuffer_ null). Calibration failures abort()/LOG(FATAL) by default and
+  // take the process down from this thread instead.
+  try {
+    if (config_.beforeGraphWarmupHook) {
+      config_.beforeGraphWarmupHook();
+    }
+    if (auto res = threadSetupFunc(); res.hasError()) {
+      COMMS_LOGGER_STREAM(*logger_, ERR)
+          << logPrefix_
+          << ": graph warmup device setup failed: " << res.error().message;
+    } else {
+      // Calibrate before publishing the ring: the poll thread reads the
+      // calibration as soon as it sees a ring.
+      ::hrdw_ring_buffer::GlobaltimerCalibration::get();
+
+      // 2x the max plugin retention ensures the ring holds at least the last
+      // max_retention collective entries (each collective has 1x start + 1x
+      // end event). The ring ctor rounds up to the next power of 2.
+      int64_t maxRetention = 0;
+      for (const auto& plugin : plugins_) {
+        maxRetention = std::max(maxRetention, plugin->maxEventRetention());
+      }
+      uint32_t ringSize =
+          std::max(kDefaultRingSize, static_cast<uint32_t>(maxRetention) * 2);
+      COMMS_LOG_IMPL(
+          *logger_,
+          ::spdlog::level::debug,
+          COMMS_LOGGER_DEBUG,
+          "{}: graph ring buffer sized to {} entries (max plugin retention={}, "
+          "default={})",
+          logPrefix_,
+          ringSize,
+          maxRetention,
+          kDefaultRingSize);
+
+      auto ring = std::make_shared<
+          ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>(ringSize);
+      if (ring->valid()) {
+        *ringBuffer_.wlock() = std::move(ring);
+      } else {
+        COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 1)
+            << logPrefix_ << ": Failed to allocate shared ring buffer";
+      }
+    }
+  } catch (const std::exception& e) {
+    COMMS_LOGGER_STREAM(*logger_, ERR)
+        << logPrefix_ << ": graph warmup failed: " << e.what();
+  } catch (...) {
+    COMMS_LOGGER_STREAM(*logger_, ERR)
+        << logPrefix_ << ": graph warmup failed with unknown exception";
+  }
+  graphWarmupDone_.count_down();
 }
 
 CollTrace::~CollTrace() {
@@ -208,6 +260,11 @@ CollTrace::~CollTrace() {
   // Invalidate all eager handles.
   for (auto& [_, handle] : eventToHandleMap_) {
     handle->invalidate();
+  }
+  // Ensure one-time graph bring-up finished. Normally long done; bounded by
+  // the cold CUDA cost only if torn down immediately after construction.
+  if (graphWarmupThread_.joinable()) {
+    graphWarmupThread_.join();
   }
   // Stop the only thread that removes graph state before walking that state.
   if (traceCollThread_.joinable()) {
@@ -300,7 +357,7 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
   }
 
   auto state = std::make_shared<GraphCollTraceState>();
-  state->ringBuffer = ringBuffer_;
+  state->ringBuffer = ringBuffer_.copy();
 
   // heap alloc a copy s.t., the graph will keep the state alive until its
   // dtor flips the flag. the readers will see this and stop using
@@ -510,6 +567,11 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>>
 CollTrace::recordGraphCollectiveImpl(
     std::unique_ptr<ICollMetadata> metadata,
     std::unique_ptr<ICollWaitEvent> waitEvent) noexcept {
+  // Graph bring-up runs off the construction critical path; wait for it here.
+  // The wait performs no CUDA and is safe during stream capture.
+  graphWarmupDone_.wait();
+  auto ring = ringBuffer_.copy();
+
   // we know this will be non-null because we checked it in the caller
   auto* rawWaitEvent = dynamic_cast<GraphCudaWaitEvent*>(waitEvent.get());
 
@@ -519,7 +581,7 @@ CollTrace::recordGraphCollectiveImpl(
   rawWaitEvent->setLogger(*logger_);
   rawWaitEvent->setCollId(collIdVal);
 
-  if (ringBuffer_ == nullptr) {
+  if (ring == nullptr) {
     return folly::makeUnexpected(CommsError(
         "Ringbuffer not initialized during recordGraphCollective",
         commInternalError));
@@ -534,7 +596,7 @@ CollTrace::recordGraphCollectiveImpl(
         commInternalError));
   }
 
-  rawWaitEvent->attachRingBuffer(ringBuffer_.get());
+  rawWaitEvent->attachRingBuffer(ring.get());
 
   auto collRecord =
       std::make_shared<CollRecord>(collIdVal, std::move(metadata));
@@ -766,8 +828,14 @@ void CollTrace::expireAmbiguousGraphReplays(uint64_t consumedUpTo) noexcept {
 
 void CollTrace::pollGraphEvents(
     std::multiset<PendingAction>& actions) noexcept {
-  if (ringBuffer_ == nullptr || !ringReader_.has_value()) {
+  auto ring = ringBuffer_.copy();
+  if (ring == nullptr) {
+    // Warmup still running or failed; nothing recorded yet or ever.
     return;
+  }
+  if (!ringReader_.has_value()) {
+    // Background warmup published the ring; adopt it for polling.
+    ringReader_.emplace(*ring);
   }
 
   std::vector<std::unique_ptr<CollTraceEvent>> destroyedGraphEvents;
@@ -850,8 +918,7 @@ void CollTrace::pollGraphEvents(
   }
 
   const auto& cal = ::hrdw_ring_buffer::GlobaltimerCalibration::get();
-  const auto ambiguityRecoveryWindow =
-      static_cast<uint64_t>(ringBuffer_->size());
+  const auto ambiguityRecoveryWindow = static_cast<uint64_t>(ring->size());
 
   auto pollResult = ringReader_->poll(
       [&](const auto& entry, uint64_t slot) {
@@ -1272,7 +1339,7 @@ void CollTrace::collTraceThread(
     if (NCCL_COLLTRACE_PERIODIC_REANCHOR) {
       auto now = std::chrono::steady_clock::now();
       if (now - lastReanchor >= kReanchorInterval) {
-        if (ringBuffer_ != nullptr) {
+        if (ringBuffer_.copy() != nullptr) {
           ::hrdw_ring_buffer::GlobaltimerCalibration::get().refresh();
         }
         if (auto* refpt = CudaReferencePoint::tryGet()) {
