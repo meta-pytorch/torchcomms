@@ -39,7 +39,7 @@ __device__ __forceinline__ void waitFlag(const uint32_t* flag, uint32_t want) {
       __scoped_atomic_load_n(flag, __ATOMIC_RELAXED, __MEMORY_SCOPE_SYSTEM),
       want)) {
   }
-  __scoped_atomic_thread_fence(__ATOMIC_ACQUIRE, __MEMORY_SCOPE_SYSTEM);
+  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "");
 }
 
 __device__ __forceinline__ void storeFlag(uint32_t* flag, uint32_t value) {
