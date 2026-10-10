@@ -10,6 +10,7 @@
 #include "comm.h"
 #include "cudawrap.h"
 #include "param.h"
+#include "proxy.h"
 #include "utils.h"
 
 #if NCCL_VERSION_CODE < NCCL_VERSION(2, 32, 0)
@@ -25,13 +26,20 @@ NCCL_PARAM(NvlsBindRetryBackoffMs, "NVLS_BIND_RETRY_BACKOFF_MS", 1000);
 
 namespace ncclx::nvls {
 
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+NvlsBootstrapOps gNvlsBootstrap{
+    bootstrapIntraNodeAllGather,
+    bootstrapIntraNodeBarrier,
+    bootstrapIntraNodeBroadcast,
+    ncclProxyClientGetFdBlocking};
+
 ncclResult_t collectiveBindResult(
     const ncclComm* comm,
     CUresult localResult,
     CUresult* collectiveResult) {
   CUresult localResults[NCCL_MAX_LOCAL_RANKS]{};
   localResults[comm->localRank] = localResult;
-  NCCLCHECK(bootstrapIntraNodeAllGather(
+  NCCLCHECK(gNvlsBootstrap.allGather(
       comm->bootstrap,
       comm->localRankToRank,
       comm->localRank,
@@ -105,7 +113,7 @@ ncclResult_t prepareBindRetry(
   // resources through the caller's cleanup labels.
   *ucptr = nullptr;
   *allocMcHandle = 0;
-  NCCLCHECK(bootstrapIntraNodeBarrier(
+  NCCLCHECK(gNvlsBootstrap.barrier(
       comm->bootstrap,
       comm->localRankToRank,
       comm->localRank,
@@ -125,7 +133,9 @@ namespace {
 
 ncclResult_t collectiveCleanupResult(
     const ncclComm* comm,
-    CUresult localResult) {
+    const char* operation,
+    CUresult localResult,
+    CUresult contextResult) {
   CUresult result = CUDA_SUCCESS;
   NCCLCHECK(collectiveBindResult(comm, localResult, &result));
   if (result == CUDA_SUCCESS) {
@@ -133,10 +143,26 @@ ncclResult_t collectiveCleanupResult(
   }
   const char* errStr = "unknown error";
   (void)pfn_cuGetErrorString(result, &errStr);
-  WARN(
-      "NVLS multicast retry cleanup failed: CUDA error %d '%s'",
-      result,
-      errStr);
+  if (contextResult == CUDA_SUCCESS) {
+    WARN(
+        "NVLS multicast retry cleanup (%s) failed: CUDA error %d '%s'",
+        operation,
+        result,
+        errStr);
+  } else {
+    // The cleanup failure returns before the retry/fatal report below, so the
+    // triggering map error is logged here; otherwise the root cause never
+    // appears at default log level on this double fault.
+    const char* contextStr = "unknown error";
+    (void)pfn_cuGetErrorString(contextResult, &contextStr);
+    WARN(
+        "NVLS multicast retry cleanup (%s) failed: CUDA error %d '%s' (triggered by map error %d '%s')",
+        operation,
+        result,
+        errStr,
+        contextResult,
+        contextStr);
+  }
   printCudaDriverErrorHint(result);
   return ncclUnhandledCudaError;
 }
@@ -168,7 +194,7 @@ ncclResult_t multicastMapWithRetry(
       *mapped = 0;
     }
   }
-  NCCLCHECK(collectiveCleanupResult(comm, unmapResult));
+  NCCLCHECK(collectiveCleanupResult(comm, "cuMemUnmap", unmapResult, result));
 
   const char* errStr = "unknown error";
   (void)pfn_cuGetErrorString(result, &errStr);
@@ -197,9 +223,13 @@ ncclResult_t multicastMapWithRetry(
   return ncclUnhandledCudaError;
 }
 
-ncclResult_t finishNvlsTeamRetry(const ncclComm* comm, CUresult cleanupResult) {
-  NCCLCHECK(collectiveCleanupResult(comm, cleanupResult));
-  NCCLCHECK(bootstrapIntraNodeBarrier(
+ncclResult_t finishNvlsTeamRetry(
+    const ncclComm* comm,
+    const char* cleanupOp,
+    CUresult cleanupResult) {
+  NCCLCHECK(
+      collectiveCleanupResult(comm, cleanupOp, cleanupResult, CUDA_SUCCESS));
+  NCCLCHECK(gNvlsBootstrap.barrier(
       comm->bootstrap,
       comm->localRankToRank,
       comm->localRank,
