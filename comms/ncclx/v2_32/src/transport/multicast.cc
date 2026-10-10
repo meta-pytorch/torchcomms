@@ -53,7 +53,8 @@ ncclResult_t ncclMcImport(struct ncclComm* comm, char* shareableHandle, int rank
     TRACE(NCCL_NVLS, "NVLS rank %d Importing shareable handle %p from rank %d", comm->localRank, shareableHandle, rank);
     TRACE(NCCL_NVLS, "NVLS rank %d request conversion of handle 0x%lx from rank %d", comm->localRank,
           *(uint64_t*)shareableHandle, rank);
-    NCCLCHECKGOTO(ncclProxyClientGetFdBlocking(comm, rank, shareableHandle, &fd), ret, fail);
+    // [NCCLX] Route through the NVLS test seam (meta/nvls/NvlsBindRetry.h).
+    NCCLCHECKGOTO(ncclx::nvls::gNvlsBootstrap.getProxyFd(comm, rank, shareableHandle, &fd), ret, fail);
     TRACE(NCCL_NVLS, "NVLS rank %d received converted fd %lld from rank %d", comm->localRank, (long long)fd, rank);
     CUCHECKGOTO(cuMemImportFromShareableHandle(mcHandle, (void*)(uintptr_t)fd, type), ret, fail);
     SYSCHECK(ncclIpcFdClose(fd), "close");
@@ -130,12 +131,14 @@ retryTeam:
     NCCLCHECKGOTO(ncclMcCreate(comm, &mcprop, comm->localRank, comm->localRanks, &mcHandle, shareableHandle), ret,
                   fail);
     mcCreated = 1;
-    NCCLCHECKGOTO(bootstrapIntraNodeBroadcast(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
-                                              0, shareableHandle, NVLS_HANDLE_SIZE),
+    // [NCCLX] Route through the NVLS test seam (meta/nvls/NvlsBindRetry.h).
+    NCCLCHECKGOTO(ncclx::nvls::gNvlsBootstrap.broadcast(comm->bootstrap, comm->localRankToRank, comm->localRank,
+                                                       comm->localRanks, 0, shareableHandle, NVLS_HANDLE_SIZE),
                   ret, fail);
   } else {
-    NCCLCHECKGOTO(bootstrapIntraNodeBroadcast(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
-                                              0, shareableHandle, NVLS_HANDLE_SIZE),
+    // [NCCLX] Route through the NVLS test seam (meta/nvls/NvlsBindRetry.h).
+    NCCLCHECKGOTO(ncclx::nvls::gNvlsBootstrap.broadcast(comm->bootstrap, comm->localRankToRank, comm->localRank,
+                                                       comm->localRanks, 0, shareableHandle, NVLS_HANDLE_SIZE),
                   ret, fail);
     NCCLCHECKGOTO(ncclMcImport(comm, shareableHandle, comm->localRankToRank[0], &mcHandle), ret, fail);
     mcCreated = 1;
@@ -145,8 +148,9 @@ retryTeam:
   // cuMemMap of an MC object blocks until every device has been added. This
   // abort-aware barrier makes a peer failing before cuMulticastAddDevice trip the
   // abort flag here instead of stranding survivors in the blocking cuMemMap.
-  NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
-                                          comm->localRankToRank[0]),
+  // [NCCLX] Route through the NVLS test seam (meta/nvls/NvlsBindRetry.h).
+  NCCLCHECKGOTO(ncclx::nvls::gNvlsBootstrap.barrier(comm->bootstrap, comm->localRankToRank, comm->localRank,
+                                                   comm->localRanks, comm->localRankToRank[0]),
                 ret, fail);
 
   // Reserve and map the whole MC VA once; each consumer slice is a view into it.
@@ -158,13 +162,15 @@ retryTeam:
     NCCLCHECKGOTO(ncclx::nvls::multicastMapWithRetry(comm, base, capacity, mcHandle, teamAttempt, &retry, &mapped), ret, fail);
     if (retry) {
       CUresult cleanupResult = CUPFN(cuMemAddressFree(base, capacity));
+      const char* cleanupOp = "cuMemAddressFree";
       if (cleanupResult == CUDA_SUCCESS) {
         base = 0;
         cleanupResult = CUPFN(cuMemRelease(mcHandle));
+        cleanupOp = "cuMemRelease";
         if (cleanupResult == CUDA_SUCCESS) mcCreated = 0;
       }
       memset(shareableHandle, 0, sizeof(shareableHandle));
-      NCCLCHECKGOTO(ncclx::nvls::finishNvlsTeamRetry(comm, cleanupResult), ret, fail);
+      NCCLCHECKGOTO(ncclx::nvls::finishNvlsTeamRetry(comm, cleanupOp, cleanupResult), ret, fail);
       teamAttempt++;
       goto retryTeam;
     }
