@@ -264,6 +264,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
     revoked_ = false;
+    comm_abort_requested_ = false;
 
     CUDA_CHECK(
         cuda_api_,
@@ -384,11 +385,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reconfigure(
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
     revoked_ = false;
+    comm_abort_requested_ = false;
     initNcclxResources();
   } else {
     comm_state_ = CommState::NORMAL;
     shutdown_ = false;
     revoked_ = false;
+    comm_abort_requested_ = false;
 
     CUDA_CHECK(
         cuda_api_,

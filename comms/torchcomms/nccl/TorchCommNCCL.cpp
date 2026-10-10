@@ -92,6 +92,7 @@ void TorchCommNCCL::init(
   device_ = device;
   name_ = name;
   options_ = options;
+  comm_abort_requested_ = false;
 
   if (init_state_ == InitializationState::INITIALIZED) {
     throw std::runtime_error("TorchCommNCCL already initialized");
@@ -267,6 +268,10 @@ void TorchCommNCCL::finalize() {
     throw std::runtime_error("Work timed out during finalize");
   } else if (work_status == TorchWorkNCCL::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
+    if (!nccl_comm_) {
+      throw std::runtime_error(
+          "NCCL communicator was already aborted due to a previous error");
+    }
     ncclResult_t asyncErr;
     NCCL_CHECK(
         nccl_api_,
@@ -333,14 +338,16 @@ void TorchCommNCCL::finalize() {
 }
 
 void TorchCommNCCL::abortNcclComm() {
+  if (comm_abort_requested_.exchange(true)) {
+    return;
+  }
+
   detachMemoryHook();
-  if (nccl_comm_) {
+  ncclComm_t comm = nccl_comm_;
+  nccl_comm_ = nullptr;
+  if (comm) {
     NCCL_CHECK(
-        nccl_api_,
-        nccl_comm_,
-        nccl_api_->commAbort(nccl_comm_),
-        "NCCL Abort failed");
-    nccl_comm_ = nullptr;
+        nccl_api_, comm, nccl_api_->commAbort(comm), "NCCL Abort failed");
   }
   // Never abort the process in reconfigurable mode: callers fall back to
   // revoke + throw so the failure can be handled by reconfiguring.
@@ -349,6 +356,20 @@ void TorchCommNCCL::abortNcclComm() {
     TC_LOG(ERROR, this) << "Aborting process due to timeout";
     runAbortHooks();
     ::abort();
+  }
+}
+
+void TorchCommNCCL::abortNcclCommNoThrow() noexcept {
+  if (comm_abort_requested_.exchange(true)) {
+    return;
+  }
+
+  detachMemoryHook();
+  ncclComm_t comm = nccl_comm_;
+  nccl_comm_ = nullptr;
+  if (comm && nccl_api_) {
+    NCCL_CHECK_IGNORE(
+        nccl_api_, nccl_api_->commAbort(comm), "NCCL Abort failed");
   }
 }
 
