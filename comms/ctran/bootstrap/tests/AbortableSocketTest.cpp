@@ -115,6 +115,32 @@ TEST_F(AbortableSocketTest, BasicLifecycleSendAllRecvAll) {
   EXPECT_EQ(0, std::memcmp(response.data(), rcvdResponse, response.size()));
 }
 
+TEST_F(AbortableServerSocketTest, RequestStopUnblocksAcceptWithoutClosing) {
+  // The stop must be observable by acceptSocket() while the fd is still open,
+  // so a caller can join its accept thread before shutdown() touches the fd.
+  folly::Baton<> accepting;
+  std::optional<int> acceptError;
+  std::thread acceptThread([&] {
+    accepting.post();
+    auto maybeSocket = server->acceptSocket();
+    ASSERT_TRUE(maybeSocket.hasError());
+    acceptError = maybeSocket.error();
+  });
+  accepting.wait();
+
+  EXPECT_TRUE(server->requestStop());
+  EXPECT_TRUE(server->stopRequested());
+  acceptThread.join();
+
+  EXPECT_EQ(ECONNABORTED, acceptError);
+  // Still open: the caller, not the stop, decides when the fd is closed.
+  EXPECT_NE(-1, server->getFd());
+  EXPECT_FALSE(server->hasShutDown());
+  // A stop is an ordinary teardown, so it must not look like a failure to the
+  // accept loop's error handling, which would abort the communicator.
+  EXPECT_FALSE(serverAbort->isAborted());
+}
+
 TEST_F(AbortableSocketTest, MoveSemantics) {
   ctran::bootstrap::AbortableSocket client1;
   EXPECT_EQ(0, client1.connect(serverAddr, "lo"));
