@@ -222,7 +222,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommGetUniqueIdFailure) {
       {
         try {
           bootstrap->createNcclComm("test_comm");
-        } catch (const std::runtime_error& e) {
+        } catch (const AssertionError& e) {
           std::string error_msg = e.what();
           EXPECT_TRUE(
               error_msg.find("Failed to get NCCL unique ID") !=
@@ -230,7 +230,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommGetUniqueIdFailure) {
           throw;
         }
       },
-      std::runtime_error);
+      AssertionError);
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommInitRankConfigFailure) {
@@ -256,7 +256,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommInitRankConfigFailure) {
       {
         try {
           bootstrap->createNcclComm("test_comm");
-        } catch (const std::runtime_error& e) {
+        } catch (const AssertionError& e) {
           std::string error_msg = e.what();
           EXPECT_TRUE(
               error_msg.find("Failed to initialize NCCL communicator") !=
@@ -264,7 +264,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommInitRankConfigFailure) {
           throw;
         }
       },
-      std::runtime_error);
+      AssertionError);
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdInvalidStoreData) {
