@@ -1736,8 +1736,8 @@ void RdmaTransport::shutdown() {
           {
             std::lock_guard<std::mutex> lock(m);
             done = true;
+            cv.notify_one();
           }
-          cv.notify_one();
         } else {
           evb_->dispatch([self = std::move(self)]() noexcept { self(self); });
         }
