@@ -487,6 +487,97 @@ __global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self,
   cnt.end(hist);
 }
 
+// dispatch_copy_epilogue_impl without the payload, for a dispatch whose rows the caller moves
+// later with dispatch_permute_epilogue_impl (ep_dispatch_payload_later): the local top-k ids,
+// weights, source indices and per-expert counts, written exactly as the copy epilogue writes
+// them.
+__global__ void dispatch_meta_epilogue_impl(EpConfig cfg, WindowView self,
+                                            const int32_t* __restrict__ recv_offsets,
+                                            int32_t* __restrict__ out_topk_idx,
+                                            float* __restrict__ out_topk_w,
+                                            int32_t* __restrict__ out_src_idx,
+                                            int32_t* __restrict__ expert_counts,  // [epr] or nullptr
+                                            int offsets_inclusive) {
+  const int src = blockIdx.x;
+  if (src >= cfg.num_ranks) return;  // block-uniform, so the barriers in `cnt` are safe
+
+  const int n = self.counts()[src];
+  const int dst_base = offsets_inclusive ? (src ? recv_offsets[src - 1] : 0) : recv_offsets[src];
+  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
+  const int my_lo = cfg.expert_begin(cfg.rank);
+  __shared__ int hist[kEpiMaxExperts];
+  EpilogueCounts cnt;
+  cnt.begin(expert_counts, cfg.experts_per_rank(), hist);
+
+  for (int i = blockIdx.y * nwarps + warp; i < n; i += nwarps * gridDim.y) {
+    const size_t s = EpWindowLayout::slot(cfg, src, i);
+    const size_t d = dst_base + i;
+    for (int k = lane; k < cfg.num_topk; k += kWarpSize) {
+      const int e = self.topk_idx()[s * cfg.num_topk + k];
+      const int le = (e >= 0) ? (e - my_lo) : -1;
+      out_topk_idx[d * cfg.num_topk + k] = le;
+      out_topk_w[d * cfg.num_topk + k] = self.topk_w()[s * cfg.num_topk + k];
+      cnt.add(le, hist);
+    }
+    if (lane == 0) out_src_idx[d] = self.src_idx()[s];
+  }
+  cnt.end(hist);
+}
+
+// The payload of a dispatch whose epilogue left it in the window (ep_dispatch_payload_later),
+// moved straight into the expert-major layout: received token d goes to row
+// row = token_ids[g * n + d] for every local expert group g that has it (-1: not this group):
+// its payload to out_x + row * x_stride, its top-k weights (fp32) to out_w + row * w_stride and
+// its local top-k ids (ids_bytes wide, -1 for an expert elsewhere) to out_ids + row * ids_stride.
+// Strides are in bytes; three pointers into one row of a packed layout give the bytes packing
+// each token with its metadata and scattering the packed rows by token_ids would write. One wave
+// per token, and the payload is read from the window once per row it goes to.
+__global__ void dispatch_permute_epilogue_impl(EpConfig cfg, WindowView self,
+                                               const int32_t* __restrict__ recv_offsets,
+                                               int offsets_inclusive,
+                                               const int64_t* __restrict__ token_ids,  // [groups, n]
+                                               int groups, int n, uint8_t* __restrict__ out_x,
+                                               int64_t x_stride, uint8_t* __restrict__ out_w,
+                                               int64_t w_stride, uint8_t* __restrict__ out_ids,
+                                               int64_t ids_stride, int ids_bytes) {
+  const int src = blockIdx.x;
+  if (src >= cfg.num_ranks) return;
+  const int cnt = self.counts()[src];
+  const int dst_base = offsets_inclusive ? (src ? recv_offsets[src - 1] : 0) : recv_offsets[src];
+  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
+  const int K = cfg.num_topk, my_lo = cfg.expert_begin(cfg.rank);
+  const int payload_bytes = cfg.hidden * (int)sizeof(bf16_t);
+  for (int i = blockIdx.y * nwarps + warp; i < cnt; i += nwarps * gridDim.y) {
+    const size_t s = EpWindowLayout::slot(cfg, src, i);
+    const int d = dst_base + i;
+    int le = -1;
+    float w = 0.f;
+    if (lane < K) {
+      const int e = self.topk_idx()[s * K + lane];
+      le = (e >= 0) ? (e - my_lo) : -1;
+      w = self.topk_w()[s * K + lane];
+    }
+    const uint8_t* payload = reinterpret_cast<const uint8_t*>(self.x() + s * cfg.hidden);
+    for (int g0 = 0; g0 < groups; g0 += kWarpSize) {
+      const int g = g0 + lane;
+      // Rows index an output of at most n * num_topk rows, so they fit an int.
+      const int row_l = g < groups ? (int)token_ids[(size_t)g * n + d] : -1;
+      for (unsigned long long m = __ballot(row_l >= 0); m; m &= m - 1) {  // wave-uniform
+        const int row = __shfl(row_l, __builtin_ctzll(m), kWarpSize);
+        wave_copy_local_bytes<true, 1>(out_x + (size_t)row * x_stride, payload, payload_bytes);
+        if (lane < K) {
+          reinterpret_cast<float*>(out_w + (size_t)row * w_stride)[lane] = w;
+          uint8_t* oi = out_ids + (size_t)row * ids_stride;
+          if (ids_bytes == 8)
+            reinterpret_cast<int64_t*>(oi)[lane] = le;
+          else
+            reinterpret_cast<int32_t*>(oi)[lane] = le;
+        }
+      }
+    }
+  }
+}
+
 __global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self, const int32_t* __restrict__ recv_offsets,
                                             fp8_t* __restrict__ out_x, float* __restrict__ out_sf,
                                             int32_t* __restrict__ out_topk_idx, float* __restrict__ out_topk_w,
