@@ -569,7 +569,7 @@ Status RdmaTransport::preprocessRequest(
   *localHandle = nullptr;
   *remoteHandle = nullptr;
 
-  for (const auto& h : req.local.handles_) {
+  for (const auto& h : req.local.registrationHandles()) {
     if (h->transportType() == TransportType::RDMA) {
       auto* rh = dynamic_cast<const RdmaRegistrationHandle*>(h.get());
       if (rh && rh->domainId() == domainId_) {
@@ -579,7 +579,7 @@ Status RdmaTransport::preprocessRequest(
     }
   }
 
-  for (const auto& h : req.remote.handles_) {
+  for (const auto& h : req.remote.registrationHandles()) {
     auto* rh = dynamic_cast<const RdmaRemoteRegistrationHandle*>(h.get());
     if (rh && rh->domainId() == remoteDomainId_) {
       *remoteHandle = rh;
