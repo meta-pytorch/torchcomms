@@ -185,6 +185,21 @@ inline int ctas_per_rank(int num_sms, int dflt, int num_ranks) {
   return per > 0 ? per : 1;
 }
 
+// A positive integer environment knob read once, or 0 when unset.
+inline int env_int(const char* name) {
+  const char* e = getenv(name);
+  return e ? atoi(e) : 0;
+}
+
+// CTAs per rank for the dispatch copy epilogue. By default it takes the push's grid, which
+// num_sms sizes for peer stores; the copy is local and memory-bound, and at one 1024-thread
+// CTA per CU the push's budget leaves CUs idle. RCCL_EP_COPY_EPILOGUE_SMS gives it its own
+// total budget.
+inline int copy_epilogue_cta(int push_cta, int num_ranks) {
+  static const int sms = env_int("RCCL_EP_COPY_EPILOGUE_SMS");
+  return sms > 0 ? ctas_per_rank(sms, 128, num_ranks) : push_cta;
+}
+
 // Release the device communicator and the symmetric window. ep_configure's
 // failure paths run with `configured` still false, so ep_destroy would never
 // reach resources they had already taken; they have to hand them back
@@ -843,7 +858,13 @@ int ep_configure_v2(void* handle, int num_experts, int num_topk, int grouped_onl
   h->cfg.num_experts = num_experts;
   h->cfg.num_topk = num_topk;
   h->grouped_only = grouped_only != 0;
-  h->lay = EpWindowLayout::make(h->cfg, sizeof(bf16_t), h->grouped_only ? 1 : 0);
+  // RCCL_EP_HYB_Y_LOCAL=1: in a hybrid window that reduces within the node, only this node's
+  // ranks write y and cw -- each its own slot(rank, t) in a local owner's window, while rows for a
+  // remote owner go to the forwarder's staging -- and the reduce epilogue reads only those. So
+  // y and cw keep this node's sources alone, (num_ranks - node_size) * T rows smaller.
+  const bool y_local = h->hybrid && h->hyb_multi && env_int("RCCL_EP_HYB_Y_LOCAL") == 1;
+  h->lay = EpWindowLayout::make(h->cfg, sizeof(bf16_t), h->grouped_only ? 1 : 0,
+                                y_local ? h->node_size : 0, y_local ? h->node_base : 0);
   h->win_bytes = h->lay.total_bytes;
   if (h->hybrid && h->hyb_multi) {
     // The combine staging goes past the layout's end, inside the registered window, where
@@ -1036,13 +1057,14 @@ static int dispatch_tail(EpHandle* h, hipStream_t s) {
                        (int32_t*)t.expert_counts, c.experts_per_rank());
   }
 
+  const int epi_cta = copy_epilogue_cta(t.cta, c.num_ranks);
   if (t.use_fp8) {
-    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, t.cta), dim3(kEpWaves * kWarpSize), 0, s,
+    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, h->self_view, h->d_recvoff, (fp8_t*)t.out_x, (float*)t.out_sf,
                        (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
                        (int32_t*)t.expert_counts);
   } else {
-    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, t.cta), dim3(kEpWaves * kWarpSize), 0, s,
+    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, h->self_view, t.psum_incl ? (const int32_t*)t.psum_incl : h->d_recvoff,
                        (bf16_t*)t.out_x, (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
                        (int32_t*)t.expert_counts, t.psum_incl ? 1 : 0);
