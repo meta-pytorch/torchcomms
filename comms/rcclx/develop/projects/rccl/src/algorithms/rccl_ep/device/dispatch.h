@@ -24,15 +24,15 @@ namespace rccl_ep {
 // is tested, so the loads overlap.
 constexpr int kPlanMaxWaves = 32;
 
-__global__ void k_ep_plan(EpConfig cfg,
-                          const int32_t* __restrict__ topk_idx,  // [ntok, num_topk]
-                          int num_tokens,
-                          int32_t* __restrict__ slot_of,         // [num_ranks, ntok] -1 = not sent
-                          int32_t* __restrict__ send_list,       // [num_ranks, ntok] slot -> token
-                          int32_t* __restrict__ send_counts) {   // [num_ranks]
-  const int dst = blockIdx.x;
-  if (dst >= cfg.num_ranks) return;
-
+// kHyb (k_ep_hplan): the send count also goes to count_out[dst], and with hist (an LDS array of
+// the destination's experts, zeroed by the caller) pass 1 counts the (token, expert) pairs per
+// expert of dst, as k_expert_hist does over all experts.
+template <bool kHyb>
+__device__ __forceinline__ void ep_plan_cta(const EpConfig& cfg, int dst,
+                                            const int32_t* __restrict__ topk_idx, int num_tokens,
+                                            int32_t* __restrict__ slot_of, int32_t* __restrict__ send_list,
+                                            int32_t* __restrict__ send_counts,
+                                            int32_t* __restrict__ count_out, int* hist) {
   const int lo = cfg.expert_begin(dst), hi = cfg.expert_end(dst);
   const int K = cfg.num_topk;
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
@@ -42,21 +42,28 @@ __global__ void k_ep_plan(EpConfig cfg,
   const int t_begin = min(num_tokens, warp * per_wave);
   const int t_end = min(num_tokens, t_begin + per_wave);
 
-  auto sends = [&](int t) -> int {
+  auto sends = [&](int t, bool count) -> int {
     int send = 0;
     if (t < t_end) {
       int e[kMaxTopk];
 #pragma unroll
       for (int k = 0; k < kMaxTopk; ++k) e[k] = k < K ? topk_idx[(size_t)t * K + k] : -1;
 #pragma unroll
-      for (int k = 0; k < kMaxTopk; ++k) send |= (e[k] >= lo && e[k] < hi) ? 1 : 0;
+      for (int k = 0; k < kMaxTopk; ++k) {
+        const bool here = e[k] >= lo && e[k] < hi;
+        send |= here ? 1 : 0;
+        if constexpr (kHyb) {
+          if (count && here) atomicAdd(hist + (e[k] - lo), 1);
+        }
+      }
     }
     return send;
   };
 
   // Pass 1: this wave's send count.
   int wave_total = 0;
-  for (int base = t_begin; base < t_end; base += kWarpSize) wave_total += reduce_add<int>(sends(base + lane));
+  for (int base = t_begin; base < t_end; base += kWarpSize)
+    wave_total += reduce_add<int>(sends(base + lane, hist != nullptr));
 
   // Exclusive scan over the waves, in wave order = token order.
   __shared__ int wave_base[kPlanMaxWaves];
@@ -70,6 +77,7 @@ __global__ void k_ep_plan(EpConfig cfg,
       acc += v;
     }
     send_counts[dst] = acc;
+    if constexpr (kHyb) count_out[dst] = acc;
   }
   __syncthreads();
 
@@ -77,7 +85,7 @@ __global__ void k_ep_plan(EpConfig cfg,
   int running = wave_base[warp];
   for (int base = t_begin; base < t_end; base += kWarpSize) {
     const int t = base + lane;
-    const int send = sends(t);
+    const int send = sends(t, false);
     const int excl = warp_exclusive_sum<int>(send);
     if (t < t_end) {
       const int slot = send ? (running + excl) : -1;
@@ -89,6 +97,17 @@ __global__ void k_ep_plan(EpConfig cfg,
     }
     running += reduce_add<int>(send);
   }
+}
+
+__global__ void k_ep_plan(EpConfig cfg,
+                          const int32_t* __restrict__ topk_idx,  // [ntok, num_topk]
+                          int num_tokens,
+                          int32_t* __restrict__ slot_of,         // [num_ranks, ntok] -1 = not sent
+                          int32_t* __restrict__ send_list,       // [num_ranks, ntok] slot -> token
+                          int32_t* __restrict__ send_counts) {   // [num_ranks]
+  const int dst = blockIdx.x;
+  if (dst >= cfg.num_ranks) return;
+  ep_plan_cta<false>(cfg, dst, topk_idx, num_tokens, slot_of, send_list, send_counts, nullptr, nullptr);
 }
 
 // k_ep_plan fused with the uncached dispatch's count exchange, which replaces barrier A.

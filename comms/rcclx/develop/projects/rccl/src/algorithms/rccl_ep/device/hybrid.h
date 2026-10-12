@@ -19,6 +19,7 @@
 #define RCCL_EP_HYBRID_H_
 
 #include "device/combine.h"
+#include "device/dispatch.h"
 #include "device/ep_common.h"
 
 namespace rccl_ep {
@@ -57,6 +58,34 @@ __global__ void k_expert_hist(const int32_t* __restrict__ topk_idx, int n, int n
     const int e = topk_idx[i];
     if (e >= 0 && e < num_experts) atomicAdd(hist + e, 1);
   }
+}
+
+// ep_hplan under RCCL_EP_HPLAN_FUSED=1: the rank plan (CTAs [0, R), rc) and the node plan (CTAs
+// [R, R + SO), nc) in one launch, with this rank's row of the count exchange written as it goes:
+// row = [sendc (R) | node counts (SO) | per-expert counts (E)]. Each rank CTA counts its
+// destination's experts in LDS, and the destinations' expert ranges tile all E, so the row is
+// what the two copies, the memset and k_expert_hist of ep_hcounts would leave.
+__global__ void k_ep_hplan(EpConfig rc, EpConfig nc, const int32_t* __restrict__ topk_idx,
+                           int num_tokens, int32_t* __restrict__ slot_of,
+                           int32_t* __restrict__ send_list, int32_t* __restrict__ send_counts,
+                           int32_t* __restrict__ node_pos, int32_t* __restrict__ node_list,
+                           int32_t* __restrict__ node_cnt, int32_t* __restrict__ row) {
+  const int b = blockIdx.x;
+  if (b >= rc.num_ranks) {
+    const int n = b - rc.num_ranks;
+    if (n < nc.num_ranks)
+      ep_plan_cta<true>(nc, n, topk_idx, num_tokens, node_pos, node_list, node_cnt,
+                        row + rc.num_ranks, nullptr);
+    return;
+  }
+  __shared__ int hist[kEpiMaxExperts];
+  const int lo = rc.expert_begin(b), epr = rc.expert_end(b) - lo;
+  for (int i = threadIdx.x; i < epr; i += blockDim.x) hist[i] = 0;
+  __syncthreads();
+  ep_plan_cta<true>(rc, b, topk_idx, num_tokens, slot_of, send_list, send_counts, row, hist);
+  // ep_plan_cta's last __syncthreads follows every pass-1 count.
+  int32_t* row_hist = row + rc.num_ranks + nc.num_ranks + lo;
+  for (int i = threadIdx.x; i < epr; i += blockDim.x) row_hist[i] = hist[i];
 }
 
 // One record per (token, remote node holding one of its experts), in token order, into
