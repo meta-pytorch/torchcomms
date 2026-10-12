@@ -144,3 +144,27 @@ jobs:
         # Run Python tests
         comms/torchcomms/scripts/run_tests_unit_py.sh
         comms/torchcomms/scripts/run_tests_integration_py.sh
+
+  # Single pass/fail signal for the jobs above. A matrix job that is skipped
+  # because a job it needs failed reports one unexpanded check whose conclusion
+  # is "skipped", which downstream tooling can read as green; this gate turns
+  # any failed or skipped build or test job into a failure. A cancelled job is
+  # not treated as a failure so that job timeouts keep their current
+  # non-blocking behavior, and !cancelled() keeps the gate from running in a
+  # workflow run superseded by the concurrency group.
+  tests_gate:
+    needs: [build_pip_wheel, build_and_run_cpp_tests, run_py_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every build and test job to have run and passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [[ "${result}" == "failure" || "${result}" == "skipped" ]]; then
+              echo "A build or test job did not pass (${result})."
+              exit 1
+            fi
+          done
