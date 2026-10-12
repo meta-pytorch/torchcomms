@@ -1526,6 +1526,11 @@ In dynamic regime, this method initializes the communicator with the
 provided set of peers. After a successful reconfigure call, the
 communicator is fully initialized and collective operations are permitted.
 
+For the MCCL backend, reconfiguration invalidates every CUDA graph captured
+on the previous communicator generation, regardless of zero-copy mode.
+Destroy those graphs on every rank and recapture them with the new generation
+before replaying.
+
 Args:
     uuid: Uniquely identifies this instance of the communicator. The uuid
         must not have been used previously on this communicator.

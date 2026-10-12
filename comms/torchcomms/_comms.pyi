@@ -590,7 +590,15 @@ class TorchComm:
         init_handles: List[InitHandle] | Set[InitHandle],
         timeout: timedelta | None = None,
         hints: Dict[str, str] | None = None,
-    ) -> TorchWork: ...
+    ) -> TorchWork:
+        """Reconfigure the communicator with a new set of peers.
+
+        For MCCL, reconfiguration invalidates every CUDA graph captured on the
+        previous communicator generation, regardless of zero-copy mode. Destroy
+        those graphs on every rank and recapture them with the new generation
+        before replaying.
+        """
+        ...
     def abort(
         self,
         reason: AbortReason = AbortReason.ABORTED,
