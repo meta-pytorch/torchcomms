@@ -1,8 +1,11 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-from typing import Any, Optional
+from __future__ import annotations
+
+from typing import Any, ClassVar
 
 class ErrCode:
+    __members__: ClassVar[dict[str, ErrCode]]
     NotImplemented: ErrCode
     DriverError: ErrCode
     TopologyDisconnect: ErrCode
@@ -10,7 +13,7 @@ class ErrCode:
     NotConnected: ErrCode
     TransportError: ErrCode
     ConnectionFailed: ErrCode
-    MemoryRegistrationFailed: ErrCode
+    MemoryRegistrationError: ErrCode
     Timeout: ErrCode
     ResourceExhausted: ErrCode
     @property
@@ -126,8 +129,8 @@ class TransferRequest:
 class RequestOptions:
     def __init__(
         self,
-        stream: Optional[int] = None,
-        timeout_ms: Optional[int] = None,
+        stream: int | None = None,
+        timeout_ms: int | None = None,
     ) -> None: ...
 
 class UniflowFuture:
@@ -141,6 +144,11 @@ class UniflowAgentConfig:
     listen_address: str
     connect_retries: int
     connect_timeout_ms: int
+    enable_tcp: bool
+    tcp_bind_host: str
+    preferred_transport: TransportType | None
+    intra_node_transport: TransportType | None
+    inter_node_transport: TransportType | None
     def __init__(
         self,
         device_id: int = -1,
@@ -148,6 +156,11 @@ class UniflowAgentConfig:
         listen_address: str = "",
         connect_retries: int = 10,
         connect_timeout_ms: int = 1000,
+        enable_tcp: bool = False,
+        tcp_bind_host: str = "",
+        preferred_transport: TransportType | None = None,
+        intra_node_transport: TransportType | None = None,
+        inter_node_transport: TransportType | None = None,
     ) -> None: ...
 
 class MultiTransport:
@@ -183,11 +196,15 @@ class MultiTransportFactory:
         nic_filter: str = "",
         cpu_nic_selection_policy: CpuNicSelectionPolicy = ...,
         max_cpu_nics: int = ...,
+        enable_tcp: bool = False,
+        tcp_bind_host: str = "",
     ) -> None: ...
     def register_segment(self, segment: Segment) -> Result: ...
     def import_segment(self, export_id: bytes) -> Result: ...
     def create_transport(self, peer_topology: bytes) -> Result: ...
     def get_topology(self) -> bytes: ...
+    @staticmethod
+    def supported(transport_type: TransportType) -> Result: ...
 
 class Connection:
     def shutdown(self) -> None: ...

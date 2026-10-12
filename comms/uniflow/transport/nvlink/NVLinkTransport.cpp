@@ -167,7 +167,7 @@ std::future<Status> NVLinkTransport::transfer(
 
 Result<const NVLinkRemoteRegistrationHandle*> NVLinkTransport::findRemoteHandle(
     const RemoteRegisteredSegment::Span& span) const {
-  for (const auto& h : span.handles_) {
+  for (const auto& h : span.registrationHandles()) {
     if (h->transportType() == TransportType::NVLink) {
       if (auto* nvh =
               static_cast<const NVLinkRemoteRegistrationHandle*>(h.get())) {
@@ -211,7 +211,7 @@ std::future<Status> NVLinkTransport::put(
       return make_ready_future<Status>(std::move(remoteHandle).error());
     }
     auto* remoteDst = static_cast<uint8_t*>(remoteHandle.value()->mappedPtr()) +
-        req.remote.remoteOffset_;
+        req.remote.remoteOffset();
     ops.emplace_back(remoteDst, req.local.data(), req.local.size());
   }
 
@@ -254,7 +254,7 @@ std::future<Status> NVLinkTransport::get(
       return make_ready_future<Status>(std::move(remoteHandle).error());
     }
     auto* remoteSrc = static_cast<uint8_t*>(remoteHandle.value()->mappedPtr()) +
-        req.remote.remoteOffset_;
+        req.remote.remoteOffset();
     ops.emplace_back(req.local.mutable_data(), remoteSrc, req.remote.size());
   }
 

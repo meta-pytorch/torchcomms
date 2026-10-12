@@ -879,7 +879,7 @@ controller::Conn* TcpTransport::primaryConn() const {
 
 Result<const TcpRemoteRegistrationHandle*> TcpTransport::findRemoteHandle(
     const RemoteRegisteredSegment::Span& span) const {
-  for (const auto& handle : span.handles_) {
+  for (const auto& handle : span.registrationHandles()) {
     if (auto* tcp =
             dynamic_cast<const TcpRemoteRegistrationHandle*>(handle.get())) {
       return tcp;
@@ -982,7 +982,7 @@ std::future<Status> TcpTransport::put(
       }
     }
     const auto segId = remoteHandle.value()->segId();
-    const auto baseOffset = static_cast<uint64_t>(req.remote.remoteOffset_);
+    const auto baseOffset = static_cast<uint64_t>(req.remote.remoteOffset());
     const auto* src = static_cast<const uint8_t*>(req.local.data());
 
     size_t off = 0;
@@ -1434,7 +1434,8 @@ std::future<Status> TcpTransport::get(
   for (size_t reqIdx = 0; reqIdx < requests.size(); ++reqIdx) {
     const auto& req = requests[reqIdx];
     const uint64_t segId = segIds[reqIdx];
-    const uint64_t baseOffset = static_cast<uint64_t>(req.remote.remoteOffset_);
+    const uint64_t baseOffset =
+        static_cast<uint64_t>(req.remote.remoteOffset());
     const size_t len = req.local.size();
     const MemoryType memType = req.local.memType();
     const int deviceId = req.local.deviceId();

@@ -102,7 +102,7 @@ class MpscQueue {
     //  done), but has not yet linked node->next (prev->next.store not done).
     //
     // ACQUIRE here is the usual pairing with producers' exchange(...,
-    // RELEASE). This check is only for progress/emptiness; correctness
+    // ACQ_REL). This check is only for progress/emptiness; correctness
     // still hinges on the next-pointer release/acquire.
     if (node != tail_.load(std::memory_order_acquire)) {
       return std::nullopt;
@@ -145,7 +145,7 @@ class MpscQueue {
 
  private:
   void enqueue(Node* node) noexcept {
-    Node* prev = tail_.exchange(node, std::memory_order_release);
+    Node* prev = tail_.exchange(node, std::memory_order_acq_rel);
     prev->next.store(node, std::memory_order_release);
   }
 
