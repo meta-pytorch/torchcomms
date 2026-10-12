@@ -33,10 +33,6 @@ class SegmentTest : public ::testing::Test {
       std::unique_ptr<RegistrationHandle> handle) {
     seg.handles_.push_back(std::move(handle));
   }
-
-  static const auto& remoteHandles(const RemoteRegisteredSegment& seg) {
-    return seg.handles_;
-  }
 };
 
 template <typename T>
@@ -245,16 +241,19 @@ TEST_F(ExportImportTest, RoundTripSingleHandle) {
   EXPECT_EQ(remote.data(), buf);
   EXPECT_EQ(remote.len(), sizeof(buf));
   EXPECT_EQ(remote.memType(), MemoryType::DRAM);
-  ASSERT_EQ(remoteHandles(remote).size(), 1u);
-  EXPECT_EQ(remoteHandles(remote)[0]->transportType(), TransportType::RDMA);
-  auto* rh = dynamic_cast<TestRemoteRegistrationHandle*>(
-      remoteHandles(remote)[0].get());
+  const auto remoteSpan = remote.span();
+  EXPECT_EQ(remoteSpan.remoteOffset(), 0u);
+  const auto handles = remoteSpan.registrationHandles();
+  ASSERT_EQ(handles.size(), 1u);
+  EXPECT_EQ(handles[0]->transportType(), TransportType::RDMA);
+  const auto* rh =
+      dynamic_cast<const TestRemoteRegistrationHandle*>(handles[0].get());
   ASSERT_NE(rh, nullptr);
   const std::vector<uint8_t> expectedPayload{0x10, 0x20, 0x30};
   EXPECT_EQ(rh->data(), expectedPayload);
 }
 
-TEST_F(ExportImportTest, RoundTripMultipleHandles) {
+TEST_F(ExportImportTest, RoundTripMultipleHandlesWithSpansAfterMoves) {
   uint8_t buf[128];
   auto seg =
       createSegment<RegisteredSegment>(buf, sizeof(buf), MemoryType::VRAM, 3);
@@ -266,6 +265,7 @@ TEST_F(ExportImportTest, RoundTripMultipleHandles) {
       seg,
       std::make_unique<TestRegistrationHandle>(
           TransportType::NVLink, std::vector<uint8_t>{0xBB, 0xCC}));
+  const auto localSpan = seg.span(10, 20);
 
   auto exportResult = seg.exportId();
   ASSERT_TRUE(exportResult.hasValue());
@@ -286,9 +286,37 @@ TEST_F(ExportImportTest, RoundTripMultipleHandles) {
   EXPECT_EQ(remote.len(), sizeof(buf));
   EXPECT_EQ(remote.memType(), MemoryType::VRAM);
   EXPECT_EQ(remote.deviceId(), 3);
-  ASSERT_EQ(remoteHandles(remote).size(), 2u);
-  EXPECT_EQ(remoteHandles(remote)[0]->transportType(), TransportType::RDMA);
-  EXPECT_EQ(remoteHandles(remote)[1]->transportType(), TransportType::NVLink);
+  const auto remoteSpan = remote.span(buf + 10, 20);
+
+  auto movedSegment = std::move(seg);
+  auto movedRemote = std::move(remote);
+  EXPECT_EQ(localSpan.data(), buf + 10);
+  EXPECT_EQ(remoteSpan.data(), localSpan.data());
+  EXPECT_EQ(remoteSpan.size(), 20u);
+  EXPECT_EQ(remoteSpan.memType(), MemoryType::VRAM);
+  EXPECT_EQ(remoteSpan.deviceId(), 3);
+  EXPECT_EQ(remoteSpan.remoteOffset(), 10u);
+
+  const auto localHandles = localSpan.registrationHandles();
+  const auto remoteHandles = remoteSpan.registrationHandles();
+  const auto movedLocalHandles = movedSegment.span().registrationHandles();
+  const auto movedRemoteHandles = movedRemote.span().registrationHandles();
+  ASSERT_EQ(localHandles.size(), 2u);
+  ASSERT_EQ(remoteHandles.size(), 2u);
+  ASSERT_EQ(movedLocalHandles.size(), localHandles.size());
+  ASSERT_EQ(movedRemoteHandles.size(), remoteHandles.size());
+  EXPECT_EQ(localHandles[0]->transportType(), TransportType::RDMA);
+  EXPECT_EQ(localHandles[1]->transportType(), TransportType::NVLink);
+  for (size_t i = 0; i < localHandles.size(); ++i) {
+    EXPECT_EQ(localHandles[i].get(), movedLocalHandles[i].get());
+    EXPECT_EQ(remoteHandles[i].get(), movedRemoteHandles[i].get());
+    EXPECT_EQ(
+        remoteHandles[i]->transportType(), localHandles[i]->transportType());
+    const auto* rh = dynamic_cast<const TestRemoteRegistrationHandle*>(
+        remoteHandles[i].get());
+    ASSERT_NE(rh, nullptr);
+    EXPECT_EQ(rh->data(), localHandles[i]->serialize());
+  }
 }
 
 TEST_F(ExportImportTest, RoundTripNoHandles) {
