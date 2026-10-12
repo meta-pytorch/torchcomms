@@ -85,11 +85,21 @@ struct EpWindowLayout {
 
   // y_rows_per_slot: rows of `y` per slot; 0 means num_topk, one per (slot, k) as a
   // non-grouped combine writes. 1 suffices when every combine is grouped.
+  //
+  // y_ranks / y_rank_base: `y` and `cw` hold only the slots of sources [y_rank_base,
+  // y_rank_base + y_ranks), for a window whose combine writers are those ranks alone (the
+  // hybrid combine's local ranks). Their offsets move down by y_rank_base * T rows, so
+  // slot(s, i) still indexes them -- exact under size_t wrap-around, as remote views rely on.
+  // y_ranks 0 keeps every source.
   __host__ __device__ static EpWindowLayout make(const EpConfig& c, size_t elem_bytes,
-                                                 int y_rows_per_slot = 0) {
+                                                 int y_rows_per_slot = 0, int y_ranks = 0,
+                                                 int y_rank_base = 0) {
     const size_t R = c.num_ranks;
     const size_t T = c.num_max_tokens_per_rank;
     const size_t slots = R * T;
+    const size_t y_slots = (y_ranks > 0 ? (size_t)y_ranks : R) * T;
+    const size_t y_shift = (size_t)y_rank_base * T;
+    const size_t y_row = (size_t)(y_rows_per_slot > 0 ? y_rows_per_slot : c.num_topk) * c.hidden * sizeof(uint16_t);
     EpWindowLayout l{};
     size_t o = 0;
     l.off_counts = o;
@@ -110,10 +120,10 @@ struct EpWindowLayout {
     l.off_src_idx = o;
     o = align_up(o + slots * sizeof(int32_t));
     // `y` is always bf16: combine payload is bf16 even when dispatch is fp8.
-    l.off_y = o;
-    o = align_up(o + slots * (y_rows_per_slot > 0 ? y_rows_per_slot : c.num_topk) * c.hidden * sizeof(uint16_t));
-    l.off_cw = o;
-    o = align_up(o + slots * c.num_topk * sizeof(float));
+    l.off_y = o - y_shift * y_row;
+    o = align_up(o + y_slots * y_row);
+    l.off_cw = o - y_shift * c.num_topk * sizeof(float);
+    o = align_up(o + y_slots * c.num_topk * sizeof(float));
     // Architecture strings, one slot per rank, used once at construction to
     // reject a mixed-architecture communicator (see include/ep_arch.h).
     l.off_arch = o;
