@@ -584,8 +584,8 @@ Result<Transport*> MultiTransport::selectTransport(
   // NVLink only when all segments support it, otherwise fall back to RDMA.
   auto allHaveTransport = [&](TransportType type) {
     for (const auto& req : requests) {
-      if (!hasHandleType(req.local.handles_, type) ||
-          !hasHandleType(req.remote.handles_, type)) {
+      if (!hasHandleType(req.local.registrationHandles(), type) ||
+          !hasHandleType(req.remote.registrationHandles(), type)) {
         return false;
       }
     }
