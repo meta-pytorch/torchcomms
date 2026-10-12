@@ -7,6 +7,7 @@
  */
 
 #include "meta/hierarchical/hierarchical_allreduce.h"
+#include "comm.h"
 
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
@@ -18,7 +19,6 @@
 
 #include "checks.h"
 #include "collectives.h"
-#include "comm.h"
 #include "debug.h"
 #include "group.h"
 #include "meta/hierarchical/hierarchical_geometry.h"
