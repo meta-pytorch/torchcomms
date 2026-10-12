@@ -52,6 +52,8 @@ endif()
 # imported from there without installing: _core lands next to the __init__.py
 # that re-exports it.
 set(UNIFLOW_PYTHON_PACKAGE_DIR ${CMAKE_BINARY_DIR}/python/uniflow)
+option(UNIFLOW_INSTALL_PYTHON_TESTS
+  "Install the UniFlow Python tests" OFF)
 
 if(UNIFLOW_PYBIND11_INCLUDE_DIR)
   Python3_add_library(uniflow_core_extension MODULE WITH_SOABI
@@ -83,17 +85,53 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../__init__.py
     ${UNIFLOW_PYTHON_PACKAGE_DIR}/__init__.py COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../_core.pyi
     ${UNIFLOW_PYTHON_PACKAGE_DIR}/_core.pyi COPYONLY)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../py.typed
+    ${UNIFLOW_PYTHON_PACKAGE_DIR}/py.typed COPYONLY)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../_build_config.py.in
+    ${UNIFLOW_PYTHON_PACKAGE_DIR}/_build_config.py @ONLY)
 
-# The extension is installed next to the library it links, and finds it there
-# rather than through a system path, so the package is importable wherever it is
-# unpacked. The build tree needs the same so the staged package imports without
-# installing.
+# Relative library paths let the installed package move with its dependencies.
 set_target_properties(uniflow_core_extension PROPERTIES
     BUILD_RPATH "$ORIGIN;${CMAKE_BINARY_DIR}"
-    INSTALL_RPATH "$ORIGIN"
 )
 
-install(TARGETS uniflow_core_extension uniflow LIBRARY DESTINATION uniflow)
+if(SKBUILD)
+  set(_UNIFLOW_PYTHON_INSTALL_DIR "${SKBUILD_PLATLIB_DIR}/uniflow")
+  set(_UNIFLOW_PYTHON_SDK_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
+else()
+  set(_UNIFLOW_PYTHON_INSTALL_DIR uniflow)
+  set(_UNIFLOW_PYTHON_SDK_LIBDIR "../${CMAKE_INSTALL_LIBDIR}")
+endif()
+
+set(_UNIFLOW_PYTHON_SDK_RPATH "$ORIGIN/${_UNIFLOW_PYTHON_SDK_LIBDIR}")
+if(UNIFLOW_INSTALL_CPP AND NOT SKBUILD AND
+   IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+  file(RELATIVE_PATH _UNIFLOW_PYTHON_SDK_LIBDIR
+    "${CMAKE_INSTALL_PREFIX}" "${CMAKE_INSTALL_LIBDIR}")
+  if(_UNIFLOW_PYTHON_SDK_LIBDIR MATCHES "^[.][.](/|$)")
+    set(_UNIFLOW_PYTHON_SDK_RPATH "${CMAKE_INSTALL_LIBDIR}")
+  else()
+    set(_UNIFLOW_PYTHON_SDK_RPATH
+      "$ORIGIN/../${_UNIFLOW_PYTHON_SDK_LIBDIR};${CMAKE_INSTALL_LIBDIR}")
+  endif()
+endif()
+
+if(UNIFLOW_INSTALL_CPP)
+  set_target_properties(uniflow_core_extension PROPERTIES
+    INSTALL_RPATH "${_UNIFLOW_PYTHON_SDK_RPATH}")
+else()
+  set_target_properties(uniflow_core_extension PROPERTIES
+    INSTALL_RPATH "$ORIGIN")
+  install(TARGETS uniflow
+    LIBRARY DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime
+    RUNTIME DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime)
+endif()
+unset(_UNIFLOW_PYTHON_SDK_RPATH)
+unset(_UNIFLOW_PYTHON_SDK_LIBDIR)
+
+install(TARGETS uniflow_core_extension
+  LIBRARY DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime
+  RUNTIME DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime)
 set(_UNIFLOW_FETCHED_DEPENDENCY_TARGETS)
 if(UNIFLOW_FETCHED_FMT)
   list(APPEND _UNIFLOW_FETCHED_DEPENDENCY_TARGETS fmt)
@@ -101,16 +139,38 @@ endif()
 if(UNIFLOW_FETCHED_SPDLOG)
   list(APPEND _UNIFLOW_FETCHED_DEPENDENCY_TARGETS spdlog)
 endif()
-if(_UNIFLOW_FETCHED_DEPENDENCY_TARGETS AND
-   (NOT DEFINED UNIFLOW_INSTALL_CPP OR NOT UNIFLOW_INSTALL_CPP))
+if(_UNIFLOW_FETCHED_DEPENDENCY_TARGETS AND NOT UNIFLOW_INSTALL_CPP)
   install(TARGETS ${_UNIFLOW_FETCHED_DEPENDENCY_TARGETS}
-      LIBRARY DESTINATION uniflow
-      RUNTIME DESTINATION uniflow
-      PUBLIC_HEADER DESTINATION uniflow/include EXCLUDE_FROM_ALL)
+    LIBRARY DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime
+    RUNTIME DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime
+    ARCHIVE DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}/lib"
+      COMPONENT Development EXCLUDE_FROM_ALL
+    PUBLIC_HEADER DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}/include"
+      COMPONENT Development EXCLUDE_FROM_ALL)
+  if(UNIFLOW_FETCHED_FMT)
+    install(FILES "${fmt_SOURCE_DIR}/LICENSE"
+      DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}/licenses/fmt"
+      COMPONENT Runtime)
+  endif()
+  if(UNIFLOW_FETCHED_SPDLOG)
+    install(FILES "${spdlog_SOURCE_DIR}/LICENSE"
+      DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}/licenses/spdlog"
+      COMPONENT Runtime)
+  endif()
 endif()
 unset(_UNIFLOW_FETCHED_DEPENDENCY_TARGETS)
 install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../__init__.py
     ${CMAKE_CURRENT_SOURCE_DIR}/../_core.pyi
-    DESTINATION uniflow
+    ${CMAKE_CURRENT_SOURCE_DIR}/../py.typed
+    ${UNIFLOW_PYTHON_PACKAGE_DIR}/_build_config.py
+    DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}" COMPONENT Runtime
 )
+if(UNIFLOW_INSTALL_PYTHON_TESTS)
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/py/__init__.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/py/test_public_api.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/py/test_uniflow.py
+    DESTINATION "${_UNIFLOW_PYTHON_INSTALL_DIR}/tests" COMPONENT Tests)
+endif()
+unset(_UNIFLOW_PYTHON_INSTALL_DIR)
