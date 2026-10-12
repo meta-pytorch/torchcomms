@@ -141,6 +141,9 @@ struct EpHandle {
   // send; ev_b[c]: arrived. Each chunk is another peer-matched round, waiting on the slowest rank.
   static constexpr int kMaxChunks = 8;
   int nchunks{1};
+  // RCCL_EP_HYB_COMPACT_REC=1: each dispatch sizes its records to the sections it carries
+  // (hyb_call_layout). Off: hybrid_alloc's full layout for every call.
+  bool hyb_compact{false};
   hipEvent_t ev_a[kMaxChunks]{}, ev_b[kMaxChunks]{};
   const int32_t *bound_slot_of{}, *bound_node_list{}, *bound_node_pos{};
   int32_t* bound_fwd_meta{};
@@ -413,6 +416,31 @@ inline int hyb_ctas(const EpHandle* h, int num_sms) {
   return std::max(1, sms_or(num_sms, 128) / h->hyb.SO);
 }
 
+// One dispatch's record layout under RCCL_EP_HYB_COMPACT_REC: only the sections the call
+// carries. A bf16 payload has no sf section, an fp8 payload takes `hidden` bytes, and a payload
+// replay (with_meta 0) has no top-k sections. The src section stays, since k_hyb_pack writes it
+// on every call. Every rank makes the same call, so both ends of the rail derive the same
+// stride. Off, hybrid_alloc's full layout stays. Host-only: the kernels are unchanged.
+static void hyb_call_layout(const EpHandle* h, HybInfo& hi, int use_fp8, int with_meta) {
+  if (!h->hyb_compact) return;
+  const EpConfig& c = h->cfg;
+  size_t o = align_up((size_t)c.hidden * (use_fp8 ? 1 : sizeof(bf16_t)), 16);
+  if (use_fp8) {
+    hi.off_sf = (int)o;
+    o = align_up(o + (size_t)c.hidden_sf() * sizeof(float), 16);
+  }
+  if (with_meta) {
+    hi.off_topk = (int)o;
+    o = align_up(o + (size_t)c.num_topk * sizeof(int32_t), 16);
+    hi.off_w = (int)o;
+    o = align_up(o + (size_t)c.num_topk * sizeof(float), 16);
+  }
+  hi.off_src = (int)o;
+  o = align_up(o + sizeof(int32_t), 16);
+  hi.off_slots = (int)o;
+  hi.rec_bytes = (int)align_up(o + (size_t)hi.SU * sizeof(int32_t), 16);
+}
+
 // Hybrid dispatch, first half: pack one record per (token, remote node) and hand them to the
 // side stream, which moves them to the rail peers while the caller's stream goes on to the
 // local push. Every rank posts the same sends and receives in the same node order.
@@ -422,6 +450,7 @@ int hybrid_dispatch_begin(EpHandle* h, uintptr_t x, uintptr_t x_sf, uintptr_t to
   const EpConfig& c = h->cfg;
   HybInfo hi = h->hyb;
   hi.nchunks = h->nchunks;
+  hyb_call_layout(h, hi, use_fp8, with_meta);
   const size_t T = c.num_max_tokens_per_rank, rb = hi.rec_bytes;
   for (int k = 0; k < hi.nchunks; ++k) {
     hi.chunk = k;
@@ -462,6 +491,7 @@ int hybrid_dispatch_end(EpHandle* h, int use_fp8, int with_meta, int cta, hipStr
   const EpConfig& c = h->cfg;
   HybInfo hi = h->hyb;
   hi.nchunks = h->nchunks;
+  hyb_call_layout(h, hi, use_fp8, with_meta);
   const WindowView* local = h->d_views_inter + kViewHybLocal * c.num_ranks + h->node_base;
   for (int k = 0; k < hi.nchunks; ++k) {
     hi.chunk = k;
@@ -518,11 +548,24 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
     hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
     note_rdv(h);
   }
-  hipLaunchKernelGGL(combine_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
-                     c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
-                     (const int64_t*)expert_rows, (const float*)scales, fma_mode,
-                     (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
-                     1, h->self_view, h->d_views_inter + kViewHybComb * c.num_ranks);
+  // RCCL_EP_HYB_COMB_SPLIT=1: only the partials for other nodes' owners feed the rail, so push
+  // those first, start the rail, and push this node's owners' partials while it moves; a
+  // second barrier then holds the reduce epilogue until they are in. Same rows, same values.
+  static const bool split = env_int("RCCL_EP_HYB_COMB_SPLIT") == 1;
+  WindowView* comb_views = h->d_views_inter + kViewHybComb * c.num_ranks;
+  const int node_hi = h->node_base + h->node_size;
+  if (split)
+    hipLaunchKernelGGL(combine_impl<1>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
+                       (const int64_t*)expert_rows, (const float*)scales, fma_mode,
+                       (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
+                       1, h->self_view, comb_views, h->node_base, node_hi);
+  else
+    hipLaunchKernelGGL(combine_impl<0>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
+                       (const int64_t*)expert_rows, (const float*)scales, fma_mode,
+                       (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
+                       1, h->self_view, comb_views, 0, 0);
   hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
   uint8_t* win = (uint8_t*)h->win_buf;
   const size_t T = c.num_max_tokens_per_rank, H = c.hidden, K = c.num_topk;
@@ -556,6 +599,14 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
     }
     NCG_END(gr);
     HC(hipEventRecord(h->ev_b[k], h->side));
+  }
+  if (split) {
+    hipLaunchKernelGGL(combine_impl<2>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
+                       (const int64_t*)expert_rows, (const float*)scales, fma_mode,
+                       (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
+                       1, h->self_view, comb_views, h->node_base, node_hi);
+    hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
   }
   h->pend.on = true;
   h->pend.topk_idx = topk_idx;
@@ -1696,11 +1747,11 @@ int ep_combine_v4(void* handle,
                        h->d_src_inter);
     src = h->d_src_inter;
   }
-  hipLaunchKernelGGL(combine_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+  hipLaunchKernelGGL(combine_impl<0>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
                      c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
                      (const int64_t*)expert_rows, (const float*)scales, fma_mode,
                      (const int32_t*)recv_topk, src, num_recv,
-                     grouped, h->self_view, views);
+                     grouped, h->self_view, views, 0, 0);
   // As in dispatch: the remote rows are in place before barrier B, on the same stream.
   if (h->inter && inter_combine(h, grouped, in_w != 0, cta, s) != 0) return -1;
   hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
@@ -1868,14 +1919,17 @@ int ep_hybrid_enable(void* handle, int multi) {
   }
   const char* ch = getenv("RCCL_EP_HYB_CHUNKS");
   h->nchunks = (ch && atoi(ch) > 0) ? std::min(atoi(ch), (int)EpHandle::kMaxChunks) : 1;
+  // Both ends of the rail derive the record stride from it, so every rank must set it alike.
+  const char* cr = getenv("RCCL_EP_HYB_COMPACT_REC");
+  h->hyb_compact = cr && cr[0] == '1';
   return 0;
 }
 
-// ep_hcounts' exchange buffers for W = R + SO + E ints per rank: [R * W gathered | W this rank's].
-// Grown on demand; growing synchronizes.
+// ep_hcounts' exchange buffers for W = R + SO + E ints per rank: [R * W gathered | W this rank's |
+// SU * W this node's, for the two-level gather]. Grown on demand; growing synchronizes.
 static int hyb_xchg_reserve(EpHandle* h, int E, hipStream_t s) {
   const int R = h->cfg.num_ranks, W = R + h->hyb.SO + E;
-  const size_t need = (size_t)R * W + W;
+  const size_t need = (size_t)R * W + W + (size_t)h->hyb.SU * W;
   if (need <= h->xchg_ints) return 0;
   HC(hipStreamSynchronize(s));
   hipFree(h->d_xchg);
@@ -1965,7 +2019,18 @@ int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk
       hipLaunchKernelGGL(k_expert_hist, dim3(std::min((n + 255) / 256, 256)), dim3(256), 0, s,
                          (const int32_t*)topk_idx, n, E, mine + R + SO);
   }
-  NC(ncclAllGather(mine, h->d_xchg, W, ncclInt32, h->comm, s));
+  // RCCL_EP_HCOUNTS_2LEVEL=1 gathers within the node over xGMI, then the node blocks along the
+  // rail: a few rail steps instead of a ring through every rank. Global rank is node * SU + local
+  // index, node_comm ranks are local indices and rail ranks node indices, so the result has the
+  // single gather's layout.
+  static const bool two_level = env_int("RCCL_EP_HCOUNTS_2LEVEL") == 1;
+  if (two_level) {
+    int32_t* node_block = mine + W;
+    NC(ncclAllGather(mine, node_block, W, ncclInt32, h->node_comm, s));
+    NC(ncclAllGather(node_block, h->d_xchg, (size_t)h->hyb.SU * W, ncclInt32, h->rail_comm, s));
+  } else {
+    NC(ncclAllGather(mine, h->d_xchg, W, ncclInt32, h->comm, s));
+  }
   HC(hipMemcpyAsync(h->host_xchg, h->d_xchg, (size_t)R * W * sizeof(int32_t), hipMemcpyDeviceToHost, s));
   static const bool spin = env_int("RCCL_EP_HCOUNTS_SPIN") == 1;
   if (spin) {
