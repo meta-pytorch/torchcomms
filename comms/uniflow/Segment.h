@@ -191,10 +191,12 @@ class RegisteredSegment : public SegmentBase<RegisteredSegment> {
     Span(RegisteredSegment& segment, size_t offset, size_t length)
         : TSpan(segment, offset, length), handles_(segment.handles_) {}
 
-    friend class MultiTransport;
-    friend class TcpTransport;
-    friend class NvLinkTransport;
-    friend class RdmaTransport;
+    /// Borrowed handles. The owning segment must outlive this span and any
+    /// returned views.
+    std::span<const std::unique_ptr<RegistrationHandle>> registrationHandles()
+        const noexcept {
+      return handles_;
+    }
 
    private:
     std::span<const std::unique_ptr<RegistrationHandle>> handles_;
@@ -240,17 +242,20 @@ class RemoteRegisteredSegment : public SegmentBase<RemoteRegisteredSegment> {
           handles_(segment.handles_),
           remoteOffset_(offset) {}
 
-    friend class MultiTransport;
-    friend class TcpTransport;
-    friend class NVLinkTransport;
-    friend class RdmaTransport;
-    friend class P2pTransport;
+    /// Borrowed handles. The owning segment must outlive this span and any
+    /// returned views.
+    std::span<const std::unique_ptr<RemoteRegistrationHandle>>
+    registrationHandles() const noexcept {
+      return handles_;
+    }
+
+    /// Byte offset of this span within the exported remote segment.
+    size_t remoteOffset() const noexcept {
+      return remoteOffset_;
+    }
 
    private:
     std::span<const std::unique_ptr<RemoteRegistrationHandle>> handles_;
-    /// Byte offset of this span within the remote registered segment.
-    /// Transport-agnostic: NVLink and P2P add it to a mapped base pointer,
-    /// TCP sends it alongside the segId for the peer to resolve.
     size_t remoteOffset_;
   };
 

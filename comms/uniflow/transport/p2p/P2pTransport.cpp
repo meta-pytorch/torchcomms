@@ -253,7 +253,7 @@ Result<const P2pRemoteRegistrationHandle*> P2pTransport::findRemoteHandle(
   // dynamic_cast (not static_cast): the NVLink interconnect tier is shared, so
   // a handle reporting TransportType::NVLink is not guaranteed to be a P2P
   // handle.
-  for (const auto& h : span.handles_) {
+  for (const auto& h : span.registrationHandles()) {
     if (auto* p = dynamic_cast<const P2pRemoteRegistrationHandle*>(h.get())) {
       return p;
     }
@@ -282,7 +282,7 @@ Result<std::vector<P2pTransport::CopyOp>> P2pTransport::buildCopyOps(
     if (mappedBase == nullptr) {
       return Err(ErrCode::InvalidArgument, "P2P: null mapped pointer");
     }
-    auto* remotePtr = mappedBase + req.remote.remoteOffset_;
+    auto* remotePtr = mappedBase + req.remote.remoteOffset();
 
     if (dir == Dir::Put) {
       ops.emplace_back(CopyOp{remotePtr, req.local.data(), req.local.size()});
