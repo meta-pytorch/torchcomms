@@ -3,6 +3,11 @@
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/Segment.h"
 
+#include <array>
+#include <chrono>
+#include <cstring>
+#include <stdexcept>
+
 #include <gtest/gtest.h>
 
 namespace uniflow {
@@ -190,6 +195,95 @@ class MockTransportFactory : public TransportFactory {
   bool failCreateTransport_{false};
 };
 
+class MockTransportProvider : public TransportProvider {
+ public:
+  MockTransportProvider(
+      TransportType type,
+      Result<std::shared_ptr<TransportFactory>> factory,
+      Status support = Ok())
+      : type_(type),
+        factory_(std::move(factory)),
+        support_(std::move(support)) {}
+
+  TransportType transportType() const noexcept override {
+    return type_;
+  }
+
+  Status supported() const override {
+    return support_;
+  }
+
+  Result<std::shared_ptr<TransportFactory>> createFactory(
+      const TransportProviderContext&) const override {
+    return factory_;
+  }
+
+ private:
+  TransportType type_;
+  Result<std::shared_ptr<TransportFactory>> factory_;
+  Status support_;
+};
+
+class EventBaseCopyTransport : public MockTransport {
+ public:
+  explicit EventBaseCopyTransport(EventBase* eventBase)
+      : MockTransport(TransportType::RDMA), eventBase_(eventBase) {}
+
+  std::future<Status> put(
+      std::span<const TransferRequest> requests,
+      const RequestOptions&) override {
+    std::promise<Status> promise;
+    auto future = promise.get_future();
+    std::vector<TransferRequest> batch(requests.begin(), requests.end());
+    eventBase_->dispatch([batch = std::move(batch),
+                          promise = std::move(promise)]() mutable noexcept {
+      for (const auto& request : batch) {
+        std::memcpy(
+            request.remote.mutable_data(),
+            request.local.data(),
+            request.local.size());
+      }
+      promise.set_value(Ok());
+    });
+    return future;
+  }
+
+ private:
+  EventBase* eventBase_;
+};
+
+class EventBaseTransportFactory : public MockTransportFactory {
+ public:
+  explicit EventBaseTransportFactory(EventBase* eventBase)
+      : MockTransportFactory(TransportType::RDMA, {0x01}, {0x42}),
+        eventBase_(eventBase) {}
+
+  Result<std::unique_ptr<Transport>> createTransport(
+      std::span<const uint8_t>) override {
+    return std::make_unique<EventBaseCopyTransport>(eventBase_);
+  }
+
+ private:
+  EventBase* eventBase_;
+};
+
+class EventBaseTransportProvider : public MockTransportProvider {
+ public:
+  EventBaseTransportProvider()
+      : MockTransportProvider(
+            TransportType::RDMA,
+            std::shared_ptr<TransportFactory>{},
+            Err(ErrCode::DriverError, "mock support unavailable")) {}
+
+  Result<std::shared_ptr<TransportFactory>> createFactory(
+      const TransportProviderContext& context) const override {
+    if (context.deviceId != 0 || !context.eventBase) {
+      return Err(ErrCode::InvalidArgument, "invalid provider context");
+    }
+    return std::make_shared<EventBaseTransportFactory>(context.eventBase);
+  }
+};
+
 // SegmentTest is a friend of RegisteredSegment/RemoteRegisteredSegment,
 // giving access to private constructors for test setup.
 class SegmentTest {
@@ -371,6 +465,12 @@ class MultiTransportFactoryTest : public ::testing::Test {
         type, std::move(payload), std::move(topo));
   }
 
+  std::shared_ptr<MockTransportProvider> makeProvider(
+      TransportType type,
+      Result<std::shared_ptr<TransportFactory>> factory) {
+    return std::make_shared<MockTransportProvider>(type, std::move(factory));
+  }
+
   MultiTransportFactory makeMultiTransportFactory(
       std::vector<std::shared_ptr<TransportFactory>> factories) {
     return MultiTransportFactory(std::move(factories));
@@ -389,6 +489,177 @@ TEST_F(MultiTransportFactoryTest, DefaultOptionsUseBoundedNumaLocalCpuNics) {
       options.cpuNicSelectionPolicy, CpuNicSelectionPolicy::kNumaLocalBounded);
   EXPECT_EQ(options.maxCpuNics, 2u);
   EXPECT_FALSE(options.preferredTransport.has_value());
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProvidersRejectInvalidConfiguration) {
+  auto fails = makeProvider(
+      TransportType::RDMA, Err(ErrCode::DriverError, "must not create"));
+
+  EXPECT_THROW(
+      MultiTransportFactory(-2, {}, TransportProviderList{}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      MultiTransportFactory(-1, {}, TransportProviderList{fails, nullptr}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      MultiTransportFactory(-1, {}, TransportProviderList{fails, fails}),
+      std::invalid_argument);
+  for (auto type :
+       {TransportType::NumTransportType, static_cast<TransportType>(255)}) {
+    auto invalid = makeProvider(type, std::shared_ptr<TransportFactory>{});
+    EXPECT_THROW(
+        MultiTransportFactory(-1, {}, TransportProviderList{invalid}),
+        std::invalid_argument);
+  }
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProvidersRequireMatchingFactoryId) {
+  auto provider =
+      makeProvider(TransportType::RDMA, makeFactory(TransportType::NVLink));
+  try {
+    MultiTransportFactory factory(-1, {}, TransportProviderList{provider});
+    FAIL() << "Expected mismatched factory type error";
+  } catch (const std::invalid_argument& error) {
+    const std::string message(error.what());
+    EXPECT_NE(message.find("expected RDMA"), std::string::npos);
+    EXPECT_NE(message.find("got NVLink"), std::string::npos);
+  }
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProvidersPropagateCreationError) {
+  const std::array errorCodes{
+      ErrCode::DriverError,
+      ErrCode::NotImplemented,
+      ErrCode::ResourceExhausted};
+  for (auto code : errorCodes) {
+    const Err expected(code, "provider creation failed");
+    auto provider = makeProvider(TransportType::RDMA, expected);
+    try {
+      MultiTransportFactory factory(-1, {}, TransportProviderList{provider});
+      FAIL() << "Expected provider creation error";
+    } catch (const std::runtime_error& error) {
+      const std::string message(error.what());
+      EXPECT_NE(message.find("RDMA"), std::string::npos);
+      EXPECT_NE(message.find(expected.toString()), std::string::npos);
+    }
+  }
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProvidersSkipInapplicableFactory) {
+  auto rdma = makeProvider(
+      TransportType::RDMA, makeFactory(TransportType::RDMA, {0x01}, {0xAA}));
+  auto unavailable =
+      makeProvider(TransportType::NVLink, std::shared_ptr<TransportFactory>{});
+  MultiTransportFactory factory(
+      0, {}, TransportProviderList{unavailable, rdma});
+  MultiTransportFactory peer(0, {}, TransportProviderList{rdma});
+
+  EXPECT_EQ(factory.getTopology(), peer.getTopology());
+  auto transport = factory.createTransport(peer.getTopology());
+  ASSERT_TRUE(transport.hasValue()) << transport.error().toString();
+  auto info = transport.value()->bind();
+  ASSERT_TRUE(info.hasValue()) << info.error().toString();
+  ASSERT_FALSE(info.value().empty());
+  EXPECT_EQ(info.value().front(), 1);
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProvidersAcceptMockTransport) {
+  auto provider = makeProvider(
+      TransportType::Mock, makeFactory(TransportType::Mock, {0x01}, {0xAA}));
+  MultiTransportFactory factory(0, {}, TransportProviderList{provider});
+  uint8_t buf[64]{};
+  Segment segment(buf, sizeof(buf));
+
+  auto registered = factory.registerSegment(segment);
+  ASSERT_TRUE(registered.hasValue()) << registered.error().toString();
+  auto exportId = registered.value().exportId();
+  ASSERT_TRUE(exportId.hasValue()) << exportId.error().toString();
+  auto imported = factory.importSegment(exportId.value());
+  ASSERT_TRUE(imported.hasValue()) << imported.error().toString();
+  EXPECT_EQ(imported.value().data(), buf);
+  EXPECT_EQ(imported.value().len(), sizeof(buf));
+}
+
+TEST_F(MultiTransportFactoryTest, EmptyExplicitProvidersKeepNoBackends) {
+  MultiTransportFactory factory(0, {}, TransportProviderList{});
+  uint8_t buf[64]{};
+  Segment segment(buf, sizeof(buf));
+
+  EXPECT_EQ(factory.getTopology(), std::vector<uint8_t>{0});
+  auto registered = factory.registerSegment(segment);
+  ASSERT_TRUE(registered.hasError());
+  EXPECT_EQ(registered.error().code(), ErrCode::MemoryRegistrationError);
+  auto transport = factory.createTransport(factory.getTopology());
+  ASSERT_TRUE(transport.hasError());
+  EXPECT_EQ(transport.error().code(), ErrCode::TopologyDisconnect);
+}
+
+TEST_F(
+    MultiTransportFactoryTest,
+    ExplicitProvidersSortTopologyAndIntersectSubsets) {
+  auto rdma = makeProvider(
+      TransportType::RDMA, makeFactory(TransportType::RDMA, {0x01}, {0xAA}));
+  auto nvlink = makeProvider(
+      TransportType::NVLink,
+      makeFactory(TransportType::NVLink, {0x01}, {0xBB}));
+  MultiTransportFactory first(0, {}, TransportProviderList{rdma, nvlink});
+  MultiTransportFactory second(0, {}, TransportProviderList{nvlink, rdma});
+
+  EXPECT_EQ(first.getTopology(), second.getTopology());
+  for (auto* factory : {&first, &second}) {
+    auto& peer = factory == &first ? second : first;
+    auto transport = factory->createTransport(peer.getTopology());
+    ASSERT_TRUE(transport.hasValue()) << transport.error().toString();
+    auto info = transport.value()->bind();
+    ASSERT_TRUE(info.hasValue()) << info.error().toString();
+    ASSERT_FALSE(info.value().empty());
+    EXPECT_EQ(info.value().front(), 2);
+  }
+
+  MultiTransportFactory subset(0, {}, TransportProviderList{nvlink});
+  for (auto* factory : {&first, &subset}) {
+    auto& peer = factory == &first ? subset : first;
+    auto transport = factory->createTransport(peer.getTopology());
+    ASSERT_TRUE(transport.hasValue()) << transport.error().toString();
+    auto info = transport.value()->bind();
+    ASSERT_TRUE(info.hasValue()) << info.error().toString();
+    ASSERT_FALSE(info.value().empty());
+    EXPECT_EQ(info.value().front(), 1);
+  }
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProviderTransportOutlivesFactory) {
+  auto factory = std::make_unique<MultiTransportFactory>(
+      0,
+      MultiTransportFactoryOptions{},
+      TransportProviderList{std::make_shared<EventBaseTransportProvider>()});
+  const std::array<uint8_t, 4> expected{0x11, 0x22, 0x33, 0x44};
+  auto source = expected;
+  std::array<uint8_t, 4> destination{};
+  Segment localSegment(source.data(), source.size());
+  Segment remoteSegment(destination.data(), destination.size());
+
+  auto local = factory->registerSegment(localSegment);
+  ASSERT_TRUE(local.hasValue()) << local.error().toString();
+  auto registeredRemote = factory->registerSegment(remoteSegment);
+  ASSERT_TRUE(registeredRemote.hasValue())
+      << registeredRemote.error().toString();
+  auto exportId = registeredRemote.value().exportId();
+  ASSERT_TRUE(exportId.hasValue()) << exportId.error().toString();
+  auto remote = factory->importSegment(exportId.value());
+  ASSERT_TRUE(remote.hasValue()) << remote.error().toString();
+  auto result = factory->createTransport(factory->getTopology());
+  ASSERT_TRUE(result.hasValue()) << result.error().toString();
+  auto transport = std::move(result).value();
+
+  factory.reset();
+
+  auto future = transport->put({{local.value().span(), remote.value().span()}});
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  auto status = future.get();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+  EXPECT_EQ(destination, expected);
 }
 
 TEST_F(MultiTransportFactoryTest, RegisterSegmentSingleFactory) {
