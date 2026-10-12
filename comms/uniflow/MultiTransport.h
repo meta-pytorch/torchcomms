@@ -5,6 +5,7 @@
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/transport/Topology.h"
 #include "comms/uniflow/transport/Transport.h"
+#include "comms/uniflow/transport/TransportProvider.h"
 
 #include <array>
 #include <cstddef>
@@ -168,6 +169,18 @@ class MultiTransportFactory {
   explicit MultiTransportFactory(
       int deviceId,
       MultiTransportFactoryOptions options = {});
+
+  /// Uses only the supplied providers, without default backend discovery.
+  /// This overload applies only intraNodeTransport, preferredTransport, and
+  /// interNodeTransport from options; providers own backend configuration.
+  /// deviceId is -1 for CPU or non-negative; providers validate device
+  /// availability without relying on the default GPU topology.
+  /// Invalid providers throw invalid_argument; creation errors throw
+  /// runtime_error.
+  MultiTransportFactory(
+      int deviceId,
+      MultiTransportFactoryOptions options,
+      TransportProviderList providers);
 
   Result<RegisteredSegment> registerSegment(Segment& segment);
 

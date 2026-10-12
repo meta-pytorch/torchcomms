@@ -115,6 +115,22 @@ class MockTransportFactory : public TransportFactory {
   }
 };
 
+class MockTransportProvider : public TransportProvider {
+ public:
+  TransportType transportType() const noexcept override {
+    return TransportType::RDMA;
+  }
+
+  Status supported() const override {
+    return Ok();
+  }
+
+  Result<std::shared_ptr<TransportFactory>> createFactory(
+      const TransportProviderContext&) const override {
+    return std::make_shared<MockTransportFactory>(TransportType::RDMA);
+  }
+};
+
 class SingleAcceptBlockingServer : public controller::Server {
  public:
   SingleAcceptBlockingServer()
@@ -237,6 +253,50 @@ TEST(UniflowAgentTest, GetUniqueIdWildcardResolvesToLoopback) {
 // ---------------------------------------------------------------------------
 // Full lifecycle tests
 // ---------------------------------------------------------------------------
+
+TEST(UniflowAgentTest, ExplicitProvidersKeepTcpControllerLifecycle) {
+  UniflowAgent serverAgent(
+      {.deviceId = 0, .name = "server", .listenAddress = "127.0.0.1:0"},
+      TransportProviderList{std::make_shared<MockTransportProvider>()});
+  UniflowAgent clientAgent(
+      {.deviceId = 1, .name = "client"},
+      TransportProviderList{std::make_shared<MockTransportProvider>()});
+
+  auto serverId = serverAgent.getUniqueId();
+  ASSERT_TRUE(serverId.hasValue()) << serverId.error().toString();
+  EXPECT_TRUE(serverId.value().starts_with("127.0.0.1:"));
+  uint8_t buf[64]{};
+  Segment segment(buf, sizeof(buf));
+  auto registered = serverAgent.registerSegment(segment);
+  ASSERT_TRUE(registered.hasValue()) << registered.error().toString();
+  EXPECT_EQ(registered.value().len(), sizeof(buf));
+
+  Result<std::unique_ptr<Connection>> serverConnection =
+      ErrCode::NotImplemented;
+  Result<std::unique_ptr<Connection>> clientConnection =
+      ErrCode::NotImplemented;
+  std::thread serverThread([&]() { serverConnection = serverAgent.accept(); });
+  std::thread clientThread(
+      [&]() { clientConnection = clientAgent.connect(serverId.value()); });
+  serverThread.join();
+  clientThread.join();
+
+  ASSERT_TRUE(serverConnection.hasValue())
+      << serverConnection.error().toString();
+  ASSERT_TRUE(clientConnection.hasValue())
+      << clientConnection.error().toString();
+  ASSERT_NE(serverConnection.value(), nullptr);
+  ASSERT_NE(clientConnection.value(), nullptr);
+
+  const std::vector<uint8_t> expected{0x11, 0x22, 0x33, 0x44};
+  auto sent = clientConnection.value()->sendCtrlMsg(expected);
+  ASSERT_TRUE(sent.hasValue()) << sent.error().toString();
+  std::vector<uint8_t> received;
+  auto read = serverConnection.value()->recvCtrlMsg(received);
+  ASSERT_TRUE(read.hasValue()) << read.error().toString();
+  EXPECT_EQ(read.value(), expected.size());
+  EXPECT_EQ(received, expected);
+}
 
 TEST(UniflowAgentTest, FullLifecycleWithTcpController) {
   auto factory = MultiTransportFactoryTest::make(

@@ -48,6 +48,18 @@ class UniflowAgent {
       const UniflowAgentConfig& config,
       std::unique_ptr<controller::Client> client = nullptr,
       std::unique_ptr<controller::Server> server = nullptr);
+
+  /// Uses explicit data providers while retaining TCP control defaults.
+  /// deviceId and preferredTransport/intraNodeTransport/interNodeTransport
+  /// configure data transport selection. enableTcp, tcpBindHost, and
+  /// tcpTransportConfig do not configure the supplied providers.
+  /// listenAddress, connectRetries, and connectTimeoutMs configure TCP control.
+  UniflowAgent(
+      const UniflowAgentConfig& config,
+      TransportProviderList providers,
+      std::unique_ptr<controller::Client> client = nullptr,
+      std::unique_ptr<controller::Server> server = nullptr);
+
   ~UniflowAgent() noexcept;
   UniflowAgent(const UniflowAgent&) = delete;
   UniflowAgent& operator=(const UniflowAgent&) = delete;
@@ -84,6 +96,8 @@ class UniflowAgent {
         factory_(std::move(factory)),
         client_(std::move(client)),
         server_(std::move(server)) {}
+
+  void initializeController();
 
   /// Exchange topology and transport info, create and connect transport.
   /// If sendFirst is true, sends local data before receiving (used by accept).
