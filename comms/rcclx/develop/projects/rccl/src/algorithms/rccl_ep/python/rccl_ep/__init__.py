@@ -25,6 +25,13 @@ _WAIT_TIMEOUT_MS = int(os.environ.get("RCCL_EP_WAIT_TIMEOUT_MS", "600000"))
 # CTA budget for the grouped epilogue, a purely local copy; 0 keeps the dispatch's budget,
 # which is sized for the push rather than for this kernel.
 _EPILOGUE_SMS = int(os.environ.get("RCCL_EP_EPILOGUE_SMS", "0"))
+# RCCL_EP_HOST_PSUM=1: an uncached hybrid dispatch uploads the per-source receive prefix computed
+# on the host (one copy, no scan), and builds the per-node and per-expert prefixes on first access.
+_HOST_PSUM = os.environ.get("RCCL_EP_HOST_PSUM", "0") == "1"
+# RCCL_EP_HYB_POST_EARLY=1: an uncached bf16 hybrid dispatch posts its pack and rail transfer from
+# inside the count exchange's call (ep_hcounts_post), as soon as the counts land, instead of after
+# the outputs are sized and allocated.
+_HYB_POST_EARLY = os.environ.get("RCCL_EP_HYB_POST_EARLY", "0") == "1"
 
 _LIB = None
 
@@ -140,6 +147,9 @@ def _lib():
         lib.ep_hplan.argtypes = [ctypes.c_void_p, P, I, P, P, P, P, P, P, P]
         lib.ep_hcounts.restype = I
         lib.ep_hcounts.argtypes = [ctypes.c_void_p, P, P, P, I, ctypes.c_void_p, ctypes.c_void_p, P]
+        lib.ep_hcounts_post.restype = I
+        lib.ep_hcounts_post.argtypes = [ctypes.c_void_p, P, P, P, I, ctypes.c_void_p, ctypes.c_void_p,
+                                        P, P, P, P, P, P, P, I, P]
         lib.ep_hbind.restype = I
         lib.ep_hbind.argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 4 + [P] * 5 + [I]
         lib.ep_get_unique_id.argtypes = [ctypes.c_void_p]
@@ -272,16 +282,30 @@ class EPHandle:
 
     @property
     def psum_num_recv_tokens_per_expert(self):
-        """Inclusive prefix of the per-expert counts. dispatch_grouped() builds it on
-        first access, so a caller that needs only the counts keeps a launch off the host
-        path after the count wait."""
+        """Inclusive prefix of the per-expert counts. dispatch_grouped() and, with
+        RCCL_EP_HOST_PSUM, an uncached hybrid dispatch build it on first access, so a caller
+        that needs only the counts keeps a launch off the host path after the count wait."""
+        if self._psum_expert is None and self._psum_expert_fn is not None:
+            self._psum_expert, self._psum_expert_fn = self._psum_expert_fn(), None
         if self._psum_expert is None and self.grouped and self.expert_counts is not None:
             self._psum_expert = torch.cumsum(self.expert_counts, 0, dtype=torch.int32)
         return self._psum_expert
 
     @psum_num_recv_tokens_per_expert.setter
     def psum_num_recv_tokens_per_expert(self, value):
-        self._psum_expert = value
+        self._psum_expert, self._psum_expert_fn = value, None
+
+    @property
+    def psum_num_recv_tokens_per_scaleup_rank(self):
+        """Inclusive prefix of the receive counts per scale-up rank. With RCCL_EP_HOST_PSUM an
+        uncached hybrid dispatch builds it on first access."""
+        if self._psum_su is None and self._psum_su_fn is not None:
+            self._psum_su, self._psum_su_fn = self._psum_su_fn(), None
+        return self._psum_su
+
+    @psum_num_recv_tokens_per_scaleup_rank.setter
+    def psum_num_recv_tokens_per_scaleup_rank(self, value):
+        self._psum_su, self._psum_su_fn = value, None
 
 
 class GroupedDispatch(NamedTuple):
@@ -488,11 +512,13 @@ class ElasticBuffer:
         h.inter_sendc = (ctypes.c_int32 * R)(*out[:R])
         h.inter_recvc = (ctypes.c_int32 * R)(*out[R:])
 
-    def _hybrid_plan(self, h, ti32, num_tokens, stream):
+    def _hybrid_plan(self, h, ti32, num_tokens, stream, post=None):
         """Hybrid: build the rank and node plans and exchange counts (one host sync) into h.
 
         The exchange also carries per-expert counts, so hyb_expert_cnt is on the host before
-        the payload moves and dispatch does not wait for it."""
+        the payload moves and dispatch does not wait for it. post, (x, topk_weights, num_sms)
+        of the bf16 dispatch that follows: also post its pack and rail transfer as soon as the
+        counts land (RCCL_EP_HYB_POST_EARLY)."""
         R, SU, dev = self.num_ranks, self.num_node_ranks, ti32.device
         SO = R // SU
         h.slot = torch.empty((R, num_tokens), dtype=torch.int32, device=dev)
@@ -506,19 +532,29 @@ class ElasticBuffer:
                         h.send_list.data_ptr(), h.sendc.data_ptr(), h.node_pos.data_ptr(),
                         h.node_list.data_ptr(), h.node_cnt.data_ptr(), stream) != 0:
             raise RuntimeError("ep_hplan failed")
+        # Its size does not depend on the counts, and posting early binds it before they land.
+        h.fwd_meta = torch.empty((max(SO - 1, 1), self.num_max_tokens_per_rank, 1 + self.num_topk),
+                                 dtype=torch.int32, device=dev)
         out = (ctypes.c_int32 * (2 * R + 2 * SO))()
         out_expert = (ctypes.c_int32 * self.num_local_experts)()
-        if lib.ep_hcounts(self._h, h.sendc.data_ptr(), h.node_cnt.data_ptr(), ti32.data_ptr(),
-                          num_tokens, ctypes.addressof(out), ctypes.addressof(out_expert),
-                          stream) != 0:
+        if post is not None:
+            x, tw, num_sms = post
+            if lib.ep_hcounts_post(self._h, h.sendc.data_ptr(), h.node_cnt.data_ptr(),
+                                   ti32.data_ptr(), num_tokens, ctypes.addressof(out),
+                                   ctypes.addressof(out_expert), h.send_list.data_ptr(),
+                                   h.slot.data_ptr(), h.node_list.data_ptr(),
+                                   h.node_pos.data_ptr(), h.fwd_meta.data_ptr(), x.data_ptr(),
+                                   tw.data_ptr(), num_sms, stream) != 0:
+                raise RuntimeError("ep_hcounts_post failed")
+        elif lib.ep_hcounts(self._h, h.sendc.data_ptr(), h.node_cnt.data_ptr(), ti32.data_ptr(),
+                            num_tokens, ctypes.addressof(out), ctypes.addressof(out_expert),
+                            stream) != 0:
             raise RuntimeError("ep_hcounts failed")
         h.hyb_expert_cnt = list(out_expert)
         h.inter_sendc = (ctypes.c_int32 * R)(*out[:R])
         h.inter_recvc = (ctypes.c_int32 * R)(*out[R:2 * R])
         h.hyb_nsend = (ctypes.c_int32 * SO)(*out[2 * R:2 * R + SO])
         h.hyb_nrecv = (ctypes.c_int32 * SO)(*out[2 * R + SO:])
-        h.fwd_meta = torch.empty((max(SO - 1, 1), self.num_max_tokens_per_rank, 1 + self.num_topk),
-                                 dtype=torch.int32, device=dev)
 
     def _psum_by_scaleup(self, recvc):
         """psum_num_recv_tokens_per_scaleup_rank from per-source counts: hybrid sums each
@@ -680,7 +716,9 @@ class ElasticBuffer:
             send_list = torch.empty((self.num_ranks, num_tokens), dtype=torch.int32, device=x.device)
             sendc = torch.empty((self.num_ranks,), dtype=torch.int32, device=x.device)
             if self.hybrid:
-                self._hybrid_plan(h, ti32, num_tokens, stream)
+                post = ((x, tw, num_sms) if _HYB_POST_EARLY and not use_fp8 and not do_expand
+                        else None)
+                self._hybrid_plan(h, ti32, num_tokens, stream, post)
                 slot, send_list, sendc = h.slot, h.send_list, h.sendc
             elif do_expand or self.internode:
                 # Internode takes this plan too: the notify handshake is intranode only,
@@ -758,14 +796,27 @@ class ElasticBuffer:
                                       rtw.data_ptr(), rsrc.data_ptr(), nt_counts.data_ptr(),
                                       0 if self.hybrid else host.data_ptr(), stream) != 0:
                     raise RuntimeError("ep_dispatch_v2 failed")
-                h._psum_src = _h2d_i32(list(h.inter_recvc), x.device).cumsum(0, dtype=torch.int32)
-                h.psum_num_recv_tokens_per_scaleup_rank = self._psum_by_scaleup(list(h.inter_recvc))
+                recvc = list(h.inter_recvc)
                 h.expert_counts = nt_counts
                 dev_aligned = (nt_counts if expert_alignment <= 1 else
                                (nt_counts + expert_alignment - 1)
                                // expert_alignment * expert_alignment)
-                h.psum_num_recv_tokens_per_expert = torch.cumsum(
-                    dev_aligned, 0, dtype=torch.int32)
+                if self.hybrid and _HOST_PSUM:
+                    # The payload replay reads only _psum_src: one upload of the host prefix.
+                    acc, psum = 0, []
+                    for c in recvc:
+                        acc += c
+                        psum.append(acc)
+                    h._psum_src = _h2d_i32(psum, x.device)
+                    # Built on the stream current at first access: a reader on another stream
+                    # must order itself after this dispatch first.
+                    h._psum_su_fn = lambda: self._psum_by_scaleup(recvc)
+                    h._psum_expert_fn = lambda: torch.cumsum(dev_aligned, 0, dtype=torch.int32)
+                else:
+                    h._psum_src = _h2d_i32(recvc, x.device).cumsum(0, dtype=torch.int32)
+                    h.psum_num_recv_tokens_per_scaleup_rank = self._psum_by_scaleup(recvc)
+                    h.psum_num_recv_tokens_per_expert = torch.cumsum(
+                        dev_aligned, 0, dtype=torch.int32)
                 if cumulative_local_expert_recv_stats is not None:
                     cumulative_local_expert_recv_stats += nt_counts
                 if self.hybrid:

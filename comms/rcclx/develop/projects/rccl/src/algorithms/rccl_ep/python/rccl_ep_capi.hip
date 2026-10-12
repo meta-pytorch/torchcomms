@@ -98,6 +98,19 @@ struct EpHandle {
   int32_t* d_xchg{};
   int32_t* host_xchg{};
   size_t xchg_ints{0};
+  // RCCL_EP_HPLAN_FUSED=1: ep_hplan already wrote this rank's row of the exchange for this many
+  // tokens (-1: not written), so ep_hcounts does not build it again.
+  int hplan_row_tokens{-1};
+  // RCCL_EP_HCOUNTS_SPIN=1: ep_hcounts polls this event instead of blocking in
+  // hipStreamSynchronize, so the thread is still running when the counts land.
+  hipEvent_t ev_hc{};
+  // ep_hcounts_post: the next dispatch's pack and rail transfer are already queued, for these
+  // tokens.
+  struct {
+    bool on{false};
+    uintptr_t x{};
+    int num_tokens{0};
+  } rail_posted;
   InterCounts bound{};
   const int32_t* bound_send_list{};
   int bound_num_tokens{0};
@@ -245,6 +258,8 @@ inline void release_inter_comm(EpHandle* h) {
     if (h->ev_b[c]) hipEventDestroy(h->ev_b[c]);
     h->ev_a[c] = h->ev_b[c] = nullptr;
   }
+  if (h->ev_hc) hipEventDestroy(h->ev_hc);
+  h->ev_hc = nullptr;
   h->side = nullptr;
   if (h->node_comm) ncclCommDestroy(h->node_comm);
   h->node_comm = nullptr;
@@ -1144,7 +1159,15 @@ static int dispatch_enqueue(EpHandle* h,
     return !(e && e[0] == '0');
   }();
   const int hyb_meta = use_fp8 ? 1 : with_meta;
-  if (h->hybrid && early_rail &&
+  // ep_hcounts_post already queued this dispatch's pack and rail transfer.
+  const bool posted = h->rail_posted.on;
+  h->rail_posted.on = false;
+  if (posted && (!h->hybrid || use_fp8 || hyb_meta != 1 || x != h->rail_posted.x ||
+                 num_tokens != h->rail_posted.num_tokens)) {
+    fprintf(stderr, "[rccl_ep] dispatch: not the dispatch ep_hcounts_post posted the rail for\n");
+    return -1;
+  }
+  if (h->hybrid && early_rail && !posted &&
       hybrid_dispatch_begin(h, x, x_sf, topk_idx, topk_w, num_tokens, use_fp8, hyb_meta,
                             hyb_ctas(h, num_sms), s) != 0)
     return -1;
@@ -1163,8 +1186,9 @@ static int dispatch_enqueue(EpHandle* h,
   // local push, which sees only local destinations.
   const int32_t* push_sendc = (const int32_t*)sendc;
   if (h->hybrid) {
-    if (!early_rail && hybrid_dispatch_begin(h, x, x_sf, topk_idx, topk_w, num_tokens, use_fp8,
-                                             hyb_meta, hyb_ctas(h, num_sms), s) != 0)
+    if (!early_rail && !posted &&
+        hybrid_dispatch_begin(h, x, x_sf, topk_idx, topk_w, num_tokens, use_fp8, hyb_meta,
+                              hyb_ctas(h, num_sms), s) != 0)
       return -1;
     views = h->d_views_inter + kViewHybLocal * c.num_ranks;
     hipLaunchKernelGGL(k_hyb_local_sendc, dim3(1), dim3(kMaxWorldRanks), 0, s, c.num_ranks,
@@ -1847,6 +1871,27 @@ int ep_hybrid_enable(void* handle, int multi) {
   return 0;
 }
 
+// ep_hcounts' exchange buffers for W = R + SO + E ints per rank: [R * W gathered | W this rank's].
+// Grown on demand; growing synchronizes.
+static int hyb_xchg_reserve(EpHandle* h, int E, hipStream_t s) {
+  const int R = h->cfg.num_ranks, W = R + h->hyb.SO + E;
+  const size_t need = (size_t)R * W + W;
+  if (need <= h->xchg_ints) return 0;
+  HC(hipStreamSynchronize(s));
+  hipFree(h->d_xchg);
+  if (h->host_xchg) hipHostFree(h->host_xchg);
+  h->d_xchg = nullptr;
+  h->host_xchg = nullptr;
+  h->xchg_ints = 0;
+  if (hipMalloc(&h->d_xchg, need * sizeof(int32_t)) != hipSuccess ||
+      hipHostMalloc((void**)&h->host_xchg, need * sizeof(int32_t)) != hipSuccess) {
+    fprintf(stderr, "[rccl_ep] ep_hcounts: exchange buffers (%zu ints) failed\n", need);
+    return -1;
+  }
+  h->xchg_ints = need;
+  return 0;
+}
+
 // Hybrid routing plan: k_ep_plan over ranks (out_slot / out_list / out_sendc, as ep_plan) and
 // again over nodes (out_node_pos [SO, num_tokens]: a token's record index for the node, -1
 // if none of its experts is there; out_node_list: record -> token; out_node_cnt [SO]).
@@ -1860,12 +1905,27 @@ int ep_hplan(void* handle, uintptr_t topk_idx, int num_tokens, uintptr_t out_slo
     return -1;
   }
   hipStream_t s = (hipStream_t)stream;
-  hipLaunchKernelGGL(k_ep_plan, dim3(h->cfg.num_ranks), dim3(kEpWaves * kWarpSize), 0, s,
-                     h->cfg, (const int32_t*)topk_idx, num_tokens,
-                     (int32_t*)out_slot, (int32_t*)out_list, (int32_t*)out_sendc);
   EpConfig nc = h->cfg;  // the same plan with nodes for ranks: expert_begin(n) = n * E / SO
   nc.num_ranks = h->hyb.SO;
   nc.rank = h->hyb.D;
+  // RCCL_EP_HPLAN_FUSED=1: both plans in one launch (k_ep_hplan), which also writes this rank's
+  // row of ep_hcounts' exchange, per-expert counts included.
+  static const bool fused = env_int("RCCL_EP_HPLAN_FUSED") == 1;
+  h->hplan_row_tokens = -1;
+  if (fused && h->cfg.experts_per_rank() <= kEpiMaxExperts) {
+    const int R = h->cfg.num_ranks, E = h->cfg.num_experts;
+    if (hyb_xchg_reserve(h, E, s) != 0) return -1;
+    int32_t* row = h->d_xchg + (size_t)R * (R + nc.num_ranks + E);
+    hipLaunchKernelGGL(k_ep_hplan, dim3(R + nc.num_ranks), dim3(kEpWaves * kWarpSize), 0, s,
+                       h->cfg, nc, (const int32_t*)topk_idx, num_tokens, (int32_t*)out_slot,
+                       (int32_t*)out_list, (int32_t*)out_sendc, (int32_t*)out_node_pos,
+                       (int32_t*)out_node_list, (int32_t*)out_node_cnt, row);
+    h->hplan_row_tokens = num_tokens;
+    return 0;
+  }
+  hipLaunchKernelGGL(k_ep_plan, dim3(h->cfg.num_ranks), dim3(kEpWaves * kWarpSize), 0, s,
+                     h->cfg, (const int32_t*)topk_idx, num_tokens,
+                     (int32_t*)out_slot, (int32_t*)out_list, (int32_t*)out_sendc);
   hipLaunchKernelGGL(k_ep_plan, dim3(nc.num_ranks), dim3(kEpWaves * kWarpSize), 0, s,
                      nc, (const int32_t*)topk_idx, num_tokens,
                      (int32_t*)out_node_pos, (int32_t*)out_node_list, (int32_t*)out_node_cnt);
@@ -1889,25 +1949,16 @@ int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk
   const int R = h->cfg.num_ranks, SO = h->hyb.SO, me = h->cfg.rank;
   const int E = topk_idx ? h->cfg.num_experts : 0, W = R + SO + E;
   hipStream_t s = (hipStream_t)stream;
-  const size_t need = (size_t)R * W + W;
-  if (need > h->xchg_ints) {
-    HC(hipStreamSynchronize(s));
-    hipFree(h->d_xchg);
-    if (h->host_xchg) hipHostFree(h->host_xchg);
-    h->d_xchg = nullptr;
-    h->host_xchg = nullptr;
-    h->xchg_ints = 0;
-    if (hipMalloc(&h->d_xchg, need * sizeof(int32_t)) != hipSuccess ||
-        hipHostMalloc((void**)&h->host_xchg, need * sizeof(int32_t)) != hipSuccess) {
-      fprintf(stderr, "[rccl_ep] ep_hcounts: exchange buffers (%zu ints) failed\n", need);
-      return -1;
-    }
-    h->xchg_ints = need;
-  }
+  // RCCL_EP_HPLAN_FUSED: ep_hplan already wrote this rank's row for these tokens.
+  const bool row_ready = E > 0 && h->hplan_row_tokens == num_tokens;
+  h->hplan_row_tokens = -1;
+  if (hyb_xchg_reserve(h, E, s) != 0) return -1;
   int32_t* mine = h->d_xchg + (size_t)R * W;
-  HC(hipMemcpyAsync(mine, (const void*)sendc, R * sizeof(int32_t), hipMemcpyDeviceToDevice, s));
-  HC(hipMemcpyAsync(mine + R, (const void*)node_cnt, SO * sizeof(int32_t), hipMemcpyDeviceToDevice, s));
-  if (E > 0) {
+  if (!row_ready) {
+    HC(hipMemcpyAsync(mine, (const void*)sendc, R * sizeof(int32_t), hipMemcpyDeviceToDevice, s));
+    HC(hipMemcpyAsync(mine + R, (const void*)node_cnt, SO * sizeof(int32_t), hipMemcpyDeviceToDevice, s));
+  }
+  if (E > 0 && !row_ready) {
     HC(hipMemsetAsync(mine + R + SO, 0, E * sizeof(int32_t), s));
     const int n = num_tokens * h->cfg.num_topk;
     if (n > 0)
@@ -1916,7 +1967,17 @@ int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk
   }
   NC(ncclAllGather(mine, h->d_xchg, W, ncclInt32, h->comm, s));
   HC(hipMemcpyAsync(h->host_xchg, h->d_xchg, (size_t)R * W * sizeof(int32_t), hipMemcpyDeviceToHost, s));
-  HC(hipStreamSynchronize(s));
+  static const bool spin = env_int("RCCL_EP_HCOUNTS_SPIN") == 1;
+  if (spin) {
+    if (!h->ev_hc) HC(hipEventCreateWithFlags(&h->ev_hc, hipEventDisableTiming));
+    HC(hipEventRecord(h->ev_hc, s));
+    hipError_t q;
+    while ((q = hipEventQuery(h->ev_hc)) == hipErrorNotReady) {
+    }
+    HC(q);
+  } else {
+    HC(hipStreamSynchronize(s));
+  }
   const int32_t* M = h->host_xchg;
   for (int q = 0; q < R; ++q) {
     out[q] = M[me * W + q];
@@ -1961,6 +2022,38 @@ int ep_hbind(void* handle, const int32_t* sendc, const int32_t* recvc, const int
   h->bound_node_list = (const int32_t*)node_list;
   h->bound_node_pos = (const int32_t*)node_pos;
   h->bound_fwd_meta = (int32_t*)fwd_meta;
+  return 0;
+}
+
+// ep_hcounts, then ep_hbind of the counts it returns and the next dispatch's pack and rail
+// transfer (hybrid_dispatch_begin), all before returning: the rail starts as soon as the counts
+// land instead of after the caller sizes its outputs. The dispatch of x that follows (bf16,
+// with metadata, same num_tokens) finds them posted and does not post them again; any other
+// dispatch fails.
+int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk_idx,
+                    int num_tokens, int32_t* out, int32_t* out_expert, uintptr_t send_list,
+                    uintptr_t slot_of, uintptr_t node_list, uintptr_t node_pos, uintptr_t fwd_meta,
+                    uintptr_t x, uintptr_t topk_w, int num_sms, uintptr_t stream) {
+  auto* h = static_cast<EpHandle*>(handle);
+  REQUIRE_CONFIGURED(h, "ep_hcounts_post");
+  // dispatch_enqueue's guards, before the rail overwrites so_send and posts into so_recv.
+  if (h->pend.on || h->pend_d.on || h->rail_posted.on) {
+    fprintf(stderr, "[rccl_ep] ep_hcounts_post: a deferred combine or dispatch is still pending\n");
+    return -1;
+  }
+  if (ep_hcounts(handle, sendc, node_cnt, topk_idx, num_tokens, out, out_expert, stream) != 0)
+    return -1;
+  const int R = h->cfg.num_ranks, SO = h->hyb.SO;
+  if (ep_hbind(handle, out, out + R, out + 2 * R, out + 2 * R + SO, send_list, slot_of, node_list,
+               node_pos, fwd_meta, num_tokens) != 0)
+    return -1;
+  hipStream_t s = (hipStream_t)stream;
+  note_stream(h, s);
+  if (hybrid_dispatch_begin(h, x, 0, topk_idx, topk_w, num_tokens, 0, 1, hyb_ctas(h, num_sms), s) != 0)
+    return -1;
+  h->rail_posted.on = true;
+  h->rail_posted.x = x;
+  h->rail_posted.num_tokens = num_tokens;
   return 0;
 }
 
