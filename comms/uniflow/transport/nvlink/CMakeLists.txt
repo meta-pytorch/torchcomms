@@ -4,10 +4,12 @@ set(UNIFLOW_NVLINK_TRANSPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/NVLinkRegistrationHandle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/NVLinkTopology.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/NVLinkTransport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/NVLinkTransportProvider.cpp
 )
 
 set(UNIFLOW_NVLINK_TRANSPORT_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/NVLinkTransport.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/NVLinkTransportProvider.h
 )
 
 add_library(uniflow_nvlink_transport OBJECT

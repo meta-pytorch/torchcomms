@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-/// Integration test for MultiTransportFactory::selectNics.
+/// Integration tests for default transport composition and GPU NIC selection.
 /// Requires real GPUs, NVML, and ibverbs — not for CI without GPU hardware.
 
 #include "comms/uniflow/MultiTransport.h"
@@ -26,20 +26,11 @@ class MultiTransportFactoryTest : public ::testing::Test {
     }
   }
 
-  // Create a lightweight factory for calling selectNics without constructing
-  // real transport backends. Uses the private vector<factory> constructor.
-  std::unique_ptr<MultiTransportFactory> makeTestFactory(
+  std::vector<std::string> selectNics(
       int deviceId,
-      NicFilter nicFilter = NicFilter()) {
-    auto factory =
-        std::unique_ptr<MultiTransportFactory>(new MultiTransportFactory({}));
-    factory->deviceId_ = deviceId;
-    factory->options_.nicFilter = std::move(nicFilter);
-    return factory;
-  }
-
-  std::vector<std::string> callSelectNics(MultiTransportFactory& factory) {
-    return factory.selectNics();
+      const NicFilter& nicFilter) {
+    return topo_->selectGpuNics(
+        deviceId, nicFilter, MultiTransportFactoryOptions{}.netdevPrefix);
   }
 
   size_t factoryCount(const MultiTransportFactory& factory) {
@@ -117,8 +108,7 @@ TEST_F(MultiTransportFactoryTest, SelectNicsGpuH100) {
   };
 
   for (size_t i = 0; i < topo_->gpuCount(); ++i) {
-    auto factory = makeTestFactory(static_cast<int>(i), filter);
-    auto nics = callSelectNics(*factory);
+    auto nics = selectNics(static_cast<int>(i), filter);
     EXPECT_EQ(nics, expectedNics[i]);
   }
 }
@@ -139,8 +129,7 @@ TEST_F(MultiTransportFactoryTest, SelectNicsGpuGB200) {
   };
 
   for (size_t i = 0; i < topo_->gpuCount(); ++i) {
-    auto factory = makeTestFactory(static_cast<int>(i), filter);
-    auto nics = callSelectNics(*factory);
+    auto nics = selectNics(static_cast<int>(i), filter);
     EXPECT_EQ(nics, expectedNics[i]);
   }
 }

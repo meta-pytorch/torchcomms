@@ -186,7 +186,8 @@ class RdmaTransport : public Transport {
       std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
       RdmaTransportConfig config = {},
-      std::shared_ptr<RdmaSlabPool> slabPool = nullptr);
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr,
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
 
   ~RdmaTransport() override;
 
@@ -638,6 +639,9 @@ class RdmaTransportFactory : public TransportFactory {
    *                     a default IbvApi is created and init()'d.
    * @param portNum      Physical port number. If nullopt, auto-discovers the
    *                     first active port on each device.
+   * @param deviceAdapter  Shared allocator and registration adapter, also used
+   *                       by transports and slab pools. Null selects the
+   *                       current build's default adapter.
    */
   explicit RdmaTransportFactory(
       const std::vector<std::string>& deviceNames,
@@ -646,7 +650,8 @@ class RdmaTransportFactory : public TransportFactory {
       std::shared_ptr<IbvApi> ibvApi = nullptr,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
       std::shared_ptr<CudaApi> cudaApi = nullptr,
-      std::optional<uint8_t> portNum = std::nullopt);
+      std::optional<uint8_t> portNum = std::nullopt,
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
 
   ~RdmaTransportFactory() override = default;
 

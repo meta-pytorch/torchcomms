@@ -2,11 +2,14 @@
 
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
+#include "comms/uniflow/transport/rdma/RdmaTransportProvider.h"
 
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
+#include "comms/uniflow/drivers/cuda/mock/MockCudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <queue>
@@ -872,6 +875,170 @@ TEST_F(RdmaTransportFactoryTest, ConstructorByNameInitializesDevices) {
   setupSingleDevice();
   RdmaTransportFactory factory(
       {"mlx5_0"}, evbThread_.getEventBase(), {}, mockApi_);
+}
+
+namespace {
+
+struct DeviceAdapterState {
+  std::vector<void*> allocations;
+  std::vector<void*> frees;
+  size_t devicePointerQueries{0};
+};
+
+class RecordingDeviceAdapter : public DeviceAdapter {
+ public:
+  explicit RecordingDeviceAdapter(std::shared_ptr<DeviceAdapterState> state)
+      : state_(std::move(state)) {}
+
+  Result<void*> pinnedHostAlloc(size_t size) override {
+    void* ptr = std::calloc(1, size);
+    if (!ptr) {
+      return Err(ErrCode::DriverError, "allocation failed");
+    }
+    state_->allocations.push_back(ptr);
+    return ptr;
+  }
+
+  Status pinnedHostFree(void* ptr) override {
+    state_->frees.push_back(ptr);
+    std::free(ptr);
+    return Ok();
+  }
+
+  Result<void*> hostGetDevicePointer(void* ptr) override {
+    ++state_->devicePointerQueries;
+    return ptr;
+  }
+
+  Result<bool> isDmaBuffSupported(int) override {
+    return false;
+  }
+
+  Result<DmaBuff> exportDmaBuff(int, void*, size_t, DmaBufMapping) override {
+    return ErrCode::NotImplemented;
+  }
+
+  Status closeDmaBuff(DmaBuff&) override {
+    return Ok();
+  }
+
+ private:
+  std::shared_ptr<DeviceAdapterState> state_;
+};
+
+} // namespace
+
+TEST(RdmaTransportProviderTest, EmptyNicListSkipsFactoryCreation) {
+  RdmaTransportProvider provider(std::vector<std::string>{});
+
+  auto result = provider.createFactory({.deviceId = -1});
+
+  ASSERT_TRUE(result.hasValue()) << result.error().toString();
+  EXPECT_EQ(result.value(), nullptr);
+}
+
+TEST(RdmaTransportProviderTest, RequiresEventBaseBeforeCreatingDependencies) {
+  RdmaTransportProvider provider({"mlx5_0"});
+
+  auto result = provider.createFactory({.deviceId = 0});
+
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(RdmaTransportFactoryTest, ProviderAdapterOwnsBuffersAndOutlivesFactory) {
+  setupSingleDevice();
+  auto cudaApi = std::make_shared<testing::StrictMock<MockCudaApi>>();
+  auto cudaDriverApi =
+      std::make_shared<testing::StrictMock<MockCudaDriverApi>>();
+  EXPECT_CALL(*cudaApi, hostAlloc(_, _)).Times(0);
+  EXPECT_CALL(*cudaApi, hostFree(_)).Times(0);
+  EXPECT_CALL(*cudaApi, hostGetDevicePointer(_)).Times(0);
+  auto state = std::make_shared<DeviceAdapterState>();
+  auto adapter = std::make_shared<RecordingDeviceAdapter>(state);
+  std::weak_ptr<DeviceAdapter> weakAdapter = adapter;
+  RdmaTransportConfig config{
+      .gidIndex = 3,
+      .slabPoolConfig = {.slabNum = 1, .slabSize = 64},
+  };
+  ibv_mr slabMr{.lkey = 0x11, .rkey = 0x22};
+  ibv_mr segmentMr{.lkey = 0x33, .rkey = 0x44};
+  ibv_mr ctrlMr{.lkey = 0x55, .rkey = 0x66};
+  EXPECT_CALL(*mockApi_, regMr(&fakePd0_, _, _, _))
+      .WillOnce(Return(Result<ibv_mr*>(&slabMr)))
+      .WillOnce(Return(Result<ibv_mr*>(&segmentMr)))
+      .WillOnce(Return(Result<ibv_mr*>(&ctrlMr)));
+  EXPECT_CALL(*mockApi_, deregMr(&slabMr)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, deregMr(&segmentMr)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, deregMr(&ctrlMr)).WillOnce(Return(Ok()));
+  ibv_cq cq{};
+  ibv_qp qp{.qp_num = 100};
+  EXPECT_CALL(*mockApi_, createCq(&fakeCtx0_, _, _, _, _))
+      .WillOnce(Return(Result<ibv_cq*>(&cq)));
+  EXPECT_CALL(*mockApi_, createQp(&fakePd0_, _))
+      .WillOnce(Return(Result<ibv_qp*>(&qp)));
+  EXPECT_CALL(*mockApi_, modifyQp(&qp, _, _)).WillRepeatedly(Return(Ok()));
+  EXPECT_CALL(*mockApi_, destroyQp(&qp)).WillOnce(Return(Ok()));
+  EXPECT_CALL(*mockApi_, destroyCq(&cq)).WillOnce(Return(Ok()));
+  auto provider = std::make_unique<RdmaTransportProvider>(
+      std::vector<std::string>{"mlx5_0"},
+      config,
+      mockApi_,
+      cudaDriverApi,
+      cudaApi,
+      std::nullopt,
+      adapter);
+  auto factoryResult = provider->createFactory(
+      {.deviceId = -1, .eventBase = evbThread_.getEventBase()});
+  ASSERT_TRUE(factoryResult.hasValue()) << factoryResult.error().toString();
+  auto factory = std::move(factoryResult).value();
+  ASSERT_NE(factory, nullptr);
+  ASSERT_EQ(state->allocations.size(), 1);
+  EXPECT_EQ(state->devicePointerQueries, 1);
+
+  uint8_t buffer[64]{};
+  Segment segment(buffer, sizeof(buffer));
+  auto registered = factory->registerSegment(segment);
+  ASSERT_TRUE(registered.hasValue()) << registered.error().toString();
+  auto local = std::move(registered).value();
+  const auto* localRdma =
+      dynamic_cast<const RdmaRegistrationHandle*>(local.get());
+  ASSERT_NE(localRdma, nullptr);
+  const uint64_t expectedAddress = reinterpret_cast<uint64_t>(buffer);
+  EXPECT_EQ(localRdma->toWireAddr(buffer), expectedAddress);
+  auto imported = factory->importSegment(sizeof(buffer), local->serialize());
+  ASSERT_TRUE(imported.hasValue()) << imported.error().toString();
+  auto remote = std::move(imported).value();
+  const auto* remoteRdma =
+      dynamic_cast<const RdmaRemoteRegistrationHandle*>(remote.get());
+  ASSERT_NE(remoteRdma, nullptr);
+  EXPECT_EQ(remoteRdma->toWireAddr(buffer), expectedAddress);
+  auto transportResult = factory->createTransport(factory->getTopology());
+  ASSERT_TRUE(transportResult.hasValue()) << transportResult.error().toString();
+  auto transport = std::move(transportResult).value();
+  adapter.reset();
+  provider.reset();
+  factory.reset();
+
+  EXPECT_FALSE(weakAdapter.expired());
+  auto info = RdmaTransportInfo::deserialize(transport->bind());
+  ASSERT_TRUE(info.hasValue()) << info.error().toString();
+  ASSERT_EQ(state->allocations.size(), 2);
+  EXPECT_EQ(info->slab.addr, reinterpret_cast<uint64_t>(state->allocations[0]));
+  EXPECT_EQ(info->slab.length, config.slabPoolConfig.slabSize);
+  EXPECT_EQ(info->slab.rkeys, std::vector<uint32_t>{slabMr.rkey});
+  EXPECT_EQ(info->ctrl.addr, reinterpret_cast<uint64_t>(state->allocations[1]));
+  EXPECT_EQ(info->ctrl.rkeys, std::vector<uint32_t>{ctrlMr.rkey});
+  transport->shutdown();
+  EXPECT_EQ(state->frees, std::vector<void*>{state->allocations[1]});
+  local.reset();
+  transport.reset();
+  EXPECT_EQ(
+      state->frees,
+      (std::vector<void*>{state->allocations[1], state->allocations[0]}));
+  EXPECT_FALSE(weakAdapter.expired());
+  remote.reset();
+  EXPECT_TRUE(weakAdapter.expired());
 }
 
 // --- Topology and version tests ---

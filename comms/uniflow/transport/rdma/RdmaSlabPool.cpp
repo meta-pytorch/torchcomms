@@ -270,14 +270,17 @@ RdmaSlabPool::RdmaSlabPool(
     const RdmaSlabPoolConfig& config,
     std::shared_ptr<CudaApi> cudaApi,
     std::shared_ptr<IbvApi> ibvApi,
-    std::shared_ptr<std::vector<NicResources>> nics)
+    std::shared_ptr<std::vector<NicResources>> nics,
+    std::shared_ptr<DeviceAdapter> deviceAdapter)
     : config_(config), nics_(std::move(nics)) {
   if (config_.slabSize == 0 || config_.slabNum == 0) {
     throw std::invalid_argument(
         "RdmaSlabPool: slabSize must be > 0 and slabNum must be > 0");
   }
 
-  auto deviceAdapter = createDeviceAdapter(cudaApi);
+  if (!deviceAdapter) {
+    deviceAdapter = createDeviceAdapter(cudaApi);
+  }
 
   const size_t bufferSize = config_.slabNum * config_.slabSize;
   const size_t stateSize = config_.slabNum * sizeof(uint64_t);

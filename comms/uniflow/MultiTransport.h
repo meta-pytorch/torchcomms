@@ -13,8 +13,8 @@
 
 namespace uniflow {
 
-// Defined in transport/tcp/TcpTransport.h, which this header cannot include:
-// TCP is AMD-only, so the type is not available on every platform.
+// Defined by the optional TCP data transport. Keep this header independent
+// of which transports are included in the build.
 struct TcpTransportConfig;
 
 enum class CpuNicSelectionPolicy {
@@ -58,11 +58,8 @@ struct MultiTransportFactoryOptions {
   // required config, and it is the only way to reach lane striping from outside
   // the transport.
   //
-  // Held by pointer, and the type only forward-declared, because TCP is
-  // AMD-only (see the ovr_config//gpu:amd deps in BUCK): a by-value member
-  // would drag TcpTransport.h into every consumer of this header and fail to
-  // compile where the transport is not built. The struct layout stays
-  // platform-independent this way, so callers need no #ifdef to leave it unset.
+  // Held by pointer and forward-declared so this header does not depend on the
+  // optional TCP data transport. The layout stays the same in every build.
   std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
   // Frontend NIC name prefix for TCP lane striping. Must match
   // kDefaultFrontendDevicePrefix in TcpTransport.h, which owns the discovery;
@@ -207,9 +204,6 @@ class MultiTransportFactory {
   explicit MultiTransportFactory(
       std::vector<std::shared_ptr<TransportFactory>> factories)
       : factories_(std::move(factories)) {}
-
-  std::vector<std::string> selectNics();
-  std::vector<std::string> selectCpuNics();
 
   int deviceId_{-1};
   MultiTransportFactoryOptions options_;

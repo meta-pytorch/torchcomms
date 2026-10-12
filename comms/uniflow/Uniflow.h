@@ -97,6 +97,9 @@ class UniflowAgent {
         client_(std::move(client)),
         server_(std::move(server)) {}
 
+  static MultiTransportFactoryOptions makeFactoryOptions(
+      const UniflowAgentConfig& config);
+
   void initializeController();
 
   /// Exchange topology and transport info, create and connect transport.

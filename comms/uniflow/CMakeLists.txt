@@ -500,6 +500,8 @@ set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Connection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MultiTransport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/TransportComposition.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/UniflowComposition.cpp
 )
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
