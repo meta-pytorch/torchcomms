@@ -42,6 +42,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <stdexcept>
 
 namespace uniflow {
 
@@ -402,6 +403,70 @@ MultiTransportFactory::MultiTransportFactory(
 #endif
 }
 
+MultiTransportFactory::MultiTransportFactory(
+    int deviceId,
+    MultiTransportFactoryOptions options,
+    TransportProviderList providers)
+    : deviceId_(deviceId), options_(std::move(options)) {
+  if (deviceId_ < -1) {
+    throw std::invalid_argument("deviceId must be -1 or non-negative");
+  }
+
+  std::array<bool, NumTransportType> seen{};
+  for (const auto& provider : providers) {
+    if (!provider) {
+      throw std::invalid_argument("transport provider must not be null");
+    }
+    const auto type = provider->transportType();
+    const auto id = static_cast<size_t>(type);
+    if (id >= seen.size()) {
+      throw std::invalid_argument(
+          "invalid transport provider type: " + std::to_string(id));
+    }
+    if (seen[id]) {
+      throw std::invalid_argument(
+          "duplicate transport provider: " + std::string(toStringView(type)));
+    }
+    seen[id] = true;
+  }
+
+  if (providers.empty()) {
+    return;
+  }
+
+  std::sort(
+      providers.begin(), providers.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs->transportType() < rhs->transportType();
+      });
+
+  eventBaseThread_ = std::make_shared<ScopedEventBaseThread>();
+  const TransportProviderContext context{
+      .deviceId = deviceId_,
+      .eventBase = eventBaseThread_->getEventBase(),
+  };
+  factories_.reserve(providers.size());
+  for (const auto& provider : providers) {
+    auto result = provider->createFactory(context);
+    if (!result) {
+      throw std::runtime_error(
+          "Failed to create " +
+          std::string(toStringView(provider->transportType())) +
+          " transport factory: " + result.error().toString());
+    }
+    auto factory = std::move(result).value();
+    if (!factory) {
+      continue;
+    }
+    if (factory->transportType() != provider->transportType()) {
+      throw std::invalid_argument(
+          "transport factory type does not match provider: expected " +
+          std::string(toStringView(provider->transportType())) + ", got " +
+          std::string(toStringView(factory->transportType())));
+    }
+    factories_.emplace_back(std::move(factory));
+  }
+}
+
 void MultiTransport::addTransport(std::unique_ptr<Transport> transport) {
   transports_.emplace_back(std::move(transport));
 }
@@ -741,6 +806,9 @@ Result<std::unique_ptr<MultiTransport>> MultiTransportFactory::createTransport(
     std::span<const uint8_t> peerTopology) {
   auto parsed = MultiTransportFactory::parse(peerTopology);
   CHECK_RETURN(parsed);
+  if (factories_.empty()) {
+    return Err(ErrCode::TopologyDisconnect, "no transport can be connected");
+  }
   auto& entries = parsed.value();
   if (entries.size() != factories_.size()) {
     UNIFLOW_LOG_WARN(

@@ -26,6 +26,7 @@ set(UNIFLOW_PUBLIC_HEADERS
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/Topology.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/Transport.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/TransportProvider.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/TransportType.h
 )
 
