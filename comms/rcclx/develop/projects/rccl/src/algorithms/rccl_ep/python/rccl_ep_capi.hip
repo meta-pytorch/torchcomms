@@ -2191,16 +2191,68 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
     fprintf(stderr, "[rccl_ep] ep_hcounts_post: a deferred combine, dispatch or permute is still pending\n");
     return -1;
   }
+  hipStream_t s = (hipStream_t)stream;
+  note_stream(h, s);
+  const EpConfig& c = h->cfg;
+  const size_t T = c.num_max_tokens_per_rank;
+  // RCCL_EP_HYB_PREFIX=P: pack every record now, each node's count read from the node plan on the
+  // device, and send the first P records to every rail peer (and receive P from each) before the
+  // count exchange; only the rest waits for the counts. Every rank knows P, so the sizes match.
+  // Records past a peer's count are stale bytes the forwarder never reads (it stops at nrecv).
+  // The count exchange must stay off rail_comm, which the prefix transfer occupies.
+  // Only the environment value is cached: P is clamped to this window's T on every call, since
+  // windows can differ in T and a peer's rail region holds T records.
+  static const int prefix_env = env_int("RCCL_EP_HYB_PREFIX");
+  const int prefix = std::min(prefix_env, (int)T);
+  const bool pre = prefix > 0 && h->nchunks == 1 && env_int("RCCL_EP_HCOUNTS_2LEVEL") != 1;
+  HybInfo hi = h->hyb;
+  hi.nchunks = 1;
+  hi.chunk = 0;
+  hyb_call_layout(h, hi, 0, 1);
+  const size_t rb = hi.rec_bytes;
+  if (pre) {
+    hipLaunchKernelGGL(k_hyb_pack_dev, dim3(hi.SO, hyb_ctas(h, num_sms)), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, hi, (const void*)x, (const int32_t*)topk_idx, (const float*)topk_w, num_tokens,
+                       (const int32_t*)node_list, (const int32_t*)slot_of, (const int32_t*)node_cnt,
+                       h->so_send);
+    HC(hipEventRecord(h->ev_a[0], s));
+    HC(hipStreamWaitEvent(h->side, h->ev_a[0], 0));
+    NC(ncclGroupStart());
+    ncclResult_t gr = ncclSuccess;
+    for (int n = 0; n < hi.SO; ++n) {
+      if (n == hi.D) continue;
+      const size_t np = n < hi.D ? n : n - 1;
+      NCG(gr, ncclSend(h->so_send + np * T * rb, (size_t)prefix * rb, ncclUint8, n, h->rail_comm, h->side));
+      NCG(gr, ncclRecv(h->so_recv + np * T * rb, (size_t)prefix * rb, ncclUint8, n, h->rail_comm, h->side));
+    }
+    NCG_END(gr);
+  }
   if (ep_hcounts(handle, sendc, node_cnt, topk_idx, num_tokens, out, out_expert, stream) != 0)
     return -1;
-  const int R = h->cfg.num_ranks, SO = h->hyb.SO;
+  const int R = c.num_ranks, SO = h->hyb.SO;
   if (ep_hbind(handle, out, out + R, out + 2 * R, out + 2 * R + SO, send_list, slot_of, node_list,
                node_pos, fwd_meta, num_tokens) != 0)
     return -1;
-  hipStream_t s = (hipStream_t)stream;
-  note_stream(h, s);
-  if (hybrid_dispatch_begin(h, x, 0, topk_idx, topk_w, num_tokens, 0, 1, hyb_ctas(h, num_sms), s) != 0)
+  if (pre) {
+    // The rest, behind the prefix on the side stream.
+    NC(ncclGroupStart());
+    ncclResult_t gr = ncclSuccess;
+    for (int n = 0; n < SO; ++n) {
+      if (n == h->hyb.D) continue;
+      const size_t np = n < h->hyb.D ? n : n - 1;
+      const int ns = h->hyb.nsend[n], nr = h->hyb.nrecv[n];
+      if (ns > prefix)
+        NCG(gr, ncclSend(h->so_send + (np * T + prefix) * rb, (size_t)(ns - prefix) * rb, ncclUint8, n,
+                         h->rail_comm, h->side));
+      if (nr > prefix)
+        NCG(gr, ncclRecv(h->so_recv + (np * T + prefix) * rb, (size_t)(nr - prefix) * rb, ncclUint8, n,
+                         h->rail_comm, h->side));
+    }
+    NCG_END(gr);
+    HC(hipEventRecord(h->ev_b[0], h->side));
+  } else if (hybrid_dispatch_begin(h, x, 0, topk_idx, topk_w, num_tokens, 0, 1, hyb_ctas(h, num_sms), s) != 0) {
     return -1;
+  }
   h->rail_posted.on = true;
   h->rail_posted.x = x;
   h->rail_posted.num_tokens = num_tokens;
