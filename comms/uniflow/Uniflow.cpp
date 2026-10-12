@@ -34,16 +34,36 @@ UniflowAgent::UniflowAgent(
               makeFactoryOptions(config))),
       client_(std::move(client)),
       server_(std::move(server)) {
+  initializeController();
+}
+
+UniflowAgent::UniflowAgent(
+    const UniflowAgentConfig& config,
+    TransportProviderList providers,
+    std::unique_ptr<controller::Client> client,
+    std::unique_ptr<controller::Server> server)
+    : config_(config),
+      factory_(
+          std::make_shared<MultiTransportFactory>(
+              config.deviceId,
+              makeFactoryOptions(config),
+              std::move(providers))),
+      client_(std::move(client)),
+      server_(std::move(server)) {
+  initializeController();
+}
+
+void UniflowAgent::initializeController() {
   if (!client_) {
     controller::TcpSocketConfig tcpCfg;
-    tcpCfg.connectRetries = config.connectRetries;
-    tcpCfg.retryTimeout = std::chrono::milliseconds(config.connectTimeoutMs);
+    tcpCfg.connectRetries = config_.connectRetries;
+    tcpCfg.retryTimeout = std::chrono::milliseconds(config_.connectTimeoutMs);
     client_ = std::make_unique<controller::TcpClient>(std::move(tcpCfg));
   }
 
-  if (!server_ && !config.listenAddress.empty()) {
+  if (!server_ && !config_.listenAddress.empty()) {
     auto tcpServer =
-        std::make_unique<controller::TcpServer>(config.listenAddress);
+        std::make_unique<controller::TcpServer>(config_.listenAddress);
     auto status = tcpServer->init();
     if (!status) {
       throw std::runtime_error(

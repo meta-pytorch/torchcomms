@@ -2,6 +2,7 @@
 
 set(UNIFLOW_TRANSPORT_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/Transport.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/TransportProvider.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TransportType.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Topology.h
 )
