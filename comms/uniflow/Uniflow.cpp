@@ -7,9 +7,7 @@
 
 namespace uniflow {
 
-namespace {
-
-MultiTransportFactoryOptions makeFactoryOptions(
+MultiTransportFactoryOptions UniflowAgent::makeFactoryOptions(
     const UniflowAgentConfig& config) {
   MultiTransportFactoryOptions options;
   options.enableTcp = config.enableTcp;
@@ -19,22 +17,6 @@ MultiTransportFactoryOptions makeFactoryOptions(
   options.interNodeTransport = config.interNodeTransport;
   options.tcpTransportConfig = config.tcpTransportConfig;
   return options;
-}
-
-} // namespace
-
-UniflowAgent::UniflowAgent(
-    const UniflowAgentConfig& config,
-    std::unique_ptr<controller::Client> client,
-    std::unique_ptr<controller::Server> server)
-    : config_(config),
-      factory_(
-          std::make_shared<MultiTransportFactory>(
-              config.deviceId,
-              makeFactoryOptions(config))),
-      client_(std::move(client)),
-      server_(std::move(server)) {
-  initializeController();
 }
 
 UniflowAgent::UniflowAgent(

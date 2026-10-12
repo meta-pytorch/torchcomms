@@ -14,6 +14,7 @@
 namespace uniflow {
 
 struct NicResources;
+class DeviceAdapter;
 class SlabAllocator;
 class PinnedBuffer;
 class MrSet;
@@ -39,7 +40,8 @@ class RdmaSlabPool : public std::enable_shared_from_this<RdmaSlabPool> {
       const RdmaSlabPoolConfig& config,
       std::shared_ptr<CudaApi> cudaApi,
       std::shared_ptr<IbvApi> ibvApi,
-      std::shared_ptr<std::vector<NicResources>> nics);
+      std::shared_ptr<std::vector<NicResources>> nics,
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
   ~RdmaSlabPool();
 
   RdmaSlabPool(const RdmaSlabPool&) = delete;

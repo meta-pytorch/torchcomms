@@ -1114,7 +1114,21 @@ TEST_F(MultiTransportTest, DramPutRoutesToRdma) {
   EXPECT_EQ(nvlink->putCount, 0);
 }
 
-#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+TEST_F(MultiTransportTest, TcpOnlyRequestsRouteToSuppliedTransport) {
+  MultiTransport mt(0);
+  auto* tcp = addMock(mt, TransportType::TCP);
+  TestSegments local(MemoryType::DRAM, -1, {TransportType::TCP});
+  TestSegments remote(MemoryType::DRAM, -1, {TransportType::TCP});
+  std::vector<TransferRequest> reqs = {
+      {local.regSeg.span(size_t{0}, size_t{32}),
+       remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+  EXPECT_TRUE(mt.put(reqs).get().hasValue());
+  EXPECT_TRUE(mt.get(reqs).get().hasValue());
+  EXPECT_EQ(tcp->putCount, 1);
+  EXPECT_EQ(tcp->getCount, 1);
+}
+
 TEST_F(MultiTransportTest, PreferredTcpOverridesRdma) {
   MultiTransport mt(
       0,
@@ -1180,8 +1194,8 @@ TEST_F(MultiTransportTest, InterNodeTransportOverrideRoutesToTcp) {
   EXPECT_EQ(tcp->putCount, 1);
   EXPECT_EQ(rdma->putCount, 0);
 }
-#else
-TEST_F(MultiTransportTest, PreferredTcpReturnsNotImplemented) {
+
+TEST_F(MultiTransportTest, PreferredTcpFallsBackWhenTcpIsNotSupplied) {
   MultiTransport mt(
       0,
       nullptr,
@@ -1189,19 +1203,20 @@ TEST_F(MultiTransportTest, PreferredTcpReturnsNotImplemented) {
       /*preferredTransport=*/TransportType::TCP);
   auto* rdma = addMock(mt, TransportType::RDMA);
 
-  TestSegments local(MemoryType::DRAM, -1, {TransportType::RDMA});
-  TestSegments remote(MemoryType::DRAM, -1, {TransportType::RDMA});
+  TestSegments local(
+      MemoryType::DRAM, -1, {TransportType::RDMA, TransportType::TCP});
+  TestSegments remote(
+      MemoryType::DRAM, -1, {TransportType::RDMA, TransportType::TCP});
   std::vector<TransferRequest> reqs = {
       {local.regSeg.span(size_t{0}, size_t{32}),
        remote.remoteSeg.span(size_t{0}, size_t{32})}};
 
   auto status = mt.put(reqs).get();
-  ASSERT_TRUE(status.hasError());
-  EXPECT_EQ(status.error().code(), ErrCode::NotImplemented);
-  EXPECT_EQ(rdma->putCount, 0);
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+  EXPECT_EQ(rdma->putCount, 1);
 }
 
-TEST_F(MultiTransportTest, CommonTcpOnlyReturnsNotImplemented) {
+TEST_F(MultiTransportTest, MissingTcpTransportReturnsNotConnected) {
   MultiTransport mt(0);
   TestSegments local(MemoryType::DRAM, -1, {TransportType::TCP});
   TestSegments remote(MemoryType::DRAM, -1, {TransportType::TCP});
@@ -1211,7 +1226,7 @@ TEST_F(MultiTransportTest, CommonTcpOnlyReturnsNotImplemented) {
 
   auto status = mt.put(reqs).get();
   ASSERT_TRUE(status.hasError());
-  EXPECT_EQ(status.error().code(), ErrCode::NotImplemented);
+  EXPECT_EQ(status.error().code(), ErrCode::NotConnected);
 }
 
 TEST_F(MultiTransportTest, DisjointTcpBatchReturnsNotConnected) {
@@ -1230,7 +1245,6 @@ TEST_F(MultiTransportTest, DisjointTcpBatchReturnsNotConnected) {
   ASSERT_TRUE(status.hasError());
   EXPECT_EQ(status.error().code(), ErrCode::NotConnected);
 }
-#endif
 
 TEST_F(MultiTransportTest, VramGetRoutesToNvLink) {
   MultiTransport mt(0);

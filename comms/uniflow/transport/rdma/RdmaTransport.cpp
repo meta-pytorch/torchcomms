@@ -234,7 +234,8 @@ RdmaTransport::RdmaTransport(
     std::shared_ptr<std::vector<NicResources>> nics,
     uint64_t domainId,
     RdmaTransportConfig config,
-    std::shared_ptr<RdmaSlabPool> slabPool)
+    std::shared_ptr<RdmaSlabPool> slabPool,
+    std::shared_ptr<DeviceAdapter> deviceAdapter)
     : ibvApi_(std::move(ibvApi)),
       cudaApi_(std::move(cudaApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
@@ -249,7 +250,8 @@ RdmaTransport::RdmaTransport(
   CHECK_THROW_EXCEPTION(
       config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
 
-  deviceAdapter_ = createDeviceAdapter(cudaApi_);
+  deviceAdapter_ =
+      deviceAdapter ? std::move(deviceAdapter) : createDeviceAdapter(cudaApi_);
 
   nics_ = std::span<NicResources>(nicsHandle_->data(), nicsHandle_->size());
 
@@ -1847,7 +1849,8 @@ RdmaTransportFactory::RdmaTransportFactory(
     std::shared_ptr<IbvApi> ibvApi,
     std::shared_ptr<CudaDriverApi> cudaDriverApi,
     std::shared_ptr<CudaApi> cudaApi,
-    std::optional<uint8_t> portNum)
+    std::optional<uint8_t> portNum,
+    std::shared_ptr<DeviceAdapter> deviceAdapter)
     : TransportFactory(TransportType::RDMA),
       ibvApi_(std::move(ibvApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
@@ -1869,7 +1872,9 @@ RdmaTransportFactory::RdmaTransportFactory(
     cudaApi_ = std::make_shared<CudaApi>();
   }
 
-  deviceAdapter_ = createDeviceAdapter(cudaApi_, cudaDriverApi_);
+  deviceAdapter_ = deviceAdapter
+      ? std::move(deviceAdapter)
+      : createDeviceAdapter(cudaApi_, cudaDriverApi_);
 
   // Generate a random domain id to identify handles from this factory.
   std::mt19937_64 rng{std::random_device{}()};
@@ -1911,7 +1916,7 @@ RdmaTransportFactory::RdmaTransportFactory(
 
   if (config_.slabPoolConfig.slabNum > 0) {
     slabPool_ = std::make_shared<RdmaSlabPool>(
-        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_);
+        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_, deviceAdapter_);
   }
 }
 
@@ -2177,7 +2182,8 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
       nicsHandle_,
       domainId_,
       config,
-      slabPool_);
+      slabPool_,
+      deviceAdapter_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for
