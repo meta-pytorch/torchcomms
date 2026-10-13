@@ -29,6 +29,23 @@ list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
 list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/tests/.*")
 list(FILTER UTILS_CU_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
 
+if(TORCHCOMMS_GENERATED_CVARS_DIR)
+    set(_torchcomms_generated_cvars_cc
+        "${TORCHCOMMS_GENERATED_CVARS_DIR}/nccl_cvars.cc")
+    set(_torchcomms_generated_cvars_h
+        "${TORCHCOMMS_GENERATED_CVARS_DIR}/nccl_cvars.h")
+    foreach(_torchcomms_generated_cvar
+            "${_torchcomms_generated_cvars_cc}"
+            "${_torchcomms_generated_cvars_h}")
+        if(NOT EXISTS "${_torchcomms_generated_cvar}")
+            message(FATAL_ERROR
+                "Generated NCCLX CVAR input is missing: "
+                "${_torchcomms_generated_cvar}")
+        endif()
+    endforeach()
+    list(APPEND UTILS_SOURCES "${_torchcomms_generated_cvars_cc}")
+endif()
+
 add_library(utils OBJECT
     ${UTILS_SOURCES}
     ${UTILS_CU_SOURCES}
@@ -47,6 +64,11 @@ set_target_properties(utils PROPERTIES
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
     POSITION_INDEPENDENT_CODE ON
 )
+if(TORCHCOMMS_GENERATED_CVARS_ROOT)
+    target_include_directories(utils BEFORE PUBLIC
+        "${TORCHCOMMS_GENERATED_CVARS_ROOT}"
+    )
+endif()
 target_include_directories(utils PUBLIC
     ${ROOT}
     ${CONDA_INCLUDE}
