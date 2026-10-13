@@ -90,7 +90,9 @@ LIBSRCFILES += \
 	${SHAREDDIR}/meta/colltrace/ProxyMock.cc \
 	${SHAREDDIR}/meta/colltrace/ProxyTrace.cc \
 	${SHAREDDIR}/meta/colltrace/ProxyTraceFunc.cc \
+	${SHAREDDIR}/meta/commDump.cc \
 	${SHAREDDIR}/meta/commHash.cc \
+	${SHAREDDIR}/meta/comms-monitor/CommsMonitor.cc \
 	${SHAREDDIR}/meta/ctran-integration/BaselineBootstrap.cc \
 	${SHAREDDIR}/meta/hints/GlobalHints.cc \
 	${SHAREDDIR}/meta/hints/Hints.cc \
