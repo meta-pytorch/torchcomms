@@ -16,6 +16,7 @@ MultiTransportFactoryOptions UniflowAgent::makeFactoryOptions(
   options.intraNodeTransport = config.intraNodeTransport;
   options.interNodeTransport = config.interNodeTransport;
   options.tcpTransportConfig = config.tcpTransportConfig;
+  options.gpuBackend = config.gpuBackend;
   return options;
 }
 

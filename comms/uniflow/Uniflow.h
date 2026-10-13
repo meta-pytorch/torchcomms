@@ -40,6 +40,8 @@ struct UniflowAgentConfig {
   // keeps the transport's own defaults. See that field for why it is a pointer
   // to a forward-declared type.
   std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
+  // An omitted request stays unset until actual GPU resource initialization.
+  std::optional<std::string> gpuBackend;
 };
 
 class UniflowAgent {

@@ -7,6 +7,7 @@
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/Uniflow.h"
+#include "comms/uniflow/registry/GpuBackendSelector.h"
 
 namespace py = pybind11;
 
@@ -434,7 +435,9 @@ PYBIND11_MODULE(_core, m) {
                       const std::string& tcpBindHost,
                       std::optional<TransportType> preferredTransport,
                       std::optional<TransportType> intraNodeTransport,
-                      std::optional<TransportType> interNodeTransport) {
+                      std::optional<TransportType> interNodeTransport,
+                      std::optional<std::string> gpuBackend) {
+            validateGpuBackendRequest(gpuBackend);
             return UniflowAgentConfig{
                 .deviceId = deviceId,
                 .name = name,
@@ -446,6 +449,7 @@ PYBIND11_MODULE(_core, m) {
                 .preferredTransport = preferredTransport,
                 .intraNodeTransport = intraNodeTransport,
                 .interNodeTransport = interNodeTransport,
+                .gpuBackend = std::move(gpuBackend),
             };
           }),
           py::arg("device_id") = -1,
@@ -457,7 +461,8 @@ PYBIND11_MODULE(_core, m) {
           py::arg("tcp_bind_host") = "",
           py::arg("preferred_transport") = std::nullopt,
           py::arg("intra_node_transport") = std::nullopt,
-          py::arg("inter_node_transport") = std::nullopt)
+          py::arg("inter_node_transport") = std::nullopt,
+          py::arg("gpu_backend") = py::none())
       .def_readwrite("device_id", &UniflowAgentConfig::deviceId)
       .def_readwrite("name", &UniflowAgentConfig::name)
       .def_readwrite("listen_address", &UniflowAgentConfig::listenAddress)
@@ -471,7 +476,16 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite(
           "intra_node_transport", &UniflowAgentConfig::intraNodeTransport)
       .def_readwrite(
-          "inter_node_transport", &UniflowAgentConfig::interNodeTransport);
+          "inter_node_transport", &UniflowAgentConfig::interNodeTransport)
+      .def_property(
+          "gpu_backend",
+          [](const UniflowAgentConfig& config) { return config.gpuBackend; },
+          [](UniflowAgentConfig& config,
+             std::optional<std::string> gpuBackend) {
+            validateGpuBackendRequest(gpuBackend);
+            config.gpuBackend = std::move(gpuBackend);
+          },
+          "Optional GPU vendor request; None does not select or claim a GPU.");
 
   // ---------------------------------------------------------------------------
   // MultiTransport
@@ -563,7 +577,9 @@ PYBIND11_MODULE(_core, m) {
                       CpuNicSelectionPolicy cpuNicSelectionPolicy,
                       size_t maxCpuNics,
                       bool enableTcp,
-                      const std::string& tcpBindHost) {
+                      const std::string& tcpBindHost,
+                      std::optional<std::string> gpuBackend) {
+            validateGpuBackendRequest(gpuBackend);
             MultiTransportFactoryOptions options{
                 .nicFilter =
                     nicFilter.empty() ? NicFilter() : NicFilter(nicFilter),
@@ -571,6 +587,7 @@ PYBIND11_MODULE(_core, m) {
                 .maxCpuNics = maxCpuNics,
                 .enableTcp = enableTcp,
                 .tcpBindHost = tcpBindHost,
+                .gpuBackend = std::move(gpuBackend),
             };
             return std::make_shared<MultiTransportFactory>(
                 deviceId, std::move(options));
@@ -582,7 +599,8 @@ PYBIND11_MODULE(_core, m) {
               CpuNicSelectionPolicy::kNumaLocalBounded,
           py::arg("max_cpu_nics") = 2,
           py::arg("enable_tcp") = false,
-          py::arg("tcp_bind_host") = "")
+          py::arg("tcp_bind_host") = "",
+          py::arg("gpu_backend") = py::none())
       .def(
           "register_segment",
           [](MultiTransportFactory& f, Segment& seg) {

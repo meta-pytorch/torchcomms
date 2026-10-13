@@ -149,6 +149,7 @@ class UniflowAgentConfig:
     preferred_transport: TransportType | None
     intra_node_transport: TransportType | None
     inter_node_transport: TransportType | None
+    gpu_backend: str | None
     def __init__(
         self,
         device_id: int = -1,
@@ -161,6 +162,7 @@ class UniflowAgentConfig:
         preferred_transport: TransportType | None = None,
         intra_node_transport: TransportType | None = None,
         inter_node_transport: TransportType | None = None,
+        gpu_backend: str | None = None,
     ) -> None: ...
 
 class MultiTransport:
@@ -198,6 +200,7 @@ class MultiTransportFactory:
         max_cpu_nics: int = ...,
         enable_tcp: bool = False,
         tcp_bind_host: str = "",
+        gpu_backend: str | None = None,
     ) -> None: ...
     def register_segment(self, segment: Segment) -> Result: ...
     def import_segment(self, export_id: bytes) -> Result: ...
