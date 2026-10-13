@@ -257,15 +257,21 @@ class IpcRegCache {
   // Notify remote peers to release their imported NVL memory.
   // exportCount specifies how many times this buffer was exported to the peer,
   // so the remote side decrements its refcount by the correct amount.
-  // Output argument:
-  //   - reqCb: IpcReqCb that the caller can track for completion.
-  //            Caller must ensure reqCb remains valid until completed.
+  // reqCb remains alive through asynchronous completion. Callers may retain a
+  // shared reference to poll its completion state.
   commResult_t notifyRemoteIpcRelease(
       const std::string& myId,
       const folly::SocketAddress& peerAddr,
       regcache::IpcRegElem* ipcRegElem,
-      regcache::IpcReqCb* reqCb,
+      std::shared_ptr<regcache::IpcReqCb> reqCb,
       int32_t exportCount = 1);
+
+  // Completion callback for a remote release request. It owns `reqCb`, so the
+  // request outlives a mapper destroyed before the send completes.
+  static bootstrap::AsyncClientSocket::CompletionCb
+  makeReleaseCompletionCallback(
+      std::shared_ptr<regcache::IpcReqCb> reqCb,
+      folly::SocketAddress peerAddr);
 
   // Notify remote peer to import our exported NVL memory.
   // The peer will call importMem upon receiving this request.
@@ -291,10 +297,22 @@ class IpcRegCache {
   // Deregister an IpcExportClient from the registry.
   void deregisterExportClient(regcache::IpcExportClient* client);
 
+  size_t TESTONLY_numExportClients() const;
+
+  // Drain one client and remove it while global release callbacks are blocked.
+  // `drain` runs under the registry write lock, so it must not call back into
+  // the export-client registry.
+  commResult_t deregisterExportClientAndDrain(
+      regcache::IpcExportClient* client,
+      const std::function<commResult_t()>& drain);
+
   // Iterate all registered IpcExportClients and call remReleaseMem on each
   // for the given regElem. Used by globalDeregister when PyTorch frees
   // the underlying memory.
   commResult_t releaseFromAllClients(regcache::RegElem* regElem);
+
+  // Remove a registration from every client without remote notification.
+  void removeFromAllClients(regcache::RegElem* regElem);
 
  private:
   // Internal implementation for importing and caching remote NVL memory.

@@ -65,6 +65,20 @@ class CtranMapperTest : public ::testing::Test {
     ctran::logGpuMemoryStats(cudaDev);
   }
 };
+TEST(ExportRegCacheTest, RestorePreservesPendingReleaseCounts) {
+  ctran::ExportRegCache cache;
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(0x1234);
+  cache.record(regElem, 1);
+  cache.record(regElem, 2);
+  cache.record(regElem, 2);
+
+  const auto removed = cache.remove(regElem);
+  ASSERT_EQ(removed.size(), 2);
+  cache.restore(regElem, {{2, removed.at(2)}});
+
+  const std::unordered_map<int, int> expected{{2, 2}};
+  EXPECT_EQ(cache.remove(regElem), expected);
+}
 TEST(CtranMapperUT, EnableBackendThroughCVARs) {
   SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
   ncclCvarInit();
@@ -353,6 +367,20 @@ TEST_F(CtranMapperTest, doubleRegMem) {
   EXPECT_EQ(snapshot.totalNumReg, 0);
   EXPECT_EQ(snapshot.totalNumDereg, 0);
   EXPECT_EQ(snapshot.totalNumDynamicReg, 0);
+}
+
+TEST_F(CtranMapperTest, failedConstructionLeavesNoExportClient) {
+  EnvRAII asyncSocket(NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET, true);
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  const auto numExportClients = ipcRegCache->TESTONLY_numExportClients();
+  // UNSET is rejected after the IPC server addresses are exchanged.
+  dummyComm_->config_.backends = {CommBackend::IB, CommBackend::UNSET};
+
+  EXPECT_THROW(
+      std::make_unique<CtranMapper>(dummyComm_), ctran::utils::Exception);
+
+  EXPECT_EQ(ipcRegCache->TESTONLY_numExportClients(), numExportClients);
 }
 
 TEST_F(CtranMapperTest, doubleDeregMem) {

@@ -389,7 +389,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
     const std::string& myId,
     const folly::SocketAddress& peerAddr,
     ctran::regcache::IpcRegElem* ipcRegElem,
-    ctran::regcache::IpcReqCb* reqCb,
+    std::shared_ptr<ctran::regcache::IpcReqCb> reqCb,
     int32_t exportCount) {
   // Check if AsyncSocket is initialized
   if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
@@ -414,24 +414,33 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
 
   // Send the whole IpcReq via AsyncClientSocket
   // The peer checks IpcReqType to determine which callback to invoke
+  const auto* request = &reqCb->req;
+  auto completion = makeReleaseCompletionCallback(std::move(reqCb), peerAddr);
   ctran::bootstrap::AsyncClientSocket::send(
       *asyncSocketEvbThread_->getEventBase(),
       peerAddr,
-      &reqCb->req,
+      request,
       sizeof(ctran::regcache::IpcReq),
-      [reqCb, peerAddr](const folly::AsyncSocketException* err) {
-        if (err != nullptr) {
-          CTRAN_LOG(
-              WARN,
-              "CTRAN-REGCACHE: Failed to send IpcReq to peerAddr {}: {}",
-              peerAddr.describe(),
-              err->what());
-        }
-        // Mark as completed regardless of success/failure
-        reqCb->completed.store(true);
-      });
+      std::move(completion));
 
   return commSuccess;
+}
+
+ctran::bootstrap::AsyncClientSocket::CompletionCb
+ctran::IpcRegCache::makeReleaseCompletionCallback(
+    std::shared_ptr<ctran::regcache::IpcReqCb> reqCb,
+    folly::SocketAddress peerAddr) {
+  return [reqCb = std::move(reqCb), peerAddr = std::move(peerAddr)](
+             const folly::AsyncSocketException* err) {
+    if (err != nullptr) {
+      CTRAN_LOG(
+          WARN,
+          "CTRAN-REGCACHE: Failed to send IpcReq to peerAddr {}: {}",
+          peerAddr.describe(),
+          err->what());
+    }
+    reqCb->completed.store(true);
+  };
 }
 
 commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
@@ -641,16 +650,41 @@ void ctran::IpcRegCache::deregisterExportClient(
   exportClientRegistry_.wlock()->erase(client);
 }
 
+size_t ctran::IpcRegCache::TESTONLY_numExportClients() const {
+  return exportClientRegistry_.rlock()->size();
+}
+
+commResult_t ctran::IpcRegCache::deregisterExportClientAndDrain(
+    ctran::regcache::IpcExportClient* client,
+    const std::function<commResult_t()>& drain) {
+  auto lockedRegistry = exportClientRegistry_.wlock();
+  const auto result = drain();
+  lockedRegistry->erase(client);
+  return result;
+}
+
 commResult_t ctran::IpcRegCache::releaseFromAllClients(
     ctran::regcache::RegElem* regElem) {
   // Hold the read lock for the entire iteration to prevent a client from
   // being destroyed while we're calling remReleaseMem on it. The mapper
-  // destructor calls deregisterExportClient (which takes a write lock),
+  // destructor calls deregisterExportClientAndDrain (which takes a write lock),
   // so it will block until we finish iterating.
   auto lockedRegistry = exportClientRegistry_.rlock();
+  auto result = commSuccess;
   for (auto* client : *lockedRegistry) {
-    FB_COMMCHECK(client->remReleaseMem(regElem));
+    const auto clientResult = client->remReleaseMem(regElem);
+    if (result == commSuccess && clientResult != commSuccess) {
+      result = clientResult;
+    }
   }
 
-  return commSuccess;
+  return result;
+}
+
+void ctran::IpcRegCache::removeFromAllClients(
+    ctran::regcache::RegElem* regElem) {
+  auto lockedRegistry = exportClientRegistry_.rlock();
+  for (auto* client : *lockedRegistry) {
+    client->removeExportedMem(regElem);
+  }
 }

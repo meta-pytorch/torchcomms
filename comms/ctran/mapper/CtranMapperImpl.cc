@@ -15,6 +15,15 @@ std::unordered_map<int, int> ExportRegCache::remove(
   return nvlRanks;
 }
 
+void ExportRegCache::restore(
+    const regcache::RegElem* regElem,
+    const std::unordered_map<int, int>& ranks) {
+  auto& cachedRanks = map_[const_cast<regcache::RegElem*>(regElem)];
+  for (const auto& [rank, count] : ranks) {
+    cachedRanks[rank] += count;
+  }
+}
+
 std::unordered_map<regcache::RegElem*, std::unordered_map<int, int>>
 ExportRegCache::dump() const {
   return map_;

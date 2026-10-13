@@ -403,13 +403,24 @@ commResult_t ctran::RegCache::globalDeregister(
   std::vector<ctran::regcache::RegElem*> regElems;
   FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
 
-  if (!skipRemRelease) {
-    // Notify remote peers to release their imported NVL memory.
+  // The caller is freeing this memory, so a failed release must not leave
+  // cached segments behind; the forced free below also forgets every export.
+  auto result = commSuccess;
+  {
     auto ipcRegCache = ctran::IpcRegCache::getInstance();
     ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
     for (auto& regElem : regElems) {
-      if (regElem->ipcRegElem != nullptr) {
-        FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
+      if (regElem->ipcRegElem == nullptr) {
+        continue;
+      }
+      if (skipRemRelease) {
+        ipcRegCache->removeFromAllClients(regElem);
+      } else {
+        // Notify remote peers to release their imported NVL memory.
+        const auto releaseResult = ipcRegCache->releaseFromAllClients(regElem);
+        if (result == commSuccess && releaseResult != commSuccess) {
+          result = releaseResult;
+        }
       }
     }
   }
@@ -452,7 +463,7 @@ commResult_t ctran::RegCache::globalDeregister(
             : std::nullopt);
   }
 
-  return commSuccess;
+  return result;
 }
 
 void ctran::RegCache::asyncRegThreadFn(int cudaDev) {
@@ -1271,18 +1282,48 @@ commResult_t ctran::RegCache::freeSegment(
     freed = true;
   }
 
-  // Deregister all regElems.
-  // NOTE: not yet free the memory. Return the ownership to caller for any
-  // remote registration release.
+  auto result = commSuccess;
+  std::shared_ptr<ctran::IpcRegCache> ipcRegCache;
   for (auto& regElem : regElems) {
-    FB_COMMCHECK(deregElem(regElem.get()));
+    if (regElem->ipcRegElem == nullptr) {
+      continue;
+    }
+    if (ipcRegCache == nullptr) {
+      ipcRegCache = ctran::IpcRegCache::getInstance();
+      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    }
+    if (!forceFree) {
+      const auto releaseResult =
+          ipcRegCache->releaseFromAllClients(regElem.get());
+      if (result == commSuccess && releaseResult != commSuccess) {
+        result = releaseResult;
+      }
+    }
+  }
+  // Also on the force path: an export recorded after globalDeregister released
+  // this buffer's exports would otherwise outlive its RegElem.
+  if (ipcRegCache != nullptr) {
+    for (auto& regElem : regElems) {
+      if (regElem->ipcRegElem != nullptr) {
+        ipcRegCache->removeFromAllClients(regElem.get());
+      }
+    }
+  }
+
+  // The RegElems are returned to the caller, which frees them after any use it
+  // still needs.
+  for (auto& regElem : regElems) {
+    const auto deregResult = deregElem(regElem.get());
+    if (result == commSuccess && deregResult != commSuccess) {
+      result = deregResult;
+    }
   }
 
   // Free segment here, in case regElem accesses it during deregisteration
   delete segment;
 
   profiler.wlock()->record(ctran::regcache::EventType::kFreeSegEvent);
-  return commSuccess;
+  return result;
 }
 
 commResult_t ctran::RegCache::deregElem(ctran::regcache::RegElem* regElem) {
@@ -1869,9 +1910,21 @@ commResult_t ctran::RegCache::deregAll() {
   // remote peers to release their imported NVL memory.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
   ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  auto result = commSuccess;
   for (auto& regElem : toDeregister) {
     if (regElem->ipcRegElem != nullptr) {
-      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem.get()));
+      const auto releaseResult =
+          ipcRegCache->releaseFromAllClients(regElem.get());
+      if (result == commSuccess && releaseResult != commSuccess) {
+        result = releaseResult;
+      }
+    }
+  }
+  // A failed release keeps its export; no client may keep a RegElem that is
+  // destroyed below.
+  for (auto& regElem : toDeregister) {
+    if (regElem->ipcRegElem != nullptr) {
+      ipcRegCache->removeFromAllClients(regElem.get());
     }
   }
 
@@ -1879,6 +1932,9 @@ commResult_t ctran::RegCache::deregAll() {
   for (auto& regElem : toDeregister) {
     auto res = regCache->deregElem(regElem.get());
     if (res != commSuccess) {
+      if (result == commSuccess) {
+        result = res;
+      }
       CTRAN_LOG(
           ERR,
           "deregAll: failed to deregister regElem ptr {} len {}",
@@ -1894,7 +1950,7 @@ commResult_t ctran::RegCache::deregAll() {
       totalDeregistered,
       totalSkippedDynamic);
 
-  return commSuccess;
+  return result;
 }
 
 commResult_t ctran::regcache::RegElem::doRegister(

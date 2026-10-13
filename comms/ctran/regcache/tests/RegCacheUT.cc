@@ -4,9 +4,14 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <future>
 #include <memory>
+#include <utility>
 
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
@@ -39,6 +44,21 @@ class RegCacheTest : public ::testing::Test {
     EXPECT_EQ(regCache->destroy(), commSuccess);
   }
 };
+
+TEST(IpcRegCacheTest, ReleaseCallbackOwnsRequestUntilCompletion) {
+  auto request = std::make_shared<ctran::regcache::IpcReqCb>();
+  std::weak_ptr<ctran::regcache::IpcReqCb> weakRequest = request;
+  auto completion = ctran::IpcRegCache::makeReleaseCompletionCallback(
+      request, folly::SocketAddress{});
+
+  request.reset();
+  ASSERT_FALSE(weakRequest.expired());
+  completion(nullptr);
+  ASSERT_TRUE(weakRequest.lock()->completed.load());
+
+  completion = nullptr;
+  EXPECT_TRUE(weakRequest.expired());
+}
 
 // Test caching a single contiguous cudaMalloc buffer
 TEST_F(RegCacheTest, CacheSegmentSingleContiguousBuffer) {
@@ -1031,10 +1051,20 @@ TEST_F(RegCacheTest, IpcRemRegElemReleaseUnknown) {
 class MockIpcExportClient : public ctran::regcache::IpcExportClient {
  public:
   std::vector<ctran::regcache::RegElem*> releasedElems;
+  std::vector<ctran::regcache::RegElem*> removedElems;
+  commResult_t result{commSuccess};
+  std::function<void()> onRelease;
 
   commResult_t remReleaseMem(ctran::regcache::RegElem* regElem) override {
     releasedElems.push_back(regElem);
-    return commSuccess;
+    if (onRelease) {
+      onRelease();
+    }
+    return result;
+  }
+
+  void removeExportedMem(ctran::regcache::RegElem* regElem) override {
+    removedElems.push_back(regElem);
   }
 };
 
@@ -1094,6 +1124,111 @@ TEST_F(RegCacheTest, IpcExportClientRegistryDuplicateRegister) {
   ipcRegCache->deregisterExportClient(&client);
 }
 
+TEST_F(RegCacheTest, IpcExportClientRegistryContinuesAfterError) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  // The registry's iteration order is unspecified, so register in both orders
+  // to make sure the failing client is visited first in one of them.
+  for (const bool failingFirst : {true, false}) {
+    SCOPED_TRACE(
+        failingFirst ? "failing client registered first"
+                     : "failing client registered last");
+    MockIpcExportClient failingClient;
+    failingClient.result = commInternalError;
+    MockIpcExportClient successfulClient;
+    if (failingFirst) {
+      ipcRegCache->registerExportClient(&failingClient);
+      ipcRegCache->registerExportClient(&successfulClient);
+    } else {
+      ipcRegCache->registerExportClient(&successfulClient);
+      ipcRegCache->registerExportClient(&failingClient);
+    }
+
+    auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xAAAA);
+    EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem), commInternalError);
+    EXPECT_EQ(failingClient.releasedElems, std::vector{dummyElem});
+    EXPECT_EQ(successfulClient.releasedElems, std::vector{dummyElem});
+
+    ipcRegCache->deregisterExportClient(&failingClient);
+    ipcRegCache->deregisterExportClient(&successfulClient);
+  }
+}
+
+TEST_F(RegCacheTest, IpcExportClientDrainBlocksGlobalRelease) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client;
+  ipcRegCache->registerExportClient(&client);
+  std::promise<void> drainStarted;
+  std::promise<void> allowDrain;
+  auto allowDrainFuture = allowDrain.get_future();
+  auto drain = std::async(std::launch::async, [&] {
+    return ipcRegCache->deregisterExportClientAndDrain(&client, [&] {
+      drainStarted.set_value();
+      allowDrainFuture.wait();
+      return commSuccess;
+    });
+  });
+  drainStarted.get_future().wait();
+
+  std::promise<void> releaseStarted;
+  auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xAAAA);
+  auto release = std::async(std::launch::async, [&] {
+    releaseStarted.set_value();
+    return ipcRegCache->releaseFromAllClients(dummyElem);
+  });
+  releaseStarted.get_future().wait();
+  // Still pending after a bounded wait, so it is blocked by the drain rather
+  // than merely not scheduled yet.
+  EXPECT_EQ(
+      release.wait_for(std::chrono::milliseconds{100}),
+      std::future_status::timeout);
+
+  allowDrain.set_value();
+  EXPECT_EQ(drain.get(), commSuccess);
+  EXPECT_EQ(release.get(), commSuccess);
+  EXPECT_TRUE(client.releasedElems.empty());
+}
+
+TEST_F(RegCacheTest, IpcExportClientDrainBlocksNoNotificationRemoval) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client;
+  ipcRegCache->registerExportClient(&client);
+  std::promise<void> drainStarted;
+  std::promise<void> allowDrain;
+  auto allowDrainFuture = allowDrain.get_future();
+  auto drain = std::async(std::launch::async, [&] {
+    return ipcRegCache->deregisterExportClientAndDrain(&client, [&] {
+      drainStarted.set_value();
+      allowDrainFuture.wait();
+      return commSuccess;
+    });
+  });
+  drainStarted.get_future().wait();
+
+  std::promise<void> removalStarted;
+  auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xAAAA);
+  auto removal = std::async(std::launch::async, [&] {
+    removalStarted.set_value();
+    ipcRegCache->removeFromAllClients(dummyElem);
+  });
+  removalStarted.get_future().wait();
+  // Still pending after a bounded wait, so it is blocked by the drain rather
+  // than merely not scheduled yet.
+  EXPECT_EQ(
+      removal.wait_for(std::chrono::milliseconds{100}),
+      std::future_status::timeout);
+
+  allowDrain.set_value();
+  EXPECT_EQ(drain.get(), commSuccess);
+  removal.get();
+  EXPECT_TRUE(client.removedElems.empty());
+}
+
 // Test that deregistering a client that was never registered is a no-op.
 TEST_F(RegCacheTest, IpcExportClientRegistryDeregisterUnknown) {
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
@@ -1104,7 +1239,333 @@ TEST_F(RegCacheTest, IpcExportClientRegistryDeregisterUnknown) {
   ipcRegCache->deregisterExportClient(&client);
 }
 
-// Test IpcRemRegElem refcount: verify initial refcount is 1.
+TEST_F(RegCacheTest, FreeSegmentReleasesAllIpcExportClients) {
+  constexpr size_t bufSize = 4096;
+  std::vector<TestMemSegment> memSegments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, memSegments);
+  ASSERT_NE(buf, nullptr);
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  ASSERT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  ASSERT_EQ(segHdls.size(), 1);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logMetaData{};
+  ASSERT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logMetaData,
+          backends,
+          didRegister,
+          &regHdl),
+      commSuccess);
+  ASSERT_NE(regHdl, nullptr);
+  ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  MockIpcExportClient client1;
+  MockIpcExportClient client2;
+  ipcRegCache->registerExportClient(&client1);
+  ipcRegCache->registerExportClient(&client2);
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  const auto result =
+      regCache->freeSegment(segHdls.front(), freed, ncclManaged, regElems);
+
+  ipcRegCache->deregisterExportClient(&client1);
+  ipcRegCache->deregisterExportClient(&client2);
+
+  EXPECT_EQ(result, commSuccess);
+  EXPECT_TRUE(freed);
+  const std::vector<ctran::regcache::RegElem*> expected{regHdl};
+  EXPECT_EQ(client1.releasedElems, expected);
+  EXPECT_EQ(client2.releasedElems, expected);
+
+  regElems.clear();
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+TEST_F(RegCacheTest, DeregAllRemovesExportsAfterFailedRelease) {
+  constexpr size_t bufSize = 4096;
+  std::vector<TestMemSegment> memSegments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, memSegments);
+  ASSERT_NE(buf, nullptr);
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  ASSERT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  ASSERT_EQ(segHdls.size(), 1);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logMetaData{};
+  ASSERT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logMetaData,
+          backends,
+          didRegister,
+          &regHdl),
+      commSuccess);
+  ASSERT_NE(regHdl, nullptr);
+  ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  MockIpcExportClient failingClient;
+  failingClient.result = commInternalError;
+  MockIpcExportClient successfulClient;
+  ipcRegCache->registerExportClient(&failingClient);
+  ipcRegCache->registerExportClient(&successfulClient);
+
+  // A failed release must not leave any client holding the destroyed RegElem.
+  const auto result = ctran::RegCache::deregAll();
+
+  ipcRegCache->deregisterExportClient(&failingClient);
+  ipcRegCache->deregisterExportClient(&successfulClient);
+
+  EXPECT_EQ(result, commInternalError);
+  const std::vector<ctran::regcache::RegElem*> expected{regHdl};
+  EXPECT_EQ(failingClient.releasedElems, expected);
+  EXPECT_EQ(successfulClient.releasedElems, expected);
+  EXPECT_EQ(failingClient.removedElems, expected);
+  EXPECT_EQ(successfulClient.removedElems, expected);
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls.front(), freed, ncclManaged, regElems),
+      commSuccess);
+  EXPECT_TRUE(freed);
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+TEST_F(RegCacheTest, ForceFreeSegmentRemovesExportsFromAllClients) {
+  constexpr size_t bufSize = 4096;
+  std::vector<TestMemSegment> memSegments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, memSegments);
+  ASSERT_NE(buf, nullptr);
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  ASSERT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  ASSERT_EQ(segHdls.size(), 1);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logMetaData{};
+  ASSERT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logMetaData,
+          backends,
+          didRegister,
+          &regHdl),
+      commSuccess);
+  ASSERT_NE(regHdl, nullptr);
+  ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  MockIpcExportClient client1;
+  MockIpcExportClient client2;
+  ipcRegCache->registerExportClient(&client1);
+  ipcRegCache->registerExportClient(&client2);
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  // An export recorded after globalDeregister released this buffer's exports
+  // must not outlive its RegElem.
+  const auto result = regCache->freeSegment(
+      segHdls.front(), freed, ncclManaged, regElems, /*forceFree=*/true);
+
+  ipcRegCache->deregisterExportClient(&client1);
+  ipcRegCache->deregisterExportClient(&client2);
+
+  EXPECT_EQ(result, commSuccess);
+  EXPECT_TRUE(freed);
+  const std::vector<ctran::regcache::RegElem*> expected{regHdl};
+  EXPECT_TRUE(client1.releasedElems.empty());
+  EXPECT_EQ(client1.removedElems, expected);
+  EXPECT_EQ(client2.removedElems, expected);
+
+  regElems.clear();
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+TEST_F(RegCacheTest, FreeSegmentCompletesCleanupAfterClientError) {
+  constexpr size_t bufSize = 4096;
+  std::vector<TestMemSegment> memSegments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, memSegments);
+  ASSERT_NE(buf, nullptr);
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  ASSERT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  bool didRegister = false;
+  ctran::regcache::RegElem* regHdl = nullptr;
+  CommLogData logMetaData{};
+  ASSERT_EQ(
+      regCache->regRangeCached(
+          buf,
+          bufSize,
+          cudaDev,
+          "test",
+          logMetaData,
+          backends,
+          didRegister,
+          &regHdl),
+      commSuccess);
+  ASSERT_NE(regHdl, nullptr);
+  ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  MockIpcExportClient failingClient;
+  failingClient.result = commInternalError;
+  ipcRegCache->registerExportClient(&failingClient);
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls.front(), freed, ncclManaged, regElems),
+      commInternalError);
+
+  ipcRegCache->deregisterExportClient(&failingClient);
+  EXPECT_TRUE(freed);
+  EXPECT_EQ(regCache->getSegment(segHdls.front()), nullptr);
+  ASSERT_EQ(regElems.size(), 1);
+  EXPECT_EQ(regElems.front()->ipcRegElem, nullptr);
+  EXPECT_EQ(failingClient.releasedElems, std::vector{regHdl});
+  EXPECT_EQ(failingClient.removedElems, std::vector{regHdl});
+
+  regElems.clear();
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+TEST_F(RegCacheTest, GlobalDeregisterWithoutNotificationClearsExportClients) {
+  constexpr size_t bufSize = 4096;
+  std::vector<TestMemSegment> memSegments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, memSegments);
+  ASSERT_NE(buf, nullptr);
+
+  ASSERT_EQ(
+      regCache->globalRegister(
+          buf,
+          bufSize,
+          /*forceReg=*/true,
+          /*ncclManaged=*/false,
+          cudaDev),
+      commSuccess);
+  auto* regHdl = reinterpret_cast<ctran::regcache::RegElem*>(
+      regCache->getRegHandle(buf, bufSize));
+  ASSERT_NE(regHdl, nullptr);
+  ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  MockIpcExportClient client;
+  ipcRegCache->registerExportClient(&client);
+
+  EXPECT_EQ(
+      regCache->globalDeregister(
+          buf, bufSize, /*skipRemRelease=*/true, cudaDev),
+      commSuccess);
+
+  ipcRegCache->deregisterExportClient(&client);
+  // Removal is idempotent; the force-free path repeats it.
+  EXPECT_FALSE(client.removedElems.empty());
+  EXPECT_TRUE(
+      std::all_of(
+          client.removedElems.begin(),
+          client.removedElems.end(),
+          [&](auto* removed) { return removed == regHdl; }));
+  EXPECT_TRUE(client.releasedElems.empty());
+  EXPECT_EQ(regCache->getRegHandle(buf, bufSize), nullptr);
+
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
+TEST_F(RegCacheTest, GlobalDeregisterFreesSegmentsAfterReleaseError) {
+  constexpr size_t bufSize = 4096;
+  std::vector<TestMemSegment> memSegments;
+  void* buf = ctran::commMemAlloc(bufSize, kMemCuMemAlloc, memSegments);
+  ASSERT_NE(buf, nullptr);
+
+  ASSERT_EQ(
+      regCache->globalRegister(
+          buf,
+          bufSize,
+          /*forceReg=*/true,
+          /*ncclManaged=*/false,
+          cudaDev),
+      commSuccess);
+  auto* regHdl = reinterpret_cast<ctran::regcache::RegElem*>(
+      regCache->getRegHandle(buf, bufSize));
+  ASSERT_NE(regHdl, nullptr);
+  ASSERT_NE(regHdl->ipcRegElem, nullptr);
+
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  MockIpcExportClient failingClient;
+  failingClient.result = commInternalError;
+  MockIpcExportClient successfulClient;
+  ipcRegCache->registerExportClient(&failingClient);
+  ipcRegCache->registerExportClient(&successfulClient);
+
+  // The caller frees the memory regardless, so a failed release must still
+  // drop the cached segment and every export.
+  const auto result = regCache->globalDeregister(
+      buf, bufSize, /*skipRemRelease=*/false, cudaDev);
+
+  ipcRegCache->deregisterExportClient(&failingClient);
+  ipcRegCache->deregisterExportClient(&successfulClient);
+
+  EXPECT_EQ(result, commInternalError);
+  const std::vector<ctran::regcache::RegElem*> released{regHdl};
+  EXPECT_EQ(failingClient.releasedElems, released);
+  EXPECT_EQ(successfulClient.releasedElems, released);
+  EXPECT_FALSE(failingClient.removedElems.empty());
+  EXPECT_FALSE(successfulClient.removedElems.empty());
+  EXPECT_EQ(regCache->getRegHandle(buf, bufSize), nullptr);
+
+  ctran::commMemFree(buf, bufSize, kMemCuMemAlloc);
+}
+
 TEST_F(RegCacheTest, IpcRemRegElemRefCountInitial) {
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
   ASSERT_NE(ipcRegCache, nullptr);

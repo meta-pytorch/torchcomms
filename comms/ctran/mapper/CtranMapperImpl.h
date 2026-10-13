@@ -29,6 +29,10 @@ class ExportRegCache {
   // map is returned.
   std::unordered_map<int, int> remove(const regcache::RegElem* regElem);
 
+  void restore(
+      const regcache::RegElem* regElem,
+      const std::unordered_map<int, int>& ranks);
+
   // Dump a full copy of the cache map;
   // used for testing only
   std::unordered_map<regcache::RegElem*, std::unordered_map<int, int>> dump()

@@ -1153,11 +1153,11 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     // Check if any posted IPC release requests are completed and cleanup
-    for (auto it = this->postedCbCtrlReqs_.begin();
-         it != this->postedCbCtrlReqs_.end();) {
+    auto postedRequests = this->postedCbCtrlReqs_.wlock();
+    for (auto it = postedRequests->begin(); it != postedRequests->end();) {
       auto& req = *it;
       if (req->completed.load()) {
-        it = this->postedCbCtrlReqs_.erase(it);
+        it = postedRequests->erase(it);
       } else {
         it++;
       }
@@ -2363,6 +2363,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   // (global memory free path).
   commResult_t remReleaseMem(ctran::regcache::RegElem* regElem) override;
 
+  void removeExportedMem(ctran::regcache::RegElem* regElem) override;
+
   bool atDestruction{false};
 
   std::unique_ptr<class CtranIb> ctranIb{nullptr};
@@ -2400,7 +2402,8 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   // List of outstanding internal IPC release requests to be processed
   // when polling progress. We need to temporarily hold the request
   // instance and erase after completion.
-  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedCbCtrlReqs_;
+  folly::Synchronized<std::deque<std::shared_ptr<ctran::regcache::IpcReqCb>>>
+      postedCbCtrlReqs_;
 
   // Peer IPC server addresses for async socket communication, indexed by rank.
   // Populated via bootstrap allGather during mapper initialization.
