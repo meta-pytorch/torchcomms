@@ -1,10 +1,15 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
 #include <functional>
 #include <set>
 #include <string>
 #include <vector>
+
+#include <fcntl.h>
 
 #include <gtest/gtest.h>
 
@@ -12,12 +17,21 @@
 #include "cudawrap.h"
 #include "multicast.h"
 
+#include "meta/nvls/NvlsBindRetry.h"
+
+static ncclResult_t testAllGather(void*, int*, int, int, void*, int);
+static ncclResult_t testBarrier(void*, int*, int, int, int);
+static ncclResult_t testBroadcast(void*, int*, int, int, int, void*, int);
+static ncclResult_t testGetFd(ncclComm*, int, void*, int*);
+
 namespace {
 
 struct DriverState {
   std::vector<CUresult> mapResults{CUDA_SUCCESS};
   std::vector<std::vector<CUresult>> gatheredResults{
       {CUDA_SUCCESS, CUDA_SUCCESS}};
+  // Peer operations in cleanup agreements, per local rank; empty means None.
+  std::vector<ncclx::nvls::CleanupOp> cleanupOps;
   ncclResult_t gatherFailure{ncclSuccess};
   std::string failOnce;
   std::vector<std::string> events;
@@ -129,7 +143,24 @@ class NvlsBindRetryTest : public testing::Test {
         +[](CUdeviceptr, size_t, const CUmemAccessDesc*, size_t) {
           return CUDA_SUCCESS;
         });
+    replace(
+        pfn_cuMemImportFromShareableHandle,
+        +[](CUmemGenericAllocationHandle* handle,
+            void*,
+            CUmemAllocationHandleType) {
+          *handle = ++activeDriver->creates;
+          activeDriver->handles.insert(*handle);
+          activeDriver->events.emplace_back("import");
+          return CUDA_SUCCESS;
+        });
     replace(ncclCuMemHandleType, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+    // Route the seam (meta/nvls/NvlsBindRetry.h) to the stubs below. Unlike
+    // --wrap this intercepts the calls regardless of link style, so the suite
+    // runs the same in dev (shared lib) and static packaging modes.
+    replace(ncclx::nvls::gNvlsBootstrap.allGather, +testAllGather);
+    replace(ncclx::nvls::gNvlsBootstrap.barrier, +testBarrier);
+    replace(ncclx::nvls::gNvlsBootstrap.broadcast, +testBroadcast);
+    replace(ncclx::nvls::gNvlsBootstrap.getProxyFd, +testGetFd);
   }
 
   void TearDown() override {
@@ -168,42 +199,57 @@ class NvlsBindRetryTest : public testing::Test {
 
 } // namespace
 
-// Wrap only bootstrap transport; the production allgather result selection,
+// Stub only bootstrap transport; the production allgather result selection,
 // watchdog map, group rebuild and cleanup paths remain linked unchanged.
-extern "C" ncclResult_t wrapAllGather(
-    void*,
-    int*,
-    int rank,
-    int nranks,
-    void* data,
-    int size) asm("__wrap__Z27bootstrapIntraNodeAllGatherPvPiiiS_i");
-extern "C" ncclResult_t
-wrapAllGather(void*, int*, int rank, int nranks, void* data, int size) {
+static ncclResult_t
+testAllGather(void*, int*, int rank, int nranks, void* data, int size) {
   auto& state = *activeDriver;
   state.events.emplace_back("gather");
   if (state.gatherFailure != ncclSuccess) {
     return state.gatherFailure;
   }
   const auto& results = state.gatheredResults.at(state.gathers++);
-  EXPECT_EQ(size, sizeof(CUresult));
   EXPECT_EQ(nranks, results.size());
+  if (size == static_cast<int>(sizeof(ncclx::nvls::CleanupReport))) {
+    auto* reports = static_cast<ncclx::nvls::CleanupReport*>(data);
+    EXPECT_EQ(reports[rank].result, results.at(rank));
+    for (int i = 0; i < nranks; ++i) {
+      if (i != rank) {
+        reports[i] = {
+            results.at(i),
+            state.cleanupOps.empty() ? ncclx::nvls::CleanupOp::None
+                                     : state.cleanupOps.at(i)};
+      }
+    }
+    return ncclSuccess;
+  }
+  EXPECT_EQ(size, sizeof(CUresult));
   auto* allResults = static_cast<CUresult*>(data);
   EXPECT_EQ(allResults[rank], results.at(rank));
   std::copy(results.begin(), results.end(), allResults);
   return ncclSuccess;
 }
 
-extern "C" ncclResult_t wrapBarrier(void*, int*, int, int, int) asm(
-    "__wrap__Z25bootstrapIntraNodeBarrierPvPiiii");
-extern "C" ncclResult_t wrapBarrier(void*, int*, int, int, int) {
+static ncclResult_t testBarrier(void*, int*, int, int, int) {
   activeDriver->events.emplace_back("barrier");
   return ncclSuccess;
 }
 
-extern "C" ncclResult_t
-wrapBroadcast(void*, int*, int, int, int, void*, int) asm(
-    "__wrap__Z27bootstrapIntraNodeBroadcastPvPiiiiS_i");
-extern "C" ncclResult_t wrapBroadcast(void*, int*, int, int, int, void*, int) {
+static ncclResult_t testBroadcast(void*, int*, int, int, int, void*, int) {
+  activeDriver->events.emplace_back("broadcast");
+  return ncclSuccess;
+}
+
+// Peer ranks import the group through a proxy-converted fd. Hand out a real fd
+// so the production ncclIpcFdClose (plain close) succeeds; the fd itself is
+// never used after the import stub above records the handle.
+static ncclResult_t testGetFd(ncclComm*, int, void*, int* fd) {
+  activeDriver->events.emplace_back("getfd");
+  *fd = open("/dev/null", O_RDONLY);
+  if (*fd == -1) {
+    ADD_FAILURE() << "open(/dev/null) failed: " << std::strerror(errno);
+    return ncclSystemError;
+  }
   return ncclSuccess;
 }
 
@@ -222,6 +268,7 @@ TEST_F(NvlsBindRetryTest, SuccessfulPeerUnmapsBeforeRebuildingGroup) {
   EXPECT_EQ(partition.mcHandle, 2);
   const std::vector<std::string> expected{
       "create",
+      "broadcast",
       "barrier",
       "map",
       "gather",
@@ -232,6 +279,43 @@ TEST_F(NvlsBindRetryTest, SuccessfulPeerUnmapsBeforeRebuildingGroup) {
       "gather",
       "barrier",
       "create",
+      "broadcast",
+      "barrier",
+      "map",
+      "gather"};
+  EXPECT_EQ(driver.events, expected);
+  EXPECT_EQ(ncclMcGroupDestroy(&group), ncclSuccess);
+  expectReleased();
+}
+
+TEST_F(NvlsBindRetryTest, PeerRebuildReimportsGroupAfterRetry) {
+  comm.localRank = 1;
+  driver.mapResults = {CUDA_SUCCESS, CUDA_SUCCESS};
+  driver.gatheredResults = {
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS}};
+
+  ASSERT_EQ(build(), ncclSuccess);
+  ASSERT_NE(group, nullptr);
+  EXPECT_EQ(partition.mcHandle, 2);
+  const std::vector<std::string> expected{
+      "broadcast",
+      "getfd",
+      "import",
+      "barrier",
+      "map",
+      "gather",
+      "unmap",
+      "gather",
+      "free",
+      "release",
+      "gather",
+      "barrier",
+      "broadcast",
+      "getfd",
+      "import",
       "barrier",
       "map",
       "gather"};
@@ -256,6 +340,22 @@ TEST_F(NvlsBindRetryTest, FailedLocalMapRetriesWithoutUnmapping) {
 }
 
 TEST_F(NvlsBindRetryTest, ExhaustedRetriesReleaseFinalGroup) {
+#ifdef NVLS_BIND_RETRY_MULTI_ATTEMPT
+  driver.mapResults = {
+      CUDA_ERROR_SYSTEM_NOT_READY,
+      CUDA_ERROR_SYSTEM_NOT_READY,
+      CUDA_ERROR_SYSTEM_NOT_READY};
+  driver.gatheredResults = {
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS}};
+  const int expectedCreates = 3;
+#else
   driver.mapResults = {
       CUDA_ERROR_SYSTEM_NOT_READY, CUDA_ERROR_SYSTEM_NOT_READY};
   driver.gatheredResults = {
@@ -264,12 +364,37 @@ TEST_F(NvlsBindRetryTest, ExhaustedRetriesReleaseFinalGroup) {
       {CUDA_SUCCESS, CUDA_SUCCESS},
       {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
       {CUDA_SUCCESS, CUDA_SUCCESS}};
+  const int expectedCreates = 2;
+#endif
 
   EXPECT_EQ(build(), ncclUnhandledCudaError);
   EXPECT_EQ(group, nullptr);
-  EXPECT_EQ(driver.creates, 2);
+  EXPECT_EQ(driver.creates, expectedCreates);
+  EXPECT_EQ(driver.gathers, driver.gatheredResults.size());
   expectReleased();
 }
+
+#ifdef NVLS_BIND_RETRY_MULTI_ATTEMPT
+TEST_F(NvlsBindRetryTest, RetrySucceedsOnThirdAttempt) {
+  driver.mapResults = {
+      CUDA_ERROR_SYSTEM_NOT_READY, CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS};
+  driver.gatheredResults = {
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS}};
+
+  ASSERT_EQ(build(), ncclSuccess);
+  ASSERT_NE(group, nullptr);
+  EXPECT_EQ(driver.creates, 3);
+  EXPECT_EQ(driver.gathers, driver.gatheredResults.size());
+  EXPECT_EQ(ncclMcGroupDestroy(&group), ncclSuccess);
+  expectReleased();
+}
+#endif
 
 TEST_F(NvlsBindRetryTest, FatalPeerErrorDominatesRetryableError) {
   comm.localRanks = 3;
@@ -288,7 +413,14 @@ TEST_F(NvlsBindRetryTest, AllGatherFailureUnmapsSuccessfulLocalMap) {
 
   EXPECT_EQ(build(), ncclSystemError);
   const std::vector<std::string> expected{
-      "create", "barrier", "map", "gather", "unmap", "free", "release"};
+      "create",
+      "broadcast",
+      "barrier",
+      "map",
+      "gather",
+      "unmap",
+      "free",
+      "release"};
   EXPECT_EQ(driver.events, expected);
   EXPECT_EQ(group, nullptr);
   expectReleased();
@@ -331,7 +463,14 @@ TEST_F(NvlsBindRetryTest, PeerUnmapFailureStopsRetryBeforeGroupTeardown) {
 
   EXPECT_EQ(build(), ncclUnhandledCudaError);
   const std::vector<std::string> expected{
-      "create", "barrier", "map", "gather", "gather", "free", "release"};
+      "create",
+      "broadcast",
+      "barrier",
+      "map",
+      "gather",
+      "gather",
+      "free",
+      "release"};
   EXPECT_EQ(driver.events, expected);
   EXPECT_EQ(group, nullptr);
   EXPECT_EQ(driver.creates, 1);
@@ -347,6 +486,7 @@ TEST_F(NvlsBindRetryTest, PeerGroupTeardownFailureStopsRetryBeforeBarrier) {
   EXPECT_EQ(build(), ncclUnhandledCudaError);
   const std::vector<std::string> expected{
       "create",
+      "broadcast",
       "barrier",
       "map",
       "gather",
@@ -358,6 +498,28 @@ TEST_F(NvlsBindRetryTest, PeerGroupTeardownFailureStopsRetryBeforeBarrier) {
   EXPECT_EQ(driver.events, expected);
   EXPECT_EQ(group, nullptr);
   EXPECT_EQ(driver.creates, 1);
+  expectReleased();
+}
+
+TEST_F(NvlsBindRetryTest, CleanupReportNamesAgreedRanksOperation) {
+  // This rank's cuMemAddressFree fails, but local rank 0's fatal cuMemRelease
+  // failure is the agreed one, so the report must name rank 0's operation.
+  comm.localRank = 1;
+  driver.failOnce = "free";
+  driver.cleanupOps = {
+      ncclx::nvls::CleanupOp::Release, ncclx::nvls::CleanupOp::None};
+  driver.gatheredResults = {
+      {CUDA_ERROR_SYSTEM_NOT_READY, CUDA_SUCCESS},
+      {CUDA_SUCCESS, CUDA_SUCCESS},
+      {CUDA_ERROR_OUT_OF_MEMORY, CUDA_ERROR_INVALID_VALUE}};
+
+  EXPECT_EQ(build(), ncclUnhandledCudaError);
+  EXPECT_NE(
+      std::string(ncclGetLastError(nullptr))
+          .find("cleanup (cuMemRelease) failed on local rank 0"),
+      std::string::npos)
+      << ncclGetLastError(nullptr);
+  EXPECT_EQ(group, nullptr);
   expectReleased();
 }
 
