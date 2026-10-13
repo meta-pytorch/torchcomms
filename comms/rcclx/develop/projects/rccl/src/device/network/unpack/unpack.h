@@ -19,7 +19,11 @@
 // #define ALIGNED_LOAD
 
 inline __device__ void load64gpu(const uint64_t* ptr, uint64_t& v) {
-#if __CUDA_ARCH__ >= 700
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  // cnt lives in host-pinned memory written by the proxy thread; a plain or
+  // agent-scope load can hit a stale L2 line.
+  v = __hip_atomic_load(ptr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+#elif __CUDA_ARCH__ >= 700
   asm volatile("ld.relaxed.gpu.u64 {%0}, [%1];" : "=l"(v) : "l"(ptr) : "memory");
 #else
       // asm volatile("ld.volatile.global.u64 {%0}, [%1];"

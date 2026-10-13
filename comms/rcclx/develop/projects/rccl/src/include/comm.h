@@ -635,6 +635,7 @@ struct ncclComm {
   int rmaPluginIndex;
   int ncclNetVer;
   ncclNetDeviceType netDeviceType;
+  bool netDeviceUnpack; // [RCCL] Assigned net plugin reports NCCL_NET_DEVICE_UNPACK
   ncclCollNet_t* ncclCollNet;
   void* collNetContext;
   void* bootstrap;
