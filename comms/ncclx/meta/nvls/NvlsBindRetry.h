@@ -13,6 +13,20 @@ struct ncclComm;
 
 namespace ncclx::nvls {
 
+// Test seam for the intra-node bootstrap and proxy calls on the NVLS retry
+// path. Production code calls through gNvlsBootstrap, which defaults to the
+// real functions; the retry unit tests replace the pointers per case. This
+// keeps the tests independent of link style: --wrap only intercepts references
+// linked into the test binary itself, which silently stops working when the
+// library builds shared (dev).
+struct NvlsBootstrapOps {
+  ncclResult_t (*allGather)(void*, int*, int, int, void*, int);
+  ncclResult_t (*barrier)(void*, int*, int, int, int);
+  ncclResult_t (*broadcast)(void*, int*, int, int, int, void*, int);
+  ncclResult_t (*getProxyFd)(ncclComm*, int, void*, int*);
+};
+extern NvlsBootstrapOps gNvlsBootstrap;
+
 ncclResult_t collectiveBindResult(
     const ncclComm* comm,
     CUresult localResult,
@@ -50,9 +64,25 @@ ncclResult_t multicastMapWithRetry(
     bool* retry,
     int* mapped);
 
+enum class CleanupOp : uint32_t { None, Unmap, AddressFree, Release };
+
+// One rank's cleanup outcome. Ranks gather these together so the agreed
+// failure and the operation that produced it come from the same rank.
+struct CleanupReport {
+  CUresult result;
+  CleanupOp op;
+};
+// The retry unit tests tell this gather apart from the CUresult gather by size.
+static_assert(sizeof(CleanupReport) != sizeof(CUresult));
+
 // Agree on teardown success before the barrier and configured backoff, so no
 // rank rebuilds the group while a peer is exiting after a cleanup failure.
-ncclResult_t finishNvlsTeamRetry(const ncclComm* comm, CUresult cleanupResult);
+// cleanupOp is this rank's last cleanup step; the report names the operation
+// and local rank behind the agreed failure.
+ncclResult_t finishNvlsTeamRetry(
+    const ncclComm* comm,
+    CleanupOp cleanupOp,
+    CUresult cleanupResult);
 #endif
 
 } // namespace ncclx::nvls

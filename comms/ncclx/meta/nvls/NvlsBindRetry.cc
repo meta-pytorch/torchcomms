@@ -4,12 +4,14 @@
 #include "meta/nvls/NvlsBindWatchdog.h"
 
 #include <chrono>
+#include <cstdint>
 #include <thread>
 
 #include "bootstrap.h"
 #include "comm.h"
 #include "cudawrap.h"
 #include "param.h"
+#include "proxy.h"
 #include "utils.h"
 
 #if NCCL_VERSION_CODE < NCCL_VERSION(2, 32, 0)
@@ -25,13 +27,42 @@ NCCL_PARAM(NvlsBindRetryBackoffMs, "NVLS_BIND_RETRY_BACKOFF_MS", 1000);
 
 namespace ncclx::nvls {
 
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+NvlsBootstrapOps gNvlsBootstrap{
+    bootstrapIntraNodeAllGather,
+    bootstrapIntraNodeBarrier,
+    bootstrapIntraNodeBroadcast,
+    ncclProxyClientGetFdBlocking};
+
+namespace {
+
+// Every rank selects the first fatal result in local-rank order; absent a
+// fatal result, the first CUDA 802 dominates success so all ranks make the
+// same choice. Returns the selected local rank, or -1 if every rank succeeded.
+template <typename GetResult>
+int agreedResultRank(int localRanks, GetResult getResult) {
+  int agreed = -1;
+  for (int i = 0; i < localRanks; ++i) {
+    const CUresult result = getResult(i);
+    if (result != CUDA_SUCCESS && result != CUDA_ERROR_SYSTEM_NOT_READY) {
+      return i;
+    }
+    if (result == CUDA_ERROR_SYSTEM_NOT_READY && agreed < 0) {
+      agreed = i;
+    }
+  }
+  return agreed;
+}
+
+} // namespace
+
 ncclResult_t collectiveBindResult(
     const ncclComm* comm,
     CUresult localResult,
     CUresult* collectiveResult) {
   CUresult localResults[NCCL_MAX_LOCAL_RANKS]{};
   localResults[comm->localRank] = localResult;
-  NCCLCHECK(bootstrapIntraNodeAllGather(
+  NCCLCHECK(gNvlsBootstrap.allGather(
       comm->bootstrap,
       comm->localRankToRank,
       comm->localRank,
@@ -39,19 +70,9 @@ ncclResult_t collectiveBindResult(
       localResults,
       sizeof(CUresult)));
 
-  // Every rank selects the first fatal result in local-rank order; absent a
-  // fatal result, CUDA 802 dominates success so all ranks make the same choice.
-  *collectiveResult = CUDA_SUCCESS;
-  for (int i = 0; i < comm->localRanks; ++i) {
-    const CUresult result = localResults[i];
-    if (result != CUDA_SUCCESS && result != CUDA_ERROR_SYSTEM_NOT_READY) {
-      *collectiveResult = result;
-      break;
-    }
-    if (result == CUDA_ERROR_SYSTEM_NOT_READY) {
-      *collectiveResult = result;
-    }
-  }
+  const int agreed = agreedResultRank(
+      comm->localRanks, [&](int i) { return localResults[i]; });
+  *collectiveResult = agreed < 0 ? CUDA_SUCCESS : localResults[agreed];
   return ncclSuccess;
 }
 
@@ -105,7 +126,7 @@ ncclResult_t prepareBindRetry(
   // resources through the caller's cleanup labels.
   *ucptr = nullptr;
   *allocMcHandle = 0;
-  NCCLCHECK(bootstrapIntraNodeBarrier(
+  NCCLCHECK(gNvlsBootstrap.barrier(
       comm->bootstrap,
       comm->localRankToRank,
       comm->localRank,
@@ -123,20 +144,66 @@ ncclResult_t prepareBindRetry(
 #else
 namespace {
 
+const char* cleanupOpName(CleanupOp op) {
+  switch (op) {
+    case CleanupOp::Unmap:
+      return "cuMemUnmap";
+    case CleanupOp::AddressFree:
+      return "cuMemAddressFree";
+    case CleanupOp::Release:
+      return "cuMemRelease";
+    case CleanupOp::None:
+      break;
+  }
+  return "unknown operation";
+}
+
 ncclResult_t collectiveCleanupResult(
     const ncclComm* comm,
-    CUresult localResult) {
-  CUresult result = CUDA_SUCCESS;
-  NCCLCHECK(collectiveBindResult(comm, localResult, &result));
-  if (result == CUDA_SUCCESS) {
+    CleanupOp op,
+    CUresult localResult,
+    CUresult contextResult) {
+  CleanupReport reports[NCCL_MAX_LOCAL_RANKS]{};
+  reports[comm->localRank] = {
+      localResult, localResult != CUDA_SUCCESS ? op : CleanupOp::None};
+  NCCLCHECK(gNvlsBootstrap.allGather(
+      comm->bootstrap,
+      comm->localRankToRank,
+      comm->localRank,
+      comm->localRanks,
+      reports,
+      sizeof(CleanupReport)));
+  const int agreed = agreedResultRank(
+      comm->localRanks, [&](int i) { return reports[i].result; });
+  if (agreed < 0) {
     return ncclSuccess;
   }
+  const CUresult result = reports[agreed].result;
+  const char* agreedOp = cleanupOpName(reports[agreed].op);
   const char* errStr = "unknown error";
   (void)pfn_cuGetErrorString(result, &errStr);
-  WARN(
-      "NVLS multicast retry cleanup failed: CUDA error %d '%s'",
-      result,
-      errStr);
+  if (contextResult != CUDA_SUCCESS) {
+    // The cleanup failure returns before the retry/fatal report below, so the
+    // triggering map error is logged here; otherwise the root cause never
+    // appears at default log level on this double fault.
+    const char* contextStr = "unknown error";
+    (void)pfn_cuGetErrorString(contextResult, &contextStr);
+    ERR(ncclUnhandledCudaError,
+        "NVLS multicast map failed (CUDA error %d '%s') and cleanup (%s) on local rank %d also failed: CUDA error %d '%s'",
+        contextResult,
+        contextStr,
+        agreedOp,
+        agreed,
+        result,
+        errStr);
+  } else {
+    ERR(ncclUnhandledCudaError,
+        "NVLS multicast retry cleanup (%s) failed on local rank %d: CUDA error %d '%s'",
+        agreedOp,
+        agreed,
+        result,
+        errStr);
+  }
   printCudaDriverErrorHint(result);
   return ncclUnhandledCudaError;
 }
@@ -168,7 +235,8 @@ ncclResult_t multicastMapWithRetry(
       *mapped = 0;
     }
   }
-  NCCLCHECK(collectiveCleanupResult(comm, unmapResult));
+  NCCLCHECK(
+      collectiveCleanupResult(comm, CleanupOp::Unmap, unmapResult, result));
 
   const char* errStr = "unknown error";
   (void)pfn_cuGetErrorString(result, &errStr);
@@ -197,9 +265,13 @@ ncclResult_t multicastMapWithRetry(
   return ncclUnhandledCudaError;
 }
 
-ncclResult_t finishNvlsTeamRetry(const ncclComm* comm, CUresult cleanupResult) {
-  NCCLCHECK(collectiveCleanupResult(comm, cleanupResult));
-  NCCLCHECK(bootstrapIntraNodeBarrier(
+ncclResult_t finishNvlsTeamRetry(
+    const ncclComm* comm,
+    CleanupOp cleanupOp,
+    CUresult cleanupResult) {
+  NCCLCHECK(
+      collectiveCleanupResult(comm, cleanupOp, cleanupResult, CUDA_SUCCESS));
+  NCCLCHECK(gNvlsBootstrap.barrier(
       comm->bootstrap,
       comm->localRankToRank,
       comm->localRank,
