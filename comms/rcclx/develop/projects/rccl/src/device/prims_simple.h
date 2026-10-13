@@ -715,15 +715,18 @@ public:
     if (flags & (RoleWaitSend | RolePostSend))
       loadSendConn(channel->peers[peer], connIndexSend, collWork ? collWork->direct : 0, sendIpcReg, sendNetReg);
 
-    // if (barrierAny(flags & NetDeviceUnpack)) {
-    //   flags |= AnyNetDeviceUnpack;
-    //   // RoleWaitRecv starts at tid=0, so this creates the bitmask of which recv peers
-    //   // have NetDeviceUnpack.
-    //   uint32_t mask = __ballot_sync(~0u, ((flags & RoleWaitRecv) && (flags & NetDeviceUnpack)) ? 1 : 0);
-    //   if (tid == 0) {
-    //     ncclShmem.groups[this->group].devicePlugin.unpack.unpackNetDeviceIndexMask = mask;
-    //   }
-    // }
+    // barrierAny() does not vote here, so build the mask of recv peers with
+    // NetDeviceUnpack in shared memory. Without it ncclNetDeviceUnpack() never
+    // runs and a net plugin advertising NCCL_NET_DEVICE_UNPACK delivers nothing.
+    // Only comms whose net plugin uses device unpack pay for the two barriers.
+    if (MaxRecv > 0 && ncclShmem.comm.netDeviceUnpack) {
+      int* unpackMask = &ncclShmem.groups[this->group].devicePlugin.unpack.unpackNetDeviceIndexMask;
+      if (tid == 0) *unpackMask = 0;
+      barrier();
+      if ((flags & RoleWaitRecv) && (flags & NetDeviceUnpack)) atomicOr(unpackMask, (int)(1u << index));
+      barrier();
+      if (*unpackMask != 0) flags |= AnyNetDeviceUnpack;
+    }
 
     // coverity[negative_returns:FALSE] => coverity thinks that index could be -1 but that's not actually the case
     // coverity[var_deref_model] => coverity thinks work can dereferenced if NULL but this is not the case

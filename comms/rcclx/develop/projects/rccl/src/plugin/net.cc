@@ -227,6 +227,9 @@ static ncclResult_t ncclNetPluginAssignToComm(struct ncclComm* comm, int pluginI
     comm->netPluginIndex = pluginIndex;
     netPluginLibs[pluginIndex].ncclNetPluginRefCount++;
     *isAssigned = true;
+    ncclNetProperties_t props;
+    NCCLCHECK(comm->ncclNet->getProperties(0, &props));
+    comm->netDeviceUnpack = props.netDeviceType == NCCL_NET_DEVICE_UNPACK;
     INFO(NCCL_INIT | NCCL_NET, "Assigned NET plugin %s to comm", netPluginLibs[pluginIndex].ncclNet->name);
     if (netPluginLibs[pluginIndex].ncclCollNetPluginState >= ncclNetPluginStateEnabled) {
       comm->ncclCollNet = netPluginLibs[pluginIndex].ncclCollNet;
@@ -377,6 +380,7 @@ ncclResult_t ncclNetInitFromParent(struct ncclComm* comm, struct ncclComm* paren
   comm->ncclNet = parent->ncclNet;
   comm->ncclCollNet = parent->ncclCollNet;
   comm->netPluginIndex = parent->netPluginIndex;
+  comm->netDeviceUnpack = parent->netDeviceUnpack;
   if (comm->config.netName != NCCL_CONFIG_UNDEF_PTR && strcasecmp(comm->config.netName, parent->config.netName)) {
     WARN("Comm config netName (%s) does not match the parent (%s)", comm->config.netName, parent->config.netName);
     ret = ncclInvalidUsage;

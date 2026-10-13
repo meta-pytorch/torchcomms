@@ -618,6 +618,7 @@ struct ncclKernelComm {
   int p2pnChannelsPerPeer;
   int cheapPostSendFenceOff; // RCCL: true if cheap post-peer fence is disabled (comm-global)
   int p2pChannelShiftSize; // [RCCL] Modifies how parts are mapped to p2p channels
+  int netDeviceUnpack; // [RCCL] Net plugin reassembles on the GPU (NCCL_NET_DEVICE_UNPACK)
   int* collNetDenseToUserRank;
 
   // Flag to ask NCCL kernels to abort
