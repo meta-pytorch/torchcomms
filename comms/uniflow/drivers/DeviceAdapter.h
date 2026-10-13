@@ -13,6 +13,31 @@ namespace uniflow {
 class CudaApi;
 class CudaDriverApi;
 
+using DeviceStream = void*;
+
+enum class DeviceCopyKind {
+  HostToDevice,
+  DeviceToHost,
+  DeviceToDevice,
+};
+
+struct DeviceCapabilities {
+  bool asyncCopy{false};
+  bool streamSignal64{false};
+  bool nonBlockingStreams{false};
+  bool completion{false};
+};
+
+/// Owns a completion marker, not the copied buffers or the stream. The caller
+/// must retain those resources until ready() returns true, wait() succeeds, or
+/// the exact stream has been drained. Destruction does not wait for work.
+class DeviceCompletion {
+ public:
+  virtual ~DeviceCompletion() = default;
+  virtual Result<bool> ready() = 0;
+  virtual Status wait() = 0;
+};
+
 /// How a device buffer is mapped when exported as a DMA-BUF.
 enum class DmaBufMapping {
   /// Standard mapping. On Grace-based systems (e.g. GB300) NIC<->GPU traffic
@@ -54,6 +79,64 @@ struct DmaBuff {
 class DeviceAdapter {
  public:
   virtual ~DeviceAdapter() = default;
+
+  /// Passive support query; it must not initialize a GPU or select a backend.
+  virtual DeviceCapabilities capabilities() const noexcept {
+    return {};
+  }
+
+  /// Operations use the context for deviceId and restore the caller's device.
+  /// nullptr denotes that device's default stream. Whether a stream must be
+  /// explicitly supplied is a transport policy, not an adapter policy.
+  /// An error may follow a partial enqueue: retain buffers and drain the exact
+  /// stream before releasing them. A failed drain is not completion.
+  virtual Status copyAsync(
+      int /* deviceId */,
+      void* /* dst */,
+      const void* /* src */,
+      size_t /* count */,
+      DeviceCopyKind /* kind */,
+      DeviceStream /* stream */) {
+    return Err(ErrCode::NotImplemented, "device asynchronous copy unavailable");
+  }
+
+  /// Signal a device-accessible address after earlier work on this same stream,
+  /// preserving memory ordering. It has the same failure/lifetime rules as
+  /// copy.
+  virtual Status signal64(
+      int /* deviceId */,
+      DeviceStream /* stream */,
+      uint64_t* /* address */,
+      uint64_t /* value */) {
+    return Err(ErrCode::NotImplemented, "device stream signal unavailable");
+  }
+
+  virtual Result<DeviceStream> createNonBlockingStream(int /* deviceId */) {
+    return Err(ErrCode::NotImplemented, "device private streams unavailable");
+  }
+
+  /// Drain only the supplied stream, including a device-scoped default stream.
+  virtual Status synchronizeStream(
+      int /* deviceId */,
+      DeviceStream /* stream */) {
+    return Err(
+        ErrCode::NotImplemented, "device stream synchronization unavailable");
+  }
+
+  /// Only destroy a private stream returned by this adapter, after its work has
+  /// completed or been drained. Never destroy the default stream.
+  virtual Status destroyStream(int /* deviceId */, DeviceStream /* stream */) {
+    return Err(
+        ErrCode::NotImplemented, "device stream destruction unavailable");
+  }
+
+  /// Mark work already enqueued on stream. ready()/wait() cover only that work,
+  /// not later submissions. On failure, retain buffers and drain this stream.
+  virtual Result<std::unique_ptr<DeviceCompletion>> recordCompletion(
+      int /* deviceId */,
+      DeviceStream /* stream */) {
+    return Err(ErrCode::NotImplemented, "device completion unavailable");
+  }
 
   /// Allocate page-aligned, host-pinned memory suitable for DMA from a NIC
   /// or accelerator.

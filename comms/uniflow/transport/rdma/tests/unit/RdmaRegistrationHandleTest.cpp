@@ -3,6 +3,7 @@
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 
+#include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
 #include "comms/uniflow/executor/LockFreeEventBase.h"
@@ -336,6 +337,9 @@ class RdmaFactoryRegistrationTest : public ::testing::Test {
   void SetUp() override {
     ibv_ = std::make_shared<NiceMock<MockIbvApi>>();
     cudaDriver_ = std::make_shared<NiceMock<MockCudaDriverApi>>();
+    cudaApi_ = std::make_shared<NiceMock<MockCudaApi>>();
+    ON_CALL(*cudaApi_, getDevice()).WillByDefault(Return(0));
+    ON_CALL(*cudaApi_, setDevice(_)).WillByDefault(Return(Ok()));
 
     // Factory constructor opens devices — set up mocks for that.
     EXPECT_CALL(*ibv_, getDeviceList(_)).WillOnce([this](int* n) {
@@ -379,11 +383,13 @@ class RdmaFactoryRegistrationTest : public ::testing::Test {
         &evb_,
         RdmaTransportConfig{},
         ibv_,
-        cudaDriver_);
+        cudaDriver_,
+        cudaApi_);
   }
 
   std::shared_ptr<NiceMock<MockIbvApi>> ibv_;
   std::shared_ptr<NiceMock<MockCudaDriverApi>> cudaDriver_;
+  std::shared_ptr<NiceMock<MockCudaApi>> cudaApi_;
   uniflow::LockFreeEventBase evb_;
   std::unique_ptr<RdmaTransportFactory> factory_;
 

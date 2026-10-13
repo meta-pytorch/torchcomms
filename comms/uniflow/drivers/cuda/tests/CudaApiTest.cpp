@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
+#include "comms/uniflow/drivers/cuda/CudaDeviceAdapter.h" // @manual=//comms/uniflow/drivers/cuda:cuda-device-adapter
+#include "comms/uniflow/drivers/cuda/CudaDriverApi.h" // @manual=//comms/uniflow/drivers/cuda:cuda-driver-api
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 
@@ -9,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace uniflow {
@@ -113,6 +116,36 @@ TEST(CudaApiTest, EventSynchronizeReturnsOnlyOnceTheEventCompleted) {
   EXPECT_TRUE(done.value());
 
   EXPECT_FALSE(api.eventDestroy(event).hasError());
+}
+
+TEST(CudaApiTest, DmaBufExportInitializesCallingThreadContext) {
+  if (gpuCount() == 0) {
+    GTEST_SKIP() << "no GPU available";
+  }
+  auto api = std::make_shared<CudaApi>();
+  auto driver = std::make_shared<CudaDriverApi>();
+  ASSERT_FALSE(api->setDevice(0).hasError());
+  auto supported = driver->isDmaBufSupported(0);
+  ASSERT_FALSE(supported.hasError());
+  if (!supported.value()) {
+    GTEST_SKIP() << "GPU does not support DMA-BUF export";
+  }
+  constexpr size_t kBytes = 64 * 1024;
+  void* device = nullptr;
+  ASSERT_EQ(cudaMalloc(&device, kBytes), cudaSuccess);
+  std::unique_ptr<void, void (*)(void*)> allocation(
+      device, [](void* ptr) { (void)cudaFree(ptr); });
+  CudaDeviceAdapter adapter(api, driver);
+
+  std::thread registration([&] {
+    auto exported = adapter.exportDmaBuff(0, allocation.get(), kBytes);
+
+    ASSERT_TRUE(exported.hasValue()) << exported.error().toString();
+    EXPECT_GE(exported->fd, 0);
+    EXPECT_FALSE(adapter.closeDmaBuff(exported.value()).hasError());
+    EXPECT_EQ(exported->fd, -1);
+  });
+  registration.join();
 }
 
 } // namespace
