@@ -119,6 +119,9 @@ class MockCudaApi : public CudaApi {
 /// themselves. `auto` covers lambda parameters in actions -- matchers have no
 /// equivalent, so pin them through these.
 using MockStream = cudaStream_t;
+using MockEvent = cudaEvent_t;
 inline constexpr auto kMockMemcpyH2D = cudaMemcpyHostToDevice;
+inline constexpr auto kMockMemcpyD2H = cudaMemcpyDeviceToHost;
+inline constexpr auto kMockMemcpyD2D = cudaMemcpyDeviceToDevice;
 
 } // namespace uniflow

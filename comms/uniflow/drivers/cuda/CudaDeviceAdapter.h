@@ -17,6 +17,26 @@ class CudaDeviceAdapter : public DeviceAdapter {
       std::shared_ptr<CudaApi> cudaApi,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr);
 
+  DeviceCapabilities capabilities() const noexcept override;
+  Status copyAsync(
+      int deviceId,
+      void* dst,
+      const void* src,
+      size_t count,
+      DeviceCopyKind kind,
+      DeviceStream stream) override;
+  Status signal64(
+      int deviceId,
+      DeviceStream stream,
+      uint64_t* address,
+      uint64_t value) override;
+  Result<DeviceStream> createNonBlockingStream(int deviceId) override;
+  Status synchronizeStream(int deviceId, DeviceStream stream) override;
+  Status destroyStream(int deviceId, DeviceStream stream) override;
+  Result<std::unique_ptr<DeviceCompletion>> recordCompletion(
+      int deviceId,
+      DeviceStream stream) override;
+
   Result<void*> pinnedHostAlloc(size_t size) override;
   Status pinnedHostFree(void* ptr) override;
   Result<void*> hostGetDevicePointer(void* hostPtr) override;
