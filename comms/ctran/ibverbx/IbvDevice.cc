@@ -2,7 +2,7 @@
 
 #include "comms/ctran/ibverbx/IbvDevice.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -63,7 +63,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
   ibv_pd* pd = nullptr;
   pd = ibvSymbols.ibv_internal_alloc_pd(context);
   if (!pd) {
-    CTRAN_LOG(ERR, "ibv_alloc_pd failed: {}", errnoStr(errno));
+    IBVERBX_LOG(ERR, "ibv_alloc_pd failed: {}", errnoStr(errno));
     return false;
   }
 
@@ -84,7 +84,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
   // supported (EBADF otherwise)
   dev_fail |= (errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT);
   if (ibvSymbols.ibv_internal_dealloc_pd(pd) != 0) {
-    CTRAN_LOG(
+    IBVERBX_LOG(
         WARN,
         "ibv_dealloc_pd failed: {} DMA-BUF support status: {}",
         errnoStr(errno),
@@ -92,7 +92,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
     return false;
   }
   if (dev_fail) {
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "MLX5DV Kernel DMA-BUF is not supported on device {}",
         device->name);
@@ -203,13 +203,13 @@ IbvDevice::IbvDevice(ibv_device* ibvDevice, int port, bool dataDirect)
   port_ = port;
   context_ = ibvSymbols.ibv_internal_open_device(device_);
   if (!context_) {
-    CTRAN_LOG(ERR, "Failed to open device {}", device_->name);
+    IBVERBX_LOG(ERR, "Failed to open device {}", device_->name);
     throw std::runtime_error(
         fmt::format("Failed to open device {}", device_->name));
   }
   if (dataDirect && (mlx5dvDmaBufDataDirectLinkCapable(device_, context_))) {
     dataDirect_ = true;
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "NET/IB: Data Direct DMA Interface is detected for device: {} dataDirect: {}",
         device_->name,
@@ -221,7 +221,7 @@ IbvDevice::~IbvDevice() {
   if (context_) {
     int rc = ibvSymbols.ibv_internal_close_device(context_);
     if (rc != 0) {
-      CTRAN_LOG(
+      IBVERBX_LOG(
           WARN,
           "Failed to close device rc: {}, {}. "
           "This is a post-failure warning likely due to an uncleaned RDMA resource on the failure path.",
@@ -388,7 +388,7 @@ Expected<int> detail::selectRoceGidIndex(
     return v2Index;
   }
   if (untypedIndex >= 0) {
-    CTRAN_LOG(
+    IBVERBX_LOG(
         WARN,
         "IBVERBX: GID types unavailable; selecting index {} from configured IPv4 GIDs. Specify an explicit index if this is not RoCE v2.",
         untypedIndex);

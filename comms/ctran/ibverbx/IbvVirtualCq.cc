@@ -26,7 +26,7 @@ IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
 
   // Update registered VirtualQp back-pointers to point to new location
   for (auto& [qpId, info] : registeredQps_) {
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         info.vqp == nullptr,
         "Check failed: info.vqp != nullptr: Registered physical QP has no associated VirtualQp!");
@@ -43,7 +43,7 @@ IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
 
     // Update registered VirtualQp back-pointers to point to new location
     for (auto& [qpId, info] : registeredQps_) {
-      CTRAN_LOG_IF(
+      IBVERBX_LOG_IF(
           FATAL,
           info.vqp == nullptr,
           "Check failed: info.vqp != nullptr: Registered physical QP has no associated VirtualQp!");

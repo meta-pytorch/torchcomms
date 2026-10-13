@@ -27,11 +27,11 @@ IbvVirtualQp::IbvVirtualQp(
       maxMsgSize_(maxMsgSize),
       loadBalancingScheme_(loadBalancingScheme),
       notifyQp_(std::move(notifyQp)) {
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       physicalQps_.empty(),
       "Check failed: !physicalQps_.empty(): At least one physical QP must be provided!");
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       physicalQps_.size() != 1 && !notifyQp_.has_value(),
       "Check failed: physicalQps_.size() == 1 || notifyQp_.has_value(): notifyQp must be provided when using multiple data QPs!");
@@ -284,7 +284,7 @@ uint32_t readU32(std::string_view in, size_t offset) {
 } // namespace
 
 std::string IbvVirtualQpBusinessCard::serialize() const {
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       qpNums_.size() > std::numeric_limits<uint32_t>::max(),
       "Check failed: qpNums_.size() <= UINT32_MAX: business card holds {} QP numbers, which the wire count cannot encode",

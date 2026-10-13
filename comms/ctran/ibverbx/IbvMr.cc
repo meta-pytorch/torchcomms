@@ -2,7 +2,7 @@
 #include "comms/ctran/ibverbx/IbvMr.h"
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace ibverbx {
 
@@ -27,7 +27,8 @@ IbvMr::~IbvMr() {
   if (mr_) {
     int rc = ibvSymbols.ibv_internal_dereg_mr(mr_);
     if (rc != 0) {
-      CTRAN_LOG(ERR, "Failed to deregister mr rc: {}, {}", rc, strerror(errno));
+      IBVERBX_LOG(
+          ERR, "Failed to deregister mr rc: {}, {}", rc, strerror(errno));
     }
   }
 }

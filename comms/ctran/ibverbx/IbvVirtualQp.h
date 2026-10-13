@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <optional>
 #include <string>
@@ -13,7 +14,7 @@
 #include "comms/ctran/ibverbx/IbvQp.h"
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace ibverbx {
 
@@ -86,7 +87,7 @@ class IbvVirtualQp {
   const IbvQp& getNotifyQpRef() const;
   IbvQp& getNotifyQpRef();
   bool hasNotifyQp() const {
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         physicalQps_.size() != 1 && !notifyQp_.has_value(),
         "Check failed: physicalQps_.size() == 1 || notifyQp_.has_value(): notifyQp must be provided when using multiple data QPs!");
@@ -524,7 +525,7 @@ inline Status IbvVirtualQp::postRecv(const IbvVirtualRecvWr& wr) {
   }
 
   // SPRAY mode: Post zero-length recv to notifyQp
-  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
+  IBVERBX_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   if (notifyQp_->physicalRecvWrStatus_.size() >=
       static_cast<size_t>(maxMsgCntPerQp_)) {
@@ -543,7 +544,7 @@ inline Status IbvVirtualQp::postRecv(const IbvVirtualRecvWr& wr) {
 
 // Replenish a single DQPLB recv on the specified QP after consuming one
 inline Status IbvVirtualQp::replenishDqplbRecv(int qpIdx) {
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       qpIdx < 0 || qpIdx >= static_cast<int>(physicalQps_.size()),
       "Check failed: qpIdx >= 0 && qpIdx < static_cast<int>(physicalQps_.size()): [Ibverbx]IbvVirtualQp::replenishDqplbRecv, invalid qpIdx={}",
@@ -569,7 +570,7 @@ inline Status IbvVirtualQp::replenishDqplbRecv(int qpIdx) {
 
 // Post zero-length recv to notifyQp (SPRAY mode)
 inline Status IbvVirtualQp::postRecvToNotifyQp(uint64_t internalWrId) {
-  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
+  IBVERBX_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   ibv_recv_wr recvWr{};
   ibv_recv_wr badWr{};
@@ -591,7 +592,7 @@ inline Status IbvVirtualQp::postRecvToNotifyQp(uint64_t internalWrId) {
 
 // Flush pending recv notifications when notifyQp backpressure clears
 inline Status IbvVirtualQp::flushPendingRecvNotifies() {
-  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
+  IBVERBX_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   while (!pendingRecvNotifyQue_.empty()) {
     if (notifyQp_->physicalRecvWrStatus_.size() >=
@@ -620,7 +621,7 @@ inline Status IbvVirtualQp::dispatchPendingSends(int freedQpIdx) {
     uint64_t internalId = sendTracker_.frontPendingPost();
 
     auto* pending = sendTracker_.find(internalId);
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         pending == nullptr,
         "Check failed: pending != nullptr: [Ibverbx]IbvVirtualQp::dispatchPendingSends, WR {} in pendingPostQue_ but not found in activeVirtualWrs_",
@@ -715,7 +716,7 @@ inline Status IbvVirtualQp::reportSendCompletions(
   while (sendTracker_.hasPendingCompletion()) {
     uint64_t frontId = sendTracker_.frontPendingCompletion();
     auto* frontWr = sendTracker_.find(frontId);
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         frontWr == nullptr,
         "Check failed: frontWr != nullptr: [Ibverbx]IbvVirtualQp::reportSendCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
@@ -726,7 +727,7 @@ inline Status IbvVirtualQp::reportSendCompletions(
         break;
       }
 
-      CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
+      IBVERBX_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
       if (notifyQp_->physicalSendWrStatus_.size() >=
           static_cast<size_t>(maxMsgCntPerQp_)) {
         pendingSendNotifyQue_.push_back(frontId);
@@ -756,13 +757,13 @@ inline Status IbvVirtualQp::reportSendCompletions(
 
 inline Status IbvVirtualQp::postSendToNotifyQp(uint64_t internalWrId) {
   auto* pending = sendTracker_.find(internalWrId);
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       pending == nullptr,
       "Check failed: pending != nullptr: [Ibverbx]IbvVirtualQp::postSendToNotifyQp, WR {} not found",
       internalWrId);
 
-  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
+  IBVERBX_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   ibv_send_wr sendWr{};
   sendWr.wr_id = nextPhysicalWrId_++;
@@ -787,7 +788,7 @@ inline Status IbvVirtualQp::postSendToNotifyQp(uint64_t internalWrId) {
 }
 
 inline Status IbvVirtualQp::flushPendingSendNotifies() {
-  CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
+  IBVERBX_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   while (!pendingSendNotifyQue_.empty()) {
     if (notifyQp_->physicalSendWrStatus_.size() >=
@@ -797,7 +798,7 @@ inline Status IbvVirtualQp::flushPendingSendNotifies() {
 
     uint64_t frontId = pendingSendNotifyQue_.front();
     auto* frontWr = sendTracker_.find(frontId);
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         frontWr == nullptr,
         "Check failed: frontWr != nullptr: [Ibverbx]IbvVirtualQp::flushPendingSendNotifies, WR {} in pendingSendNotifyQue_ but not found in activeVirtualWrs_",
@@ -817,7 +818,7 @@ inline Status IbvVirtualQp::reportRecvCompletions(
   while (recvTracker_.hasPendingCompletion()) {
     uint64_t frontId = recvTracker_.frontPendingCompletion();
     auto* frontWr = recvTracker_.find(frontId);
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         frontWr == nullptr,
         "Check failed: frontWr != nullptr: [Ibverbx]IbvVirtualQp::reportRecvCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
@@ -851,7 +852,7 @@ inline Status IbvVirtualQp::updateWrState(
     ibv_wc_status status,
     ibv_wc_opcode wcOpcode) {
   auto* wr = tracker.find(internalWrId);
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       wr == nullptr,
       "Check failed: wr != nullptr: [Ibverbx] WR {} not found in tracker during updateWrState",
@@ -863,7 +864,7 @@ inline Status IbvVirtualQp::updateWrState(
   // First error wins
   if (wr->aggregatedStatus == IBV_WC_SUCCESS && status != IBV_WC_SUCCESS) {
     wr->aggregatedStatus = status;
-    CTRAN_LOG(
+    IBVERBX_LOG(
         ERR,
         "[Ibverbx] Physical WC error: status={}, WR internalId={}",
         static_cast<int>(status),
@@ -893,14 +894,14 @@ inline Expected<uint64_t> IbvVirtualQp::popPhysicalQueueStatus(
     std::deque<IbvQp::PhysicalWrStatus>& queStatus,
     uint64_t expectedPhysicalWrId,
     const char* queueName) {
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       queStatus.empty(),
       "Check failed: !queStatus.empty(): [Ibverbx]IbvVirtualQp::popPhysicalQueueStatus, no pending WR in {}",
       queueName);
 
   auto& frontStatus = queStatus.front();
-  CTRAN_LOG_IF(
+  IBVERBX_LOG_IF(
       FATAL,
       frontStatus.physicalWrId != expectedPhysicalWrId,
       "Check failed: frontStatus.physicalWrId == expectedPhysicalWrId: [Ibverbx]IbvVirtualQp::popPhysicalQueueStatus, {} WR ID mismatch: expected {}, got {}",
@@ -935,7 +936,7 @@ inline Expected<std::vector<IbvVirtualWc>> IbvVirtualQp::processCompletion(
                   : processNotifyQpRecvCompletion(physicalWc, results);
   } else {
     auto qpIdxIt = qpNumToIdx_.find(QpId{deviceId, physicalWc.qp_num});
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         qpIdxIt == qpNumToIdx_.end(),
         "Check failed: qpIdxIt != qpNumToIdx_.end(): [Ibverbx] unknown physical QP: qpNum={}, deviceId={}",
@@ -1082,7 +1083,7 @@ IbvVirtualQp::processDataQpRecvCompletion(
   int notifyCount = dqplbSeqTracker_.processReceivedImm(physicalWc.imm_data);
 
   for (int i = 0; i < notifyCount; i++) {
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         !recvTracker_.hasPendingCompletion(),
         "Check failed: recvTracker_.hasPendingCompletion(): [Ibverbx] DQPLB notifyCount={} exceeds outstanding recvs",
@@ -1090,7 +1091,7 @@ IbvVirtualQp::processDataQpRecvCompletion(
 
     uint64_t frontId = recvTracker_.frontPendingCompletion();
     auto* frontWr = recvTracker_.find(frontId);
-    CTRAN_LOG_IF(
+    IBVERBX_LOG_IF(
         FATAL,
         frontWr == nullptr,
         "Check failed: frontWr != nullptr: [Ibverbx] DQPLB WR {} not found in recvTracker_",

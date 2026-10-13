@@ -3,7 +3,7 @@
 #include "comms/ctran/ibverbx/IbvAh.h"
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace ibverbx {
 
@@ -28,7 +28,7 @@ IbvAh::~IbvAh() {
   if (ah_) {
     int rc = ibvSymbols.ibv_internal_destroy_ah(ah_);
     if (rc != 0) {
-      CTRAN_LOG(ERR, "Failed to destroy AH rc: {}, {}", rc, strerror(errno));
+      IBVERBX_LOG(ERR, "Failed to destroy AH rc: {}, {}", rc, strerror(errno));
     }
   }
 }

@@ -9,7 +9,7 @@
 #include "comms/ctran/ibverbx/IbvCq.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5dv.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace {
 
@@ -47,7 +47,7 @@ IbvCq::~IbvCq() {
   if (cq_) {
     int rc = ibvSymbols.ibv_internal_destroy_cq(cq_);
     if (rc != 0) {
-      CTRAN_LOG(ERR, "Failed to destroy cq rc: {}, {}", rc, strerror(errno));
+      IBVERBX_LOG(ERR, "Failed to destroy cq rc: {}, {}", rc, strerror(errno));
     }
   }
 }
@@ -113,7 +113,7 @@ Expected<struct device_cq> IbvCq::getDeviceCq() const noexcept {
           fmt::format(
               "Mapping CQ to GPU buffer failed: {}", cudaGetErrorString(ret))));
     }
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "Mapped CQ buffer host={} device={} ncqes={} cq_dbrec={}",
         fmt::ptr(mlx5_cq.buf),
