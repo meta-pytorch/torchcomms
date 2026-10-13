@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <unordered_map>
 #include <vector>
@@ -11,7 +12,7 @@
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace ibverbx {
 
@@ -123,7 +124,7 @@ inline Expected<std::vector<IbvVirtualWc>> IbvVirtualCq::pollCq() {
             findRegisteredQpInfo(physicalWc.qp_num, deviceId);
 
         if (info == nullptr) {
-          CTRAN_LOG(
+          IBVERBX_LOG(
               FATAL,
               "Check failed: info != nullptr: [Ibverbx]IbvVirtualCq::pollCq, unregistered QP: qpNum={}, deviceId={}",
               physicalWc.qp_num,

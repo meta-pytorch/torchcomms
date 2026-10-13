@@ -11,7 +11,7 @@
 
 #include "comms/ctran/ibverbx/utils/ScopeGuard.h"
 
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace ibverbx {
 
@@ -576,7 +576,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     ibvhandle = dlopen(ibv_path.c_str(), RTLD_NOW);
     if (!ibvhandle) {
       const char* dlErr = dlerror();
-      CTRAN_LOG(
+      IBVERBX_LOG(
           ERR,
           "Failed to open requested libibverbs {} - {}",
           ibv_path,
@@ -586,7 +586,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   } else {
     ibvhandle = dlopen("libibverbs.so.1", RTLD_NOW);
     if (!ibvhandle) {
-      CTRAN_LOG(ERR, "Failed to open libibverbs.so.1");
+      IBVERBX_LOG(ERR, "Failed to open libibverbs.so.1");
       return 1;
     }
   }
@@ -608,7 +608,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     if (!mlx5dvhandle) {
       mlx5dvhandle = dlopen("libmlx5.so.1", RTLD_NOW);
       if (!mlx5dvhandle) {
-        CTRAN_LOG(
+        IBVERBX_LOG(
             WARN,
             "Failed to open libmlx5.so[.1]. Advance features like CX-8 Direct-NIC will be disabled.");
       }
@@ -620,7 +620,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     cast = (void**)&funcptr;                       \
     tmp = dlvsym(handle, symbol, version);         \
     if (tmp == nullptr) {                          \
-      CTRAN_LOG(                                   \
+      IBVERBX_LOG(                                 \
           ERR,                                     \
           "dlvsym failed on {} - {} version {}",   \
           symbol,                                  \
@@ -636,7 +636,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     cast = (void**)&funcptr;                                 \
     tmp = dlvsym(handle, symbol, version);                   \
     if (tmp == nullptr) {                                    \
-      CTRAN_LOG(                                             \
+      IBVERBX_LOG(                                           \
           WARN,                                              \
           "dlvsym failed on {} - {} version {}, set null",   \
           symbol,                                            \
@@ -658,7 +658,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     tmp = dlsym(handle, symbol);                           \
     if (tmp == nullptr) {                                  \
       const char* dlErr = dlerror();                       \
-      CTRAN_LOG(                                           \
+      IBVERBX_LOG(                                         \
           WARN,                                            \
           "dlsym failed on {} - {}, set null",             \
           symbol,                                          \

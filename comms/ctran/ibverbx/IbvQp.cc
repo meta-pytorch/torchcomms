@@ -8,7 +8,7 @@
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5dv.h"
-#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 
 namespace ibverbx {
 
@@ -21,7 +21,7 @@ IbvQp::~IbvQp() {
   if (qp_) {
     int rc = ibvSymbols.ibv_internal_destroy_qp(qp_);
     if (rc != 0) {
-      CTRAN_LOG(ERR, "Failed to destroy qp rc: {}, {}", rc, strerror(errno));
+      IBVERBX_LOG(ERR, "Failed to destroy qp rc: {}, {}", rc, strerror(errno));
     }
   }
 }
@@ -76,7 +76,7 @@ void IbvQp::logInfo() const {
   auto maybeQpAttrPair = queryQp(IBV_QP_STATE | IBV_QP_CAP | IBV_QP_PKEY_INDEX);
   if (maybeQpAttrPair.hasValue()) {
     auto [qpAttr, initAttr] = maybeQpAttrPair.value();
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "QP details: qp_num={}, qp_ptr={}, context={}, pd={}, state info: state={}, max_send_wr={}, max_recv_wr={}, max_send_sge={}, max_recv_sge={}, pkey_index={}",
         qp_->qp_num,
@@ -90,7 +90,7 @@ void IbvQp::logInfo() const {
         qpAttr.cap.max_recv_sge,
         qpAttr.pkey_index);
   } else {
-    CTRAN_LOG(
+    IBVERBX_LOG(
         ERR,
         "QP details: qp_num={}, qp_ptr={}, context={}, pd={}, Failed to query local QP state: errno={} ({})",
         qp_->qp_num,
@@ -165,7 +165,7 @@ Expected<struct device_qp> IbvQp::getDeviceQp(device_cq* cq) const noexcept {
               "Mapping QP WQE to GPU buffer failed: {}",
               cudaGetErrorString(ret))));
     }
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "Mapped QP work queue host={} device={} wqe_cnt={} stride={}",
         fmt::ptr(mlx5_qp.sq.buf),
@@ -190,7 +190,7 @@ Expected<struct device_qp> IbvQp::getDeviceQp(device_cq* cq) const noexcept {
               "Mapping QP DBREC to GPU buffer failed: {}",
               cudaGetErrorString(ret))));
     }
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "Mapped QP doorbell host={} device={}",
         fmt::ptr(mlx5_qp.dbrec),
@@ -233,7 +233,7 @@ Expected<struct device_qp> IbvQp::getDeviceQp(device_cq* cq) const noexcept {
               "Mapping BlueFlame register to GPU buffer failed: {}",
               cudaGetErrorString(ret))));
     }
-    CTRAN_LOG(
+    IBVERBX_LOG(
         INFO,
         "Mapped BlueFlame host={} device={} size={}",
         fmt::ptr(mlx5_qp.bf.reg),

@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <gmock/gmock.h>
+#include "comms/ctran/ibverbx/utils/IbverbxLogger.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/LogInit.h"
@@ -298,4 +299,53 @@ TEST_F(CtranUtilsLogTest, TestCtranSubsystemMaskSupportsCombinations) {
       testing::Not(
           testing::HasSubstr("This should NOT be logged (both disabled) 45")));
   EXPECT_THAT(output, testing::HasSubstr("This should be logged 103"));
+}
+
+// initCtranLogging() installs a sink on the ibverbx logger, so an ibverbx line
+// lands in the CTRAN destination with the CTRAN prefix instead of splitting
+// onto stderr on its own.
+TEST_F(CtranUtilsLogTest, IbverbxLinesReachTheCtranLogger) {
+  testing::internal::CaptureStdout();
+  IBVERBX_LOG(WARN, "ibverbx warning {}", 42);
+  meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName)
+      .flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  EXPECT_THAT(output, testing::HasSubstr("CTRAN WARN"));
+  EXPECT_THAT(output, testing::HasSubstr("ibverbx warning 42"));
+}
+
+// ibverbx aborts the instant the sink returns, so a forwarded FATAL has to
+// drain the async queue and deliver synchronously. Under async delivery the
+// message would otherwise still be queued when the process dies.
+//
+// EXPECT_DEATH only sees stderr, and a file destination is what adds the sink
+// that mirrors W/E/F lines there, so both FATAL cases route to /dev/null rather
+// than the default stdout.
+TEST_F(CtranUtilsLogTest, IbverbxFatalSurvivesAsyncDelivery) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+  EXPECT_DEATH(
+      {
+        auto& logger = ctran::logging::getCtranLogger();
+        logger.configure("CTRAN", []() { return 0; }, {}, true /*async*/);
+        logger.configureOutput("/dev/null");
+        IBVERBX_LOG(FATAL, "ibverbx fatal {}", 42);
+      },
+      "CTRAN FATAL ibverbx fatal 42");
+}
+
+// A crash message is not something NCCL_DEBUG should be able to suppress, so
+// the forwarded FATAL path bypasses the level gate the other levels honor.
+TEST_F(CtranUtilsLogTest, IbverbxFatalIgnoresTheLevelGate) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+  EXPECT_DEATH(
+      {
+        auto& logger = ctran::logging::getCtranLogger();
+        logger.configureOutput("/dev/null");
+        logger.set_level(spdlog::level::off);
+        IBVERBX_LOG(FATAL, "ibverbx fatal past the gate {}", 42);
+      },
+      "CTRAN FATAL ibverbx fatal past the gate 42");
 }
