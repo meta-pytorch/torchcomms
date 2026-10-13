@@ -3,17 +3,89 @@
 #include "comms/uniflow/controller/TcpController.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <chrono>
+#include <cstdlib>
+#include <deque>
+#include <future>
 #include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "comms/uniflow/core/Func.h"
+#include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 
 using namespace uniflow;
 using namespace uniflow::controller;
+
+namespace {
+
+class ManualConnectEventBase final : public EventBase {
+ public:
+  void loop() override {
+    while (runOne()) {
+    }
+  }
+  void stop() noexcept override {}
+  void dispatch(Func callback) override {
+    callbacks_.push_back(std::move(callback));
+  }
+  void dispatchInline(Func callback) override {
+    callback();
+  }
+  void dispatchAndWait(Func callback) override {
+    callback();
+  }
+  void registerFd(int fd, uint32_t, IOCallback callback) override {
+    fd_ = fd;
+    ioCallback_ = std::move(callback);
+  }
+  void unregisterFd(int fd) override {
+    dispatch([this, fd]() noexcept {
+      EXPECT_EQ(fd, fd_);
+      ioCallback_ = {};
+      detached_ = true;
+    });
+  }
+  bool inLoopThread() const noexcept override {
+    return true;
+  }
+  bool isLoopRunning() const noexcept override {
+    return false;
+  }
+  int registeredFd() const {
+    return fd_;
+  }
+  bool detached() const {
+    return detached_;
+  }
+  void fireWritable() {
+    auto callback = ioCallback_;
+    callback(EPOLLOUT);
+  }
+  bool runOne() {
+    if (callbacks_.empty()) {
+      return false;
+    }
+    auto callback = std::move(callbacks_.front());
+    callbacks_.pop_front();
+    callback();
+    return true;
+  }
+
+ private:
+  int fd_{-1};
+  bool detached_{false};
+  IOCallback ioCallback_;
+  std::deque<Func> callbacks_;
+};
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Parameterized fixture: async connect tests over both IPv4 and IPv6.
@@ -30,6 +102,74 @@ class TcpAsyncConnectTest : public ::testing::TestWithParam<AddrFamily> {
     return GetParam().clientHost + ":" + std::to_string(port);
   }
 };
+
+TEST_P(TcpAsyncConnectTest, DetachesSocketBeforePublishingConnection) {
+  ManualConnectEventBase evb;
+  TcpServer server(GetParam().serverAddr);
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+  std::unique_ptr<Conn> serverConn;
+  auto accepted = std::async(
+      std::launch::async, [&] { serverConn = server.accept().get(); });
+  AsyncTcpClient client({}, evb);
+  auto future = client.connect(clientAddr(server.getPort()));
+  const auto takeReadyConnection = [&] {
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+      server.shutdown();
+      ADD_FAILURE() << "Connect result was not published";
+      std::abort();
+    }
+    return future.get();
+  };
+  const auto finishAccept = [&] {
+    if (accepted.wait_for(std::chrono::seconds(5)) !=
+        std::future_status::ready) {
+      server.shutdown();
+      if (accepted.wait_for(std::chrono::seconds(5)) !=
+          std::future_status::ready) {
+        ADD_FAILURE() << "Accept did not finish after shutdown";
+        std::abort();
+      }
+    }
+    accepted.get();
+  };
+  const auto fd = evb.registeredFd();
+  if (fd < 0) {
+    auto conn = takeReadyConnection();
+    if (!conn) {
+      server.shutdown();
+    }
+    finishAccept();
+    ASSERT_NE(conn, nullptr);
+    ASSERT_NE(serverConn, nullptr);
+    GTEST_SKIP() << "Connect completed without an event-loop watch";
+  }
+
+  evb.fireWritable();
+  EXPECT_FALSE(evb.detached());
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+  EXPECT_GE(fcntl(fd, F_GETFD), 0);
+  EXPECT_TRUE(evb.runOne());
+  EXPECT_TRUE(evb.detached());
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+  EXPECT_GE(fcntl(fd, F_GETFD), 0);
+  EXPECT_TRUE(evb.runOne());
+  auto conn = takeReadyConnection();
+  if (!conn) {
+    server.shutdown();
+  }
+  finishAccept();
+  ASSERT_NE(conn, nullptr);
+  ASSERT_NE(serverConn, nullptr);
+  conn->close();
+  EXPECT_EQ(static_cast<TcpConn<SyncIO>*>(conn.get())->getFd(), -1);
+}
 
 TEST_P(TcpAsyncConnectTest, SingleAsyncConnect) {
   ScopedEventBaseThread evbThread("async-connect");

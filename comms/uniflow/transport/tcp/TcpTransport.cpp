@@ -374,12 +374,23 @@ Status TcpTransport::hostFromDevice(
   }
   auto s = static_cast<cudaStream_t>(stream);
   CudaDeviceGuard guard(*cudaApi_, deviceId);
-  auto st =
-      cudaApi_->memcpyAsync(hostDst, devSrc, len, cudaMemcpyDeviceToHost, s);
-  if (!st) {
-    return st;
+  const auto launchedAt = std::chrono::steady_clock::now();
+  Status copied = Ok();
+  try {
+    copied =
+        cudaApi_->memcpyAsync(hostDst, devSrc, len, cudaMemcpyDeviceToHost, s);
+  } catch (...) {
+    if (drainCudaStream(cudaApi_, deviceId, stream).hasError()) {
+      abortOnUnquiescedCopy(
+          "synchronous staging", deviceId, stream, 0, launchedAt);
+    }
+    throw;
   }
-  return cudaApi_->streamSynchronize(s);
+  if (drainCudaStream(cudaApi_, deviceId, stream).hasError()) {
+    abortOnUnquiescedCopy(
+        "synchronous staging", deviceId, stream, 0, launchedAt);
+  }
+  return copied;
 }
 
 Result<void*> TcpTransport::writeStreamFor(int deviceId) {
@@ -429,12 +440,23 @@ Status TcpTransport::deviceFromHost(
   }
   auto s = static_cast<cudaStream_t>(stream);
   CudaDeviceGuard guard(*cudaApi_, deviceId);
-  auto st =
-      cudaApi_->memcpyAsync(devDst, hostSrc, len, cudaMemcpyHostToDevice, s);
-  if (!st) {
-    return st;
+  const auto launchedAt = std::chrono::steady_clock::now();
+  Status copied = Ok();
+  try {
+    copied =
+        cudaApi_->memcpyAsync(devDst, hostSrc, len, cudaMemcpyHostToDevice, s);
+  } catch (...) {
+    if (drainCudaStream(cudaApi_, deviceId, stream).hasError()) {
+      abortOnUnquiescedCopy(
+          "synchronous staging", deviceId, stream, 0, launchedAt);
+    }
+    throw;
   }
-  return cudaApi_->streamSynchronize(s);
+  if (drainCudaStream(cudaApi_, deviceId, stream).hasError()) {
+    abortOnUnquiescedCopy(
+        "synchronous staging", deviceId, stream, 0, launchedAt);
+  }
+  return copied;
 }
 
 TcpTransport::~TcpTransport() {
@@ -1251,6 +1273,7 @@ Result<PendingPutWave> TcpTransport::launchPutWave(
   // the single device by breaking each wave at a device boundary.
   pending.deviceId = wave.empty() ? -1 : wave[0].deviceId;
   Status staging = Ok();
+  bool copyMayRun = false;
   for (size_t i = 0; i < wave.size(); ++i) {
     const auto& chunk = wave[i];
     TcpMsgHeader header;
@@ -1266,6 +1289,7 @@ Result<PendingPutWave> TcpTransport::launchPutWave(
     std::memcpy(pending.frames.back().mutableData(), &header, sizeof(header));
     try {
       CudaDeviceGuard guard(*cudaApi_, chunk.deviceId);
+      copyMayRun = true;
       staging = cudaApi_->memcpyAsync(
           pending.frames.back().mutableData() + sizeof(TcpMsgHeader),
           chunk.src,
@@ -1302,11 +1326,14 @@ Result<PendingPutWave> TcpTransport::launchPutWave(
     // Copies may already be running against these slabs, and a wave that never
     // got its event recorded has nothing to wait on. Quiesce the caller's
     // stream before the frames -- and so the leases -- are destroyed on return.
-    try {
-      CudaDeviceGuard guard(*cudaApi_, pending.deviceId);
-      (void)cudaApi_->streamSynchronize(s);
-    } catch (const std::exception&) {
-      // The device is already unusable; there is nothing left to wait for.
+    if (copyMayRun &&
+        drainCudaStream(cudaApi_, pending.deviceId, stream).hasError()) {
+      abortOnUnquiescedCopy(
+          "put staging",
+          pending.deviceId,
+          stream,
+          wave.front().reqId,
+          pending.launchedAt);
     }
     if (pending.event != nullptr) {
       try {
@@ -1336,12 +1363,9 @@ Status TcpTransport::retirePutWave(PendingPutWave& wave) {
       // happen. Fall back to quiescing the stream the copies were launched on:
       // over-waiting is the safe direction, because these slabs cannot be
       // released while any copy might still be writing into them.
-      try {
-        CudaDeviceGuard guard(*cudaApi_, wave.deviceId);
-        (void)cudaApi_->streamSynchronize(
-            static_cast<cudaStream_t>(wave.stream));
-      } catch (const std::exception&) {
-        // The device is already unusable; there is nothing left to wait for.
+      if (drainCudaStream(cudaApi_, wave.deviceId, wave.stream).hasError()) {
+        abortOnUnquiescedCopy(
+            "put retirement", wave.deviceId, wave.stream, 0, wave.launchedAt);
       }
     }
     try {
@@ -1647,45 +1671,42 @@ Status TcpTransport::startReadReply(
    public:
     CopyBarrier(
         const std::shared_ptr<TcpReplyState>& state,
+        PendingReadReply& pending,
         const bool& issued,
-        const bool& handedOff,
-        void*& event,
-        int deviceId)
+        const bool& handedOff)
         : state_(state),
+          pending_(pending),
           issued_(issued),
-          handedOff_(handedOff),
-          event_(event),
-          deviceId_(deviceId) {}
+          handedOff_(handedOff) {}
     CopyBarrier(const CopyBarrier&) = delete;
     CopyBarrier& operator=(const CopyBarrier&) = delete;
     CopyBarrier(CopyBarrier&&) = delete;
     CopyBarrier& operator=(CopyBarrier&&) = delete;
-    ~CopyBarrier() {
+    ~CopyBarrier() noexcept {
       if (handedOff_ || !issued_) {
         return;
       }
-      waitForStagedCopy(state_, deviceId_);
-      // An entry that was never pushed is one drainPendingReadReplies() will
-      // never see, so nothing else would ever destroy this.
-      if (event_ != nullptr) {
-        (void)state_->cudaApi->eventDestroy(static_cast<cudaEvent_t>(event_));
-        event_ = nullptr;
+      waitForStagedCopy(state_, pending_);
+      if (pending_.event != nullptr) {
+        (void)state_->cudaApi->eventDestroy(
+            static_cast<cudaEvent_t>(pending_.event));
+        pending_.event = nullptr;
       }
     }
 
    private:
     const std::shared_ptr<TcpReplyState>& state_;
+    PendingReadReply& pending_;
     const bool& issued_;
     const bool& handedOff_;
-    void*& event_;
-    int deviceId_;
-  } copyBarrier{state, copyIssued, handedOff, pending.event, deviceId};
+  } copyBarrier{state, pending, copyIssued, handedOff};
   try {
     CudaDeviceGuard guard(*state->cudaApi, deviceId);
     // Into pinned memory, so this returns once the copy is enqueued. The same
     // call into a pageable destination -- a plain vector -- is specified to
     // complete synchronously, which parks whichever thread issued it for the
     // length of the transfer. On this path that thread is the reader.
+    copyIssued = true;
     if (auto st = state->cudaApi->memcpyAsync(
             pending.frame.mutableData() + sizeof(TcpMsgHeader),
             src,
@@ -1693,29 +1714,21 @@ Status TcpTransport::startReadReply(
             cudaMemcpyDeviceToHost,
             /*stream=*/nullptr);
         !st) {
-      // A launch that reported an error enqueued nothing, so there is no copy
-      // to wait for here.
       return st;
     }
-    copyIssued = true;
     // The guard already has deviceId current, so these wait on the right device
     // without nesting another guard.
     if (auto st = state->cudaApi->eventCreate(&event); !st) {
-      (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
     if (auto st = state->cudaApi->eventRecord(event, /*stream=*/nullptr); !st) {
       (void)state->cudaApi->eventDestroy(event);
-      (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
     // Only now, so the two failure paths above stay solely responsible for the
     // handle they created and the barrier cannot double-destroy it.
     pending.event = event;
   } catch (const std::exception& e) {
-    if (copyIssued) {
-      waitForStagedCopy(state, deviceId);
-    }
     return Err(
         ErrCode::InvalidArgument,
         "tcp read: VRAM staging needs a selectable deviceId, got " +
@@ -2125,7 +2138,6 @@ void TcpTransport::pollPendingH2d(
         state->drained.notify_all();
         continue;
       }
-      result = Ok();
     }
     destroyH2dEvent(state, retired.deviceId, retired.event);
     state->copyNs.fetch_add(
@@ -2148,16 +2160,25 @@ void TcpTransport::pollPendingH2d(
   }
 }
 
+Status TcpTransport::drainCudaStream(
+    const std::shared_ptr<CudaApi>& api,
+    int deviceId,
+    void* stream) noexcept {
+  try {
+    CudaDeviceGuard guard(*api, deviceId);
+    return api->streamSynchronize(static_cast<cudaStream_t>(stream));
+  } catch (const std::exception& e) {
+    return Err(ErrCode::DriverError, e.what());
+  } catch (...) {
+    return Err(ErrCode::DriverError, "tcp: stream synchronization threw");
+  }
+}
+
 Status TcpTransport::waitForH2dCopy(
     const std::shared_ptr<H2dPollState>& state,
     int deviceId,
     void* stream) noexcept {
-  try {
-    CudaDeviceGuard guard(*state->cudaApi, deviceId);
-    return state->cudaApi->streamSynchronize(static_cast<cudaStream_t>(stream));
-  } catch (const std::exception& e) {
-    return Err(ErrCode::DriverError, e.what());
-  }
+  return drainCudaStream(state->cudaApi, deviceId, stream);
 }
 
 void TcpTransport::destroyH2dEvent(
@@ -2171,51 +2192,33 @@ void TcpTransport::destroyH2dEvent(
   }
 }
 
-// Does not return. Code after a call to this is unreachable; the name says so
-// because the call sites' trailing cleanup is left in place rather than
-// deleted, so it stays correct if this is ever downgraded to something
-// recoverable.
-[[noreturn]] void TcpTransport::abortOnUnquiescedH2d(PendingH2d copy) noexcept {
-  // Neither the event nor a stream synchronize could establish that the device
-  // had finished writing into the caller's destination. Nothing here is
-  // recoverable, and the two obvious options are both wrong:
-  //
-  //  - resolving the op releases the caller to free memory the DMA may still be
-  //    writing;
-  //  - retaining it quietly -- what this did before -- leaves the caller's
-  //    future permanently unresolved. tryBeginWrite() already counted the write
-  //    and only endWrite() retires it, so fail() latches without settling the
-  //    promise. Worse, a retained copy keeps its receive slab: after two such
-  //    events both slabs are gone, `receiveSlab` is always null, and the async
-  //    path silently stops being taken at all. The old std::terminate() below
-  //    the slot loop was therefore unreachable -- a third copy needs a third
-  //    slab, and there are only two.
-  //
-  // So this dies instead, loudly and at the point of detection. What gets us
-  // here is a sticky CUDA error -- illegal address, launch failure, device lost
-  // -- after which every later call on this device fails too. A transport
-  // factory owns exactly one deviceId and one CudaApi and hands both to every
-  // transport it creates, so no other transport in this process has a working
-  // device left to protect. Consumers run one GPU per process under a
-  // supervisor, so this is a restart rather than an outage.
+[[noreturn]] void TcpTransport::abortOnUnquiescedCopy(
+    const char* operation,
+    int deviceId,
+    void* stream,
+    uint64_t reqId,
+    std::chrono::steady_clock::time_point launchedAt) noexcept {
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now() - copy.launchedAt);
+      std::chrono::steady_clock::now() - launchedAt);
   UNIFLOW_LOG_ERROR(
-      "tcp get: destination copy could not be quiesced; aborting. device={} "
-      "stream={} reqId={} launched {}ms ago. The device is no longer usable, so "
-      "the caller's destination cannot be released safely and no later copy on "
-      "this device would succeed.",
-      copy.deviceId,
-      reinterpret_cast<uintptr_t>(copy.stream),
-      copy.reqId,
+      "tcp {}: copy could not be quiesced; aborting. device={} stream={} "
+      "reqId={} launched {}ms ago. Buffers cannot be released safely.",
+      operation,
+      deviceId,
+      reinterpret_cast<uintptr_t>(stream),
+      reqId,
       elapsed.count());
-  // Flushed explicitly, because the whole point of this path is to die loudly.
-  // The logger is spdlog's async non-blocking one (create_async_nb with
-  // overrun_oldest, drained by a background thread), so without this the
-  // message is still in the ring buffer when std::terminate() runs and the
-  // process dies silently -- the one outcome this function exists to prevent.
   ::uniflow::logging::getLogger()->flush();
   std::terminate();
+}
+
+[[noreturn]] void TcpTransport::abortOnUnquiescedH2d(PendingH2d copy) noexcept {
+  abortOnUnquiescedCopy(
+      "get destination",
+      copy.deviceId,
+      copy.stream,
+      copy.reqId,
+      copy.launchedAt);
 }
 
 void TcpTransport::drainPendingH2d() {
@@ -2279,7 +2282,6 @@ void TcpTransport::pollPendingReadReplies(
   while (true) {
     TcpFrame ready;
     PendingReadReply failed;
-    int failedDeviceId = -1;
     uint64_t failedReqId = 0;
     bool haveReady = false;
     bool haveFailure = false;
@@ -2302,7 +2304,6 @@ void TcpTransport::pollPendingReadReplies(
             static_cast<cudaEvent_t>(front.event));
         if (done.hasError()) {
           failedReqId = front.reqId;
-          failedDeviceId = front.deviceId;
           haveFailure = true;
           // A query that failed says nothing about the copy -- it may still be
           // running. The record is carried out of the deque rather than dropped
@@ -2342,7 +2343,7 @@ void TcpTransport::pollPendingReadReplies(
       // drainPendingReadReplies() waits: a copy that may still be running would
       // otherwise be left writing into a slab the pool is about to hand to the
       // next staging copy.
-      waitForStagedCopy(state, failedDeviceId);
+      waitForStagedCopy(state, failed);
       // Dropping it here releases the slab, so a deferred read may now be
       // startable -- which is why this happens before the scheduling call
       // below.
@@ -2358,21 +2359,10 @@ void TcpTransport::pollPendingReadReplies(
 
 void TcpTransport::waitForStagedCopy(
     const std::shared_ptr<TcpReplyState>& state,
-    int deviceId) noexcept {
-  if (state->cudaApi == nullptr) {
-    return;
-  }
-  try {
-    // The device has to be made current first because this waits on the *null*
-    // stream, and the null stream is per-device: a bare streamSynchronize would
-    // cover whichever device happened to be current and leave this copy
-    // running. That reasoning is specific to the null stream. A
-    // caller-supplied stream is one stream regardless of which device is
-    // current, so selecting a device per copy would buy nothing there.
-    CudaDeviceGuard guard(*state->cudaApi, deviceId);
-    (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
-  } catch (const std::exception&) {
-    // The device is already unusable, so there is nothing left to wait for.
+    const PendingReadReply& copy) noexcept {
+  if (drainCudaStream(state->cudaApi, copy.deviceId, nullptr).hasError()) {
+    abortOnUnquiescedCopy(
+        "read reply", copy.deviceId, nullptr, copy.reqId, copy.launchedAt);
   }
 }
 
@@ -2394,7 +2384,7 @@ void TcpTransport::drainPendingReadReplies() {
   // first even though the replies themselves are being abandoned.
   if (cudaApi_ != nullptr) {
     for (auto& reply : pending) {
-      waitForStagedCopy(reply_, reply.deviceId);
+      waitForStagedCopy(reply_, reply);
       (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(reply.event));
     }
   }

@@ -690,6 +690,8 @@ struct PendingReadReply {
   uint64_t reqId{0};
   /// Needed at teardown to wait on the right device's stream.
   int deviceId{-1};
+  std::chrono::steady_clock::time_point launchedAt{
+      std::chrono::steady_clock::now()};
 };
 
 /// One slab-backed get destination copy waiting for its CUDA event. The write
@@ -1139,6 +1141,16 @@ class TcpTransport : public Transport {
   // Terminal: never returns. Everything it reports comes from `copy`, so it
   // deliberately takes no H2dPollState -- the decision to die does not depend
   // on poll state.
+  static Status drainCudaStream(
+      const std::shared_ptr<CudaApi>& api,
+      int deviceId,
+      void* stream) noexcept;
+  [[noreturn]] static void abortOnUnquiescedCopy(
+      const char* operation,
+      int deviceId,
+      void* stream,
+      uint64_t reqId,
+      std::chrono::steady_clock::time_point launchedAt) noexcept;
   [[noreturn]] static void abortOnUnquiescedH2d(PendingH2d copy) noexcept;
   void drainPendingH2d();
   // Retires staged replies whose copy has finished, oldest first. Runs on the
@@ -1154,7 +1166,7 @@ class TcpTransport : public Transport {
   /// a copy was issued but the event never became a usable completion signal.
   static void waitForStagedCopy(
       const std::shared_ptr<TcpReplyState>& state,
-      int deviceId) noexcept;
+      const PendingReadReply& copy) noexcept;
 
   /// Waits for outstanding staging copies and drops the frames, then discards
   /// whatever was still deferred. Called during teardown, because the GPU may

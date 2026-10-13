@@ -433,7 +433,7 @@ TEST_F(
 
 TEST_F(
     TcpReceivePoolTest,
-    EventQueryFailureCompletesGetWhenStreamSynchronizationSucceeds) {
+    EventQueryFailureFailsGetAfterStreamSynchronizationSucceeds) {
   makeTransport();
   auto pool = createReceivePool();
   ASSERT_NE(pool, nullptr);
@@ -483,7 +483,10 @@ TEST_F(
 
   ASSERT_EQ(
       future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
-  EXPECT_TRUE(future.get().hasValue());
+  const auto status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+  EXPECT_EQ(status.error().message(), "test: event query failed");
   EXPECT_TRUE(
       std::all_of(destination.begin(), destination.end(), [](uint8_t b) {
         return b == uint8_t{0xCD};

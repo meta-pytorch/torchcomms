@@ -842,16 +842,19 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
 template <>
 std::future<Result<size_t>> TcpConn<SyncIO>::send(
     std::span<const uint8_t> data) {
+  std::shared_lock lock(syncIoMutex_);
   return make_ready_future(syncSend(data));
 }
 
 template <>
 std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::vector<uint8_t>& data) {
+  std::shared_lock lock(syncIoMutex_);
   return make_ready_future(syncRecv(data));
 }
 
 template <>
 std::future<Result<size_t>> TcpConn<SyncIO>::recv(std::span<uint8_t> buf) {
+  std::shared_lock lock(syncIoMutex_);
   return make_ready_future(syncRecv(buf));
 }
 
@@ -1235,11 +1238,21 @@ TcpConn<IOPolicy>::~TcpConn() {
 
 template <typename IOPolicy>
 void TcpConn<IOPolicy>::close() {
-  // Off-loop callers are fine for SyncIO and not for AsyncIO -- see the
-  // declaration in TcpController.h for why. Both current callers
-  // (TcpTransport::shutdown() on an application thread and the reader refusing
-  // a connection) hold SyncIO conns.
-  if (sock_ >= 0) {
+  if constexpr (std::same_as<IOPolicy, SyncIO>) {
+    std::lock_guard closeLock(closeMutex_);
+    {
+      std::shared_lock ioLock(syncIoMutex_);
+      if (sock_ < 0) {
+        return;
+      }
+      // Wake blocked I/O before waiting for exclusive socket ownership.
+      ::shutdown(sock_, SHUT_RDWR);
+    }
+    std::unique_lock ioLock(syncIoMutex_);
+    UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
+    ::close(sock_);
+    sock_ = -1;
+  } else if (sock_ >= 0) {
     UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
     ::shutdown(sock_, SHUT_RDWR);
     ::close(sock_);
@@ -1958,31 +1971,32 @@ std::future<std::unique_ptr<Conn>> AsyncConnect::connect(
       EPOLLOUT | EPOLLONESHOT,
       [&evb = evb_, fd = sock, promise = std::move(promise), config = config](
           uint32_t) mutable {
-        int err = 0;
-        socklen_t errLen = sizeof(err);
-        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen) < 0) {
-          UNIFLOW_LOG_ERROR(
-              "TcpClient: getsockopt SO_ERROR failed fd={}: {} ({})",
-              fd,
-              errno,
-              std::system_category().message(errno));
-          ::close(fd);
-          promise->set_value(nullptr);
-        } else if (err != 0) {
-          UNIFLOW_LOG_ERROR(
-              "TcpClient: async connect failed fd={}: {} ({})",
-              fd,
-              err,
-              std::system_category().message(err));
-          ::close(fd);
-          promise->set_value(nullptr);
-        } else {
-          auto conn = completeAsyncConnect(fd, config);
-          promise->set_value(std::move(conn));
-        }
-        // Clean up the ioEntries_ entry to release captured state.
-        // The fd may already be closed — unregisterFd tolerates this.
         evb.unregisterFd(fd);
+        evb.dispatch([fd,
+                      promise = std::move(promise),
+                      config = std::move(config)]() noexcept {
+          int err = 0;
+          socklen_t errLen = sizeof(err);
+          if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errLen) < 0) {
+            UNIFLOW_LOG_ERROR(
+                "TcpClient: getsockopt SO_ERROR failed fd={}: {} ({})",
+                fd,
+                errno,
+                std::system_category().message(errno));
+            ::close(fd);
+            promise->set_value(nullptr);
+          } else if (err != 0) {
+            UNIFLOW_LOG_ERROR(
+                "TcpClient: async connect failed fd={}: {} ({})",
+                fd,
+                err,
+                std::system_category().message(err));
+            ::close(fd);
+            promise->set_value(nullptr);
+          } else {
+            promise->set_value(completeAsyncConnect(fd, config));
+          }
+        });
       });
 
   return future;

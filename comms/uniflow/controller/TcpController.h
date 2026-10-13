@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <vector>
@@ -150,10 +151,8 @@ class TcpConn : public Conn {
   std::future<Result<size_t>> send(std::span<const uint8_t> data) override;
   std::future<Result<size_t>> recv(std::vector<uint8_t>& data) override;
   std::future<Result<size_t>> recv(std::span<uint8_t> buf) override;
-  /// Closes the socket. Safe from any thread for SyncIO, which is what every
-  /// caller holds today: a SyncIO fd is never registered with an EventBase, so
-  /// there is no deferred unregisterFd to drain first and no loop thread
-  /// reading sock_.
+  /// SyncIO: interrupts blocked I/O, waits for in-flight send/recv calls to
+  /// exit, then closes the socket. Safe from any thread.
   ///
   /// NOT safe off the loop thread for AsyncIO. That fd is registered with
   /// epoll, and the loop thread reads sock_ in trySend(), onRecvReady() and
@@ -165,7 +164,12 @@ class TcpConn : public Conn {
   void close() override;
 
   int getFd() const {
-    return sock_;
+    if constexpr (std::same_as<IOPolicy, SyncIO>) {
+      std::shared_lock lock(syncIoMutex_);
+      return sock_;
+    } else {
+      return sock_;
+    }
   }
 
  private:
@@ -204,6 +208,8 @@ class TcpConn : public Conn {
     requires std::same_as<IOPolicy, AsyncIO>;
 
   int sock_;
+  mutable std::shared_mutex syncIoMutex_;
+  std::mutex closeMutex_;
   [[no_unique_address]] IOPolicy io_;
 };
 

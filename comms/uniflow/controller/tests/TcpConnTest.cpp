@@ -5,6 +5,11 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <future>
+#include <latch>
 #include <thread>
 #include <vector>
 
@@ -88,7 +93,69 @@ class TcpConnTest : public ::testing::TestWithParam<AddrFamily> {
     acceptThread.join();
     return {std::move(clientConn), std::move(serverConn)};
   }
+
+  void checkLocalClose(bool useSpan) {
+    auto [clientConn, serverConn] = connectPair();
+    ASSERT_NE(clientConn, nullptr);
+    ASSERT_NE(serverConn, nullptr);
+    const auto* tcp = static_cast<const TcpConn<SyncIO>*>(serverConn.get());
+    ASSERT_GE(tcp->getFd(), 0);
+    std::latch started{1};
+    auto receive = std::async(std::launch::async, [&]() -> Result<size_t> {
+      if (useSpan) {
+        std::array<uint8_t, 64> buffer{};
+        started.count_down();
+        return serverConn->recv(std::span<uint8_t>(buffer)).get();
+      }
+      std::vector<uint8_t> buffer;
+      started.count_down();
+      return serverConn->recv(buffer).get();
+    });
+    started.wait();
+    EXPECT_EQ(
+        receive.wait_for(std::chrono::milliseconds(0)),
+        std::future_status::timeout);
+    auto firstClose =
+        std::async(std::launch::async, [&] { serverConn->close(); });
+    auto secondClose =
+        std::async(std::launch::async, [&] { serverConn->close(); });
+    const auto waitForAll = [&] {
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      const auto first = firstClose.wait_until(deadline);
+      const auto second = secondClose.wait_until(deadline);
+      const auto received = receive.wait_until(deadline);
+      return first == std::future_status::ready &&
+          second == std::future_status::ready &&
+          received == std::future_status::ready;
+    };
+    const auto closed = waitForAll();
+    EXPECT_TRUE(closed) << "Close and receive must finish after local shutdown";
+    if (!closed) {
+      clientConn->close();
+      if (!waitForAll()) {
+        ADD_FAILURE() << "Close or receive did not finish after peer shutdown";
+        std::abort();
+      }
+    }
+    firstClose.get();
+    secondClose.get();
+    EXPECT_TRUE(receive.get().hasError());
+    EXPECT_EQ(tcp->getFd(), -1);
+    serverConn->close();
+    EXPECT_EQ(tcp->getFd(), -1);
+    std::array<uint8_t, 1> data{};
+    EXPECT_TRUE(serverConn->send(data).get().hasError());
+  }
 };
+
+TEST_P(TcpConnTest, LocalCloseInterruptsVectorReceive) {
+  checkLocalClose(false);
+}
+
+TEST_P(TcpConnTest, LocalCloseInterruptsSpanReceive) {
+  checkLocalClose(true);
+}
 
 TEST_P(TcpConnTest, SendRecvBidirectional) {
   auto [clientConn, serverConn] = connectPair();

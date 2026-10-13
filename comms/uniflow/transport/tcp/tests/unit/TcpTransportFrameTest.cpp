@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstring>
 #include <future>
 #include <memory>
@@ -2290,6 +2291,114 @@ TEST_F(TcpTransportFrameTest, AFailedEventQueryWaitsBeforeDroppingTheReply) {
   EXPECT_GE(syncs.load(std::memory_order_acquire), 1)
       << "the reply was dropped without waiting for the copy, so the GPU may "
          "still be writing into the frame that was just freed";
+}
+
+class TcpCopyFailureDeathTest : public TcpTransportFrameTest {
+ protected:
+  void SetUp() override {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    TcpTransportFrameTest::SetUp();
+  }
+
+  void failStreamDrain() {
+    ON_CALL(*cudaApi_, streamSynchronize(::testing::_))
+        .WillByDefault(
+            ::testing::Return(Err(ErrCode::DriverError, "test: drain failed")));
+  }
+
+  void launchReadReply() {
+    registry_->add(kSegId + 300, segment_.data(), 64, MemoryType::VRAM, 0);
+    feed(makeFrame(TcpOp::ReadRequest, kSegId + 300, 0, 64, 0));
+  }
+};
+
+TEST_F(TcpCopyFailureDeathTest, PutLaunchFailureKeepsFramesUntilTermination) {
+  EXPECT_EXIT(
+      ([&] {
+        setConnected();
+        stubStagingCopies();
+        failCopyAfter(1);
+        failStreamDrain();
+        VramPut transfer(2 * slabPayloadCap());
+        (void)put(transfer.requests());
+      }()),
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+}
+
+TEST_F(TcpCopyFailureDeathTest, PutWaitFailureKeepsFramesUntilTermination) {
+  EXPECT_EXIT(
+      ([&] {
+        setConnected();
+        stubStagingCopies();
+        failEventSyncs();
+        failStreamDrain();
+        VramPut transfer(slabPayloadCap());
+        (void)put(transfer.requests());
+      }()),
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+}
+
+TEST_F(TcpCopyFailureDeathTest, ReadLaunchFailureKeepsFrameUntilTermination) {
+  EXPECT_EXIT(
+      ([&] {
+        setConnected();
+        stubStagingCopies();
+        ON_CALL(*cudaApi_, eventCreate(::testing::_))
+            .WillByDefault(
+                ::testing::Return(Err(ErrCode::DriverError, "test: no event")));
+        failStreamDrain();
+        launchReadReply();
+      }()),
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+}
+
+TEST_F(TcpCopyFailureDeathTest, ReadQueryFailureKeepsFrameUntilTermination) {
+  EXPECT_EXIT(
+      ([&] {
+        setConnected();
+        stubStagingCopies();
+        ON_CALL(*cudaApi_, eventQuery(::testing::_))
+            .WillByDefault(
+                ::testing::Return(
+                    Result<bool>(
+                        Err(ErrCode::DriverError, "test: query failed"))));
+        failStreamDrain();
+        launchReadReply();
+        evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
+      }()),
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+}
+
+TEST_F(TcpCopyFailureDeathTest, ShutdownKeepsReadFramesUntilTermination) {
+  EXPECT_EXIT(
+      ([&] {
+        setConnected();
+        stubStagingCopies();
+        launchReadReply();
+        failStreamDrain();
+        transport_->shutdown();
+      }()),
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+}
+
+TEST_F(TcpCopyFailureDeathTest, SynchronousSendKeepsStorageUntilTermination) {
+  EXPECT_EXIT(
+      ([&] {
+        setConnected();
+        stubStagingCopies();
+        failStreamDrain();
+        Segment segment(segment_.data(), 64, MemoryType::VRAM, 0);
+        RequestOptions options;
+        options.stream = nullptr;
+        (void)transport_->send(segment.span(size_t{0}, 64), options);
+      }()),
+      ::testing::KilledBySignal(SIGABRT),
+      "");
 }
 
 // unmatchedSends_ buffers every inbound Send that finds no posted recv. The
