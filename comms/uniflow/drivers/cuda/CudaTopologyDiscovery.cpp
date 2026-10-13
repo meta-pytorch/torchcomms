@@ -2,30 +2,29 @@
 
 #include "comms/uniflow/drivers/cuda/CudaTopologyDiscovery.h"
 
-#include "comms/uniflow/drivers/TopologyDiscovery.h"
-
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <ranges>
-#include <tuple>
-
-#if defined(__x86_64__)
-#include <cpuid.h>
-#endif
+#include <utility>
 
 #if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #endif
-#include "comms/uniflow/drivers/sysfs/SysfsApi.h"
+#include "comms/uniflow/drivers/cuda/CudaDeviceAdapter.h"
+#include "comms/uniflow/drivers/topology/NicTopologyDiscovery.h"
+#include "comms/uniflow/registry/PlatformRegistry.h"
 
 namespace uniflow {
 
 namespace {
 
-// --- sysfs helpers ---
+using topology::buildAncestorChain;
+using topology::extractBdf;
+using topology::NicDiscovery;
+using topology::PciDevice;
+using topology::readNumaNode;
+using topology::readPcieLinkInfo;
 
 /// Normalize a CUDA PCI bus ID string to lowercase (e.g. "0000:07:00.0").
 void normalizePciBusId(char* p, size_t len) {
@@ -37,193 +36,6 @@ void normalizePciBusId(char* p, size_t len) {
   }
 }
 
-/// Extract the BDF (last path component) from a sysfs device path.
-/// E.g. "/sys/devices/pci0000:00/0000:00:01.0/0000:07:00.0" → "0000:07:00.0"
-std::string_view extractBdf(std::string_view sysfsPath) {
-  auto pos = sysfsPath.rfind('/');
-  if (pos == std::string::npos) {
-    return sysfsPath;
-  }
-  return sysfsPath.substr(pos + 1);
-}
-
-/// Returns true if the path component looks like a PCI BDF
-/// (contains at least two colons, e.g. "0000:07:00.0").
-bool isPciBdf(std::string_view component) {
-  int colonCount = 0;
-  for (char c : component) {
-    colonCount += (c == ':') ? 1 : 0;
-    if (colonCount >= 2) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// Walk up one directory via SysfsApi and return the parent.
-/// Returns empty string if the parent is not a PCI device (no BDF component).
-std::string getPciParent(SysfsApi& sysfs, const std::string& sysfsPath) {
-  std::string parentPath = sysfsPath + "/..";
-  auto resolved = sysfs.resolvePath(parentPath);
-  if (!resolved) {
-    return {};
-  }
-  auto parent = std::move(resolved).value();
-  auto bdf = extractBdf(parent);
-  if (!isPciBdf(bdf)) {
-    return {};
-  }
-  return parent;
-}
-
-/// Build the PCI bridge ancestor chain by walking up from a sysfs device path.
-/// Returns a vector of resolved sysfs paths from the device up to the root
-/// complex. Depth-limited to 32 to avoid runaway loops.
-constexpr int kMaxAncestorChainDepth = 32;
-std::vector<std::string> buildAncestorChain(
-    SysfsApi& sysfs,
-    const std::string& sysfsPath) {
-  std::vector<std::string> chain;
-  chain.push_back(sysfsPath);
-  std::string current = sysfsPath;
-  for (int depth = 0; depth < kMaxAncestorChainDepth; ++depth) {
-    std::string parent = getPciParent(sysfs, current);
-    if (parent.empty()) {
-      break;
-    }
-    chain.push_back(parent);
-    current = parent;
-  }
-  return chain;
-}
-
-/// Read the NUMA node ID from a PCI device's sysfs path.
-int readNumaNode(SysfsApi& sysfs, std::string_view pciDevicePath) {
-  std::string numaPath = std::string(pciDevicePath) + "/numa_node";
-  std::string content = sysfs.readFile(numaPath);
-  if (content.empty()) {
-    return -1;
-  }
-  char* end = nullptr;
-  long val = std::strtol(content.c_str(), &end, 10);
-  if (end == content.c_str()) {
-    return -1; // No digits parsed.
-  }
-  return static_cast<int>(val);
-}
-
-/// Read the backing netdev name for an IB device by listing
-/// /sys/class/infiniband/<dev>/device/net/. Vendor-neutral (works for mlx5,
-/// bnxt_re, etc.). Returns the first entry, or empty if none is found.
-std::string readNetdevName(SysfsApi& sysfs, const std::string& ibdevPath) {
-  auto entries = sysfs.listDir(ibdevPath + "/device/net");
-  return entries.empty() ? std::string{} : entries.front();
-}
-
-/// Convert a sysfs max_link_speed string to Mbps per lane.
-/// Handles both old ("16 GT/s") and new ("16.0 GT/s PCIe") kernel formats.
-/// Encoding overhead is already baked into the returned value.
-/// Returns 0 if the string is unrecognized; defaults to Gen3 (6000) like NCCL.
-struct SpeedEntry {
-  const char* prefix;
-  uint32_t mbpsPerLane;
-};
-// clang-format off
-constexpr SpeedEntry kSpeedTable[] = {
-    {"2.5 GT/s",      1500},  // Gen1: 2.5 GT/s * 8/10 encoding = 2000 Mbps → effective ~1500
-    {"5 GT/s",         3000}, // Gen2
-    {"5.0 GT/s",       3000}, // Gen2 (new kernel format)
-    {"8 GT/s",         6000}, // Gen3 (128b/130b)
-    {"8.0 GT/s",       6000}, // Gen3
-    {"16 GT/s",       12000}, // Gen4
-    {"16.0 GT/s",     12000}, // Gen4
-    {"32 GT/s",       24000}, // Gen5
-    {"32.0 GT/s",     24000}, // Gen5
-    {"64 GT/s",       48000}, // Gen6
-    {"64.0 GT/s",     48000}, // Gen6
-};
-// clang-format on
-
-uint32_t parseLinkSpeed(SysfsApi& sysfs, const std::string& filePath) {
-  std::string content = sysfs.readFile(filePath);
-  if (content.empty()) {
-    return 0;
-  }
-  for (const auto& entry : kSpeedTable) {
-    if (content.find(entry.prefix) == 0) {
-      return entry.mbpsPerLane;
-    }
-  }
-  return 6000; // Default to Gen3 like NCCL (src/graph/topo.cc:449).
-}
-
-/// Parse max_link_width from a sysfs file, e.g. "16" → 16.
-uint16_t parseLinkWidth(SysfsApi& sysfs, const std::string& filePath) {
-  std::string content = sysfs.readFile(filePath);
-  if (content.empty()) {
-    return 0;
-  }
-  char* end = nullptr;
-  long val = std::strtol(content.c_str(), &end, 10);
-  if (end == content.c_str() || val <= 0) {
-    return 0;
-  }
-  return static_cast<uint16_t>(val);
-}
-
-/// Read PCIe link info for a device at the given sysfs path.
-/// Takes the minimum of the device's own capability and the upstream
-/// parent port's capability, matching NCCL's approach. A Gen5 GPU in
-/// a Gen4 slot will report Gen4 speed.
-PcieLinkInfo readPcieLinkInfo(
-    SysfsApi& sysfs,
-    const std::string& sysfsDevicePath) {
-  std::string devSpeedPath = sysfsDevicePath + "/max_link_speed";
-  std::string devWidthPath = sysfsDevicePath + "/max_link_width";
-  std::string portSpeedPath = sysfsDevicePath + "/../max_link_speed";
-  std::string portWidthPath = sysfsDevicePath + "/../max_link_width";
-
-  uint32_t devSpeed = parseLinkSpeed(sysfs, devSpeedPath);
-  uint32_t portSpeed = parseLinkSpeed(sysfs, portSpeedPath);
-  uint16_t devWidth = parseLinkWidth(sysfs, devWidthPath);
-  uint16_t portWidth = parseLinkWidth(sysfs, portWidthPath);
-
-  // Take the minimum of device and parent port (bottleneck).
-  // speed == 0 means "uninitialized" or "unknown".
-  auto minNonZero = [](auto a, auto b) {
-    if (a == 0) {
-      return b;
-    }
-    if (b == 0) {
-      return a;
-    }
-    return std::min(a, b);
-  };
-  uint32_t speed = minNonZero(devSpeed, portSpeed);
-  uint16_t width = minNonZero(devWidth, portWidth);
-
-  return PcieLinkInfo{
-      .speedMbpsPerLane = speed,
-      .width = width,
-  };
-}
-
-/// Count NUMA nodes by scanning /sys/devices/system/node/.
-constexpr std::string_view kNodePrefix = "node";
-int discoverNumaNodeCount(SysfsApi& sysfs) {
-  auto entries = sysfs.listDir("/sys/devices/system/node", kNodePrefix);
-  int count = 0;
-  for (const auto& name : entries) {
-    if (name.size() > kNodePrefix.size() &&
-        std::isdigit(static_cast<unsigned char>(name[kNodePrefix.size()]))) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-// --- Discovery data ---
-
 /// Temporary GPU data gathered during discovery, before graph construction.
 struct GpuDiscovery {
   TopoNode::GpuData data; // Goes into the node
@@ -232,64 +44,6 @@ struct GpuDiscovery {
   PcieLinkInfo linkInfo;
   int nvSwitchLinkCount{0};
   uint32_t c2cBwMBps{0}; // Total C2C bandwidth (activeCount * perLinkBw)
-};
-
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
-/// IB width multipliers indexed by bit position in ibv_port_attr.active_width.
-/// Bit 0 = 1x, bit 1 = 4x, bit 2 = 8x, bit 3 = 12x, bit 4 = 2x.
-// clang-format off
-constexpr int kIbvWidths[] = {1, 4, 8, 12, 2};
-// clang-format on
-
-/// IB per-lane speed (Mbps) indexed by bit position in active_speed.
-/// Bit 0 = SDR, 1 = DDR, 2 = QDR, 3 = QDR, 4 = FDR, 5 = EDR,
-/// 6 = HDR, 7 = NDR.
-// clang-format off
-constexpr int kIbvSpeeds[] = {
-    2500,   // SDR
-    5000,   // DDR
-    10000,  // QDR
-    10000,  // QDR
-    14000,  // FDR
-    25000,  // EDR
-    50000,  // HDR
-    100000, // NDR
-};
-// clang-format on
-
-/// Return the index of the lowest set bit, or -1 if none.
-int firstBitSet(uint32_t v) {
-  for (int i = 0; v != 0; ++i, v >>= 1) {
-    if (v & 1) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-/// Compute RDMA port speed in Mbps from ibv_port_attr bitmask fields.
-uint32_t ibPortSpeedMbps(uint32_t activeSpeed, uint32_t activeWidth) {
-  int si = firstBitSet(activeSpeed);
-  int wi = firstBitSet(activeWidth);
-  if (si < 0 || wi < 0) {
-    return 0;
-  }
-  int speed =
-      (si < static_cast<int>(std::size(kIbvSpeeds))) ? kIbvSpeeds[si] : 0;
-  int width =
-      (wi < static_cast<int>(std::size(kIbvWidths))) ? kIbvWidths[wi] : 0;
-  return static_cast<uint32_t>(speed * width);
-}
-#endif
-
-/// Temporary NIC data gathered during discovery, before graph construction.
-/// One entry per physical device, with all active ports collected.
-struct NicDiscovery {
-  std::string name; // IB device name (e.g. "mlx5_0")
-  TopoNode::NicData data; // Goes into the node
-  std::string sysfsPath;
-  std::vector<std::string> ancestorChain;
-  PcieLinkInfo linkInfo;
 };
 
 /// NVSwitch PCI device class (matches NCCL's kvDictPciClass in topo.cc).
@@ -361,6 +115,9 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
   auto count = cudaApi.getDeviceCount();
   CHECK_RETURN(count);
   int gpuCount = count.value();
+  if (gpuCount == 0) {
+    return std::vector<GpuDiscovery>{};
+  }
 
   constexpr int kPciBusIdLen = 64;
   char pciBusIdBuf[kPciBusIdLen];
@@ -517,202 +274,6 @@ discoverGpus(CudaApi& cudaApi, NvmlApi& nvmlApi, SysfsApi& sysfs) {
   return gpus;
 }
 
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
-/// Check whether an ibdev sysfs path belongs to a virtual (software) RDMA
-/// device such as RXE (Soft-RoCE).  These live under
-/// /sys/devices/virtual/ and have no PCI backing.
-bool isVirtualRdmaDevice(SysfsApi& sysfs, const std::string& ibdevPath) {
-  auto resolved = sysfs.resolvePath(ibdevPath);
-  if (!resolved) {
-    return false;
-  }
-  return resolved.value().find("/devices/virtual/") != std::string::npos;
-}
-
-constexpr size_t kDefaultRxeSpeed = 10000; // 10 Gbps
-
-/// Discover NICs via IbvApi: enumerate IB devices and active ports.
-/// Returns empty vector if ibverbs is not available.
-Result<std::vector<NicDiscovery>> discoverNics(
-    IbvApi& ibvApi,
-    SysfsApi& sysfs) {
-  std::vector<NicDiscovery> nics;
-  CHECK_EXPR(ibvApi.init());
-
-  int numDevices = 0;
-  auto devListResult = ibvApi.getDeviceList(&numDevices);
-  CHECK_RETURN(devListResult);
-
-  auto devListDeleter = [&ibvApi](ibv_device** ptr) {
-    if (ptr) {
-      ibvApi.freeDeviceList(ptr);
-    }
-  };
-  std::unique_ptr<ibv_device*[], decltype(devListDeleter)> devListGuard(
-      devListResult.value(), devListDeleter);
-  ibv_device** devList = devListGuard.get();
-  if (devList == nullptr) {
-    return nics;
-  }
-
-  for (int i = 0; i < numDevices; ++i) {
-    ibv_device* dev = devList[i];
-    if (dev == nullptr) {
-      continue;
-    }
-
-    auto name = ibvApi.getDeviceName(dev);
-    if (!name) {
-      continue;
-    }
-    std::string devName = name.value();
-
-    // Resolve PCI device path from ibdev sysfs path.
-    std::string ibdevPath = dev->ibdev_path;
-
-    bool isVirtual = isVirtualRdmaDevice(sysfs, ibdevPath);
-    std::string pciDevicePath;
-
-    if (!isVirtual) {
-      auto resolved = sysfs.resolvePath(ibdevPath + "/device");
-      if (!resolved) {
-        continue;
-      }
-      pciDevicePath = std::move(resolved).value();
-    }
-
-    // Open device and query ports.
-    auto ctxResult = ibvApi.openDevice(dev);
-    if (!ctxResult) {
-      continue;
-    }
-    ibv_context* ctx = ctxResult.value();
-
-    // Collect active ports and RDMA port speed for this device.
-    int activePort = -1;
-    uint32_t portSpeedMbps = 0;
-    ibv_device_attr devAttr{};
-    if (ibvApi.queryDevice(ctx, &devAttr)) {
-      for (uint8_t port = 1; port <= devAttr.phys_port_cnt; ++port) {
-        ibv_port_attr portAttr{};
-        if (ibvApi.queryPort(ctx, port, &portAttr) &&
-            portAttr.state == IBV_PORT_ACTIVE) {
-          auto speed =
-              ibPortSpeedMbps(portAttr.active_speed, portAttr.active_width);
-          if (activePort == -1 || speed > portSpeedMbps) {
-            activePort = port;
-            portSpeedMbps =
-                ibPortSpeedMbps(portAttr.active_speed, portAttr.active_width);
-          }
-        }
-      }
-    }
-
-    if (activePort != -1) {
-      if (isVirtual) {
-        if (portSpeedMbps == 0) {
-          portSpeedMbps = kDefaultRxeSpeed;
-        }
-        // Virtual devices have no PCI topology. Use NUMA 0, empty ancestor
-        // chain, and a default port speed if the ibverbs query returned 0.
-        nics.push_back({
-            .name = std::move(devName),
-            .data =
-                TopoNode::NicData{
-                    .bdf = "virtual",
-                    .numaNode = 0,
-                    .port = activePort,
-                    .portSpeedMbps = portSpeedMbps,
-                    .netdevName = readNetdevName(sysfs, ibdevPath),
-                },
-            .sysfsPath = ibdevPath,
-            .ancestorChain = {},
-            .linkInfo = {},
-        });
-      } else {
-        nics.push_back({
-            .name = std::move(devName),
-            .data =
-                TopoNode::NicData{
-                    .bdf = std::string(extractBdf(pciDevicePath)),
-                    .numaNode = readNumaNode(sysfs, pciDevicePath),
-                    .port = activePort,
-                    .portSpeedMbps = portSpeedMbps,
-                    .netdevName = readNetdevName(sysfs, ibdevPath),
-                },
-            .sysfsPath = pciDevicePath,
-            .ancestorChain = buildAncestorChain(sysfs, pciDevicePath),
-            .linkInfo = readPcieLinkInfo(sysfs, pciDevicePath),
-        });
-      }
-    }
-
-    ibvApi.closeDevice(ctx);
-  }
-  return nics;
-}
-#endif
-
-/// Unified PCI device info for PCIe edge construction.
-struct PciDevice {
-  int nodeId;
-  int numaNode;
-  std::vector<std::string> ancestorChain;
-  uint32_t portSpeedMBps{0}; // RDMA port speed cap (MB/s), 0 = no cap (GPUs)
-};
-
-/// Find the nearest common ancestor between two PCI ancestor chains.
-/// Returns {indexInA, indexInB} or {-1, -1} if none found.
-Result<std::pair<int, int>> findCommonAncestor(
-    const std::vector<std::string>& chainA,
-    const std::vector<std::string>& chainB) {
-  for (size_t a = 0; a < chainA.size(); ++a) {
-    for (size_t b = 0; b < chainB.size(); ++b) {
-      if (chainA[a] == chainB[b]) {
-        return std::make_pair(a, b);
-      }
-    }
-  }
-  return ErrCode::NotConnected;
-}
-
-/// Compute the minimum non-zero PCIe bandwidth (MB/s) over a range of
-/// sysfs paths. Returns UINT32_MAX if no positive bandwidth is found.
-template <typename Range>
-uint32_t pcieBottleneckMBps(SysfsApi& sysfs, Range&& paths) {
-  auto bws = std::forward<Range>(paths) |
-      std::views::transform([&sysfs](const auto& p) {
-               return readPcieLinkInfo(sysfs, p).bandwidthMBps();
-             }) |
-      std::views::filter([](uint32_t bw) { return bw > 0; });
-  auto it = std::ranges::min_element(bws);
-  return (it == bws.end()) ? UINT32_MAX : *it;
-}
-
-/// Compute bottleneck bandwidth (MB/s) along a PCI ancestor chain.
-uint32_t computeChainBottleneckMBps(
-    SysfsApi& sysfs,
-    const std::vector<std::string>& chain) {
-  uint32_t minBw = pcieBottleneckMBps(sysfs, chain);
-  return (minBw == UINT32_MAX) ? 0 : minBw;
-}
-
-/// Compute bottleneck bandwidth (MB/s) between two devices at their
-/// common ancestor in the PCI hierarchy.
-uint32_t computePairBottleneckMBps(
-    SysfsApi& sysfs,
-    const std::vector<std::string>& chainA,
-    const std::vector<std::string>& chainB,
-    int commonIdxA,
-    int commonIdxB) {
-  uint32_t bwA =
-      pcieBottleneckMBps(sysfs, chainA | std::views::take(commonIdxA + 1));
-  uint32_t bwB =
-      pcieBottleneckMBps(sysfs, chainB | std::views::take(commonIdxB + 1));
-  uint32_t minBw = std::min(bwA, bwB);
-  return (minBw == UINT32_MAX) ? 0 : minBw;
-}
-
 /// Per-link NVLink effective bandwidth in MB/s based on GPU SM version.
 /// Values reference NCCL's effective bandwidth (nccl topo.h).
 /// Ordered highest SM first. First match wins.
@@ -741,79 +302,6 @@ uint32_t nvlinkPerLinkBwMBps(int sm) {
   return 0;
 }
 
-/// Inter-CPU bandwidth constants in GB/s, matching NCCL (topo.h).
-// clang-format off
-[[maybe_unused]] constexpr uint32_t kBwP9MBps      = 32000;  // IBM POWER9
-[[maybe_unused]] constexpr uint32_t kBwArmMBps     =  6000;  // ARM
-constexpr uint32_t kBwAmdMBps     = 16000;  // AMD (all models)
-constexpr uint32_t kBwBdwQpiMBps  =  6000;  // Intel Broadwell and older
-constexpr uint32_t kBwSklQpiMBps  = 10000;  // Intel Skylake
-constexpr uint32_t kBwSrpQpiMBps  = 22000;  // Intel Sapphire Rapids
-constexpr uint32_t kBwErpQpiMBps  = 40000;  // Intel Emerald Rapids
-constexpr uint32_t kBwDefaultMBps = 12000;  // Fallback
-// clang-format on
-
-/// Detect inter-CPU bandwidth based on CPU architecture, vendor, and model.
-/// Uses CPUID on x86_64 (same approach as NCCL xml.cc / topo.cc).
-uint32_t detectInterCpuBwMBps() {
-#if defined(__aarch64__)
-  return kBwArmMBps;
-#elif defined(__powerpc64__)
-  return kBwP9MBps;
-#elif defined(__x86_64__)
-  // CPUID leaf 0: vendor string.
-  uint32_t eax, ebx, ecx, edx;
-  __cpuid(0, eax, ebx, ecx, edx);
-
-  // Vendor string is EBX + EDX + ECX (12 bytes).
-  char vendor[13];
-  std::memcpy(vendor, &ebx, 4);
-  std::memcpy(vendor + 4, &edx, 4);
-  std::memcpy(vendor + 8, &ecx, 4);
-  vendor[12] = '\0';
-
-  if (std::strcmp(vendor, "AuthenticAMD") == 0) {
-    return kBwAmdMBps;
-  }
-
-  if (std::strcmp(vendor, "GenuineIntel") == 0) {
-    // CPUID leaf 1: family/model.
-    uint32_t eax1;
-    __cpuid(1, eax1, ebx, ecx, edx);
-    int familyId = ((eax1 >> 8) & 0xF) + ((eax1 >> 20) & 0xFF);
-    int modelId = ((eax1 >> 4) & 0xF) + (((eax1 >> 16) & 0xF) << 4);
-
-    // Model IDs are only valid for family 6 processors.
-    if (familyId == 6) {
-      // Ordered highest model first. First match wins.
-      struct ModelBwEntry {
-        int minModel;
-        uint32_t bw;
-      };
-      // clang-format off
-      constexpr ModelBwEntry kIntelTable[] = {
-          {0xCF, kBwErpQpiMBps}, // Emerald Rapids
-          {0x8F, kBwSrpQpiMBps}, // Sapphire Rapids
-          {0x55, kBwSklQpiMBps}, // Skylake
-      };
-      // clang-format on
-      for (const auto& [minModel, bw] : kIntelTable) {
-        if (modelId >= minModel) {
-          return bw;
-        }
-      }
-    }
-    return kBwBdwQpiMBps; // Broadwell and older
-  }
-
-  return kBwDefaultMBps;
-#else
-  return kBwDefaultMBps;
-#endif
-}
-
-// --- Graph construction ---
-
 /// All data probed from hardware before the graph is built.
 struct DiscoveryData {
   std::vector<GpuDiscovery> gpus;
@@ -832,27 +320,14 @@ Status discoverHardware(
     data.gpus = std::move(gpuResult).value();
   }
 
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
-  if (ibvApi != nullptr) {
-    auto nicResult = discoverNics(*ibvApi, sysfs);
-    if (nicResult) {
-      data.nics = std::move(nicResult).value();
-    }
-  }
-#endif
-
-  data.numaCount = discoverNumaNodeCount(sysfs);
-  if (data.numaCount == 0) {
-    data.numaCount = 1;
-  }
+  auto nicData = topology::discoverNicHardware(ibvApi, sysfs);
+  data.nics = std::move(nicData.nics);
+  data.numaCount = nicData.numaCount;
   return Ok();
 }
 
 void buildNodes(Topology& topo, const DiscoveryData& data) {
   int gpuCount = data.gpus.size();
-  int nicCount = data.nics.size();
-  int numaCount = data.numaCount;
-
   for (int i = 0; i < gpuCount; ++i) {
     int nodeId = topo.addNode({
         .type = NodeType::GPU,
@@ -861,24 +336,7 @@ void buildNodes(Topology& topo, const DiscoveryData& data) {
     });
     topo.registerGpuNode(i, nodeId);
   }
-
-  for (int i = 0; i < numaCount; ++i) {
-    int nodeId = topo.addNode({
-        .type = NodeType::CPU,
-        .name = "cpu:" + std::to_string(i),
-        .data = TopoNode::CpuData{.numaId = i},
-    });
-    topo.registerCpuNode(i, nodeId);
-  }
-
-  for (int i = 0; i < nicCount; ++i) {
-    int nodeId = topo.addNode({
-        .type = NodeType::NIC,
-        .name = data.nics[i].name,
-        .data = data.nics[i].data,
-    });
-    topo.registerNicNode(i, nodeId);
-  }
+  topology::addNicNodes(topo, data.nics, data.numaCount);
 }
 
 void buildP2pMatrix(Topology& topo, CudaApi& cudaApi) {
@@ -915,35 +373,8 @@ void buildEdges(Topology& topo, SysfsApi& sysfs, const DiscoveryData& data) {
         .ancestorChain = data.gpus[i].ancestorChain,
     });
   }
-  for (int i = 0; i < nicCount; ++i) {
-    // Convert RDMA port speed from Mbps to MB/s for bandwidth comparison.
-    uint32_t portMBps = data.nics[i].data.portSpeedMbps / 8;
-    pciDevices.push_back({
-        .nodeId = topo.getNicNode(i).id,
-        .numaNode = data.nics[i].data.numaNode,
-        .ancestorChain = data.nics[i].ancestorChain,
-        .portSpeedMBps = portMBps,
-    });
-  }
-
-  // Connect each PCI device to its CPU node.
-  // For NICs, cap bandwidth with the RDMA port speed (like NCCL's LINK_NET).
-  // For virtual devices (empty ancestor chain), use port speed directly.
-  for (const auto& dev : pciDevices) {
-    int numa =
-        (dev.numaNode >= 0 && dev.numaNode < numaCount) ? dev.numaNode : 0;
-    uint32_t bw;
-    if (dev.ancestorChain.empty()) {
-      // Virtual device — no PCIe topology; use port speed as bandwidth.
-      bw = dev.portSpeedMBps;
-    } else {
-      bw = computeChainBottleneckMBps(sysfs, dev.ancestorChain);
-      if (dev.portSpeedMBps > 0) {
-        bw = std::min(bw, dev.portSpeedMBps);
-      }
-    }
-    topo.addLink(dev.nodeId, topo.getCpuNode(numa).id, PathType::PHB, bw);
-  }
+  topology::appendNicPciDevices(pciDevices, topo, data.nics);
+  topology::addPciCpuEdges(topo, sysfs, pciDevices, numaCount);
 
   // C2C edges (GPU → CPU for Grace Hopper systems).
   for (int i = 0; i < gpuCount; ++i) {
@@ -961,35 +392,7 @@ void buildEdges(Topology& topo, SysfsApi& sysfs, const DiscoveryData& data) {
         data.gpus[i].c2cBwMBps);
   }
 
-  // Direct PCIe edges between devices sharing a PCIe switch.
-  for (size_t i = 0; i < pciDevices.size(); ++i) {
-    for (size_t j = i + 1; j < pciDevices.size(); ++j) {
-      auto ancestor = findCommonAncestor(
-          pciDevices[i].ancestorChain, pciDevices[j].ancestorChain);
-      if (!ancestor) {
-        continue;
-      }
-      auto [idxA, idxB] = ancestor.value();
-      // PIX = at most one PCIe switch between each device and the common
-      // ancestor. One switch = device → downstream port → upstream port,
-      // so idxA/idxB <= 2 means at most one switch per side.
-      // PXB = either side traverses more than one switch (idx > 2), or
-      // the common ancestor is the root port of exactly one chain.
-      bool isRootA =
-          idxA == static_cast<int>(pciDevices[i].ancestorChain.size()) - 1;
-      bool isRootB =
-          idxB == static_cast<int>(pciDevices[j].ancestorChain.size()) - 1;
-      bool multiSwitch = idxA > 2 || idxB > 2 || (isRootA != isRootB);
-      PathType contrib = multiSwitch ? PathType::PXB : PathType::PIX;
-      uint32_t bw = computePairBottleneckMBps(
-          sysfs,
-          pciDevices[i].ancestorChain,
-          pciDevices[j].ancestorChain,
-          idxA,
-          idxB);
-      topo.addLink(pciDevices[i].nodeId, pciDevices[j].nodeId, contrib, bw);
-    }
-  }
+  topology::addPciPeerEdges(topo, sysfs, pciDevices);
 
   // NVLink edges (direct GPU → GPU for NVSwitch-connected pairs).
   for (int i = 0; i < gpuCount; ++i) {
@@ -1012,17 +415,7 @@ void buildEdges(Topology& topo, SysfsApi& sysfs, const DiscoveryData& data) {
     }
   }
 
-  // Inter-NUMA edges (CPU → CPU).
-  uint32_t interCpuBw = detectInterCpuBwMBps();
-  for (int i = 0; i < numaCount; ++i) {
-    for (int j = i + 1; j < numaCount; ++j) {
-      topo.addLink(
-          topo.getCpuNode(i).id,
-          topo.getCpuNode(j).id,
-          PathType::SYS,
-          interCpuBw);
-    }
-  }
+  topology::addInterCpuEdges(topo, numaCount);
 }
 
 } // namespace
@@ -1062,6 +455,30 @@ Status CudaTopologyDiscovery::discover(Topology& topology) {
 
 std::unique_ptr<TopologyDiscoveryBackend> createDefaultDiscoveryBackend() {
   return std::make_unique<CudaTopologyDiscovery>();
+}
+
+#ifdef __HIP_PLATFORM_AMD__
+constexpr const char* kBuiltinGpuPlatform = "amd";
+#else
+constexpr const char* kBuiltinGpuPlatform = "nvidia";
+#endif
+
+UNIFLOW_REGISTER_PLATFORM(
+    builtinCudaPlatform,
+    PlatformRegistration{
+        .name = kBuiltinGpuPlatform,
+        .createDeviceAdapter = []() -> Result<std::shared_ptr<DeviceAdapter>> {
+          return std::make_shared<CudaDeviceAdapter>(
+              std::make_shared<CudaApi>(), std::make_shared<CudaDriverApi>());
+        },
+        .createDiscoveryBackend =
+            []() -> Result<std::unique_ptr<TopologyDiscoveryBackend>> {
+          return std::make_unique<CudaTopologyDiscovery>();
+        },
+    });
+
+void ensureDefaultPlatformRegistration() {
+  (void)builtinCudaPlatform;
 }
 
 } // namespace uniflow

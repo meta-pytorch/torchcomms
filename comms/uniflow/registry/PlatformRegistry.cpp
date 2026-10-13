@@ -92,6 +92,24 @@ PlatformRegistry::createDiscoveryBackend(std::string_view name) const {
   return result;
 }
 
+Result<DevicePointerResolver> PlatformRegistry::devicePointerResolver(
+    std::string_view name) const {
+  auto entry = find(name);
+  if (entry && entry->resolveDevicePointer) {
+    return entry->resolveDevicePointer;
+  }
+  if (name == "nvidia" || name == "amd") {
+    return DevicePointerResolver([](const void* ptr) noexcept {
+      return reinterpret_cast<uint64_t>(ptr);
+    });
+  }
+  return Err(
+      ErrCode::NotImplemented,
+      "GPU platform '" + std::string(name) +
+          "' has no registered device-pointer metadata policy; register its "
+          "platform extension before importing remote device memory");
+}
+
 PlatformRegistry& platformRegistry() {
   static PlatformRegistry registry;
   return registry;

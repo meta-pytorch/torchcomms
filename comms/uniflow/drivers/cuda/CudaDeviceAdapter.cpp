@@ -111,6 +111,19 @@ struct UnpublishedDmaBuff {
   }
 };
 
+// NOLINTNEXTLINE(cppcoreguidelines-special-member-functions)
+struct UnpublishedCudaHost {
+  CudaApi& api;
+  int deviceId{};
+  void* ptr{nullptr};
+
+  ~UnpublishedCudaHost() noexcept {
+    if (ptr) {
+      cleanupOnDevice(api, deviceId, [&] { return api.hostFree(ptr); });
+    }
+  }
+};
+
 class CudaDeviceCompletion : public DeviceCompletion {
  public:
   CudaDeviceCompletion(std::shared_ptr<CudaApi> api, int deviceId)
@@ -280,16 +293,52 @@ Result<void*> CudaDeviceAdapter::hostGetDevicePointer(void* hostPtr) {
   return cudaApi_->hostGetDevicePointer(hostPtr);
 }
 
+Result<void*> CudaDeviceAdapter::pinnedHostAlloc(int deviceId, size_t size) {
+  if (!cudaApi_) {
+    return Err(
+        ErrCode::NotImplemented, "device pinned host storage unavailable");
+  }
+  if (size == 0) {
+    return Err(ErrCode::InvalidArgument, "pinnedHostAlloc: size must be > 0");
+  }
+  UnpublishedCudaHost out{*cudaApi_, deviceId};
+  CHECK_EXPR(onDevice(*cudaApi_, deviceId, [&]() -> Status {
+    auto result = pinnedHostAlloc(size);
+    CHECK_RETURN(result);
+    out.ptr = result.value();
+    if (!out.ptr) {
+      return Err(
+          ErrCode::DriverError, "GPU host allocation returned no storage");
+    }
+    return Ok();
+  }));
+  return std::exchange(out.ptr, nullptr);
+}
+
+Status CudaDeviceAdapter::pinnedHostFree(int deviceId, void* ptr) {
+  if (!cudaApi_) {
+    return Err(
+        ErrCode::NotImplemented, "device pinned host storage unavailable");
+  }
+  return onDevice(*cudaApi_, deviceId, [&] { return pinnedHostFree(ptr); });
+}
+
+Result<void*> CudaDeviceAdapter::hostGetDevicePointer(
+    int deviceId,
+    void* hostPtr) {
+  if (!cudaApi_) {
+    return Err(ErrCode::NotImplemented, "device host mapping unavailable");
+  }
+  return onDevice(
+      *cudaApi_, deviceId, [&] { return hostGetDevicePointer(hostPtr); });
+}
+
 Result<bool> CudaDeviceAdapter::isDmaBuffSupported(int deviceId) {
   if (!cudaDriverApi_) {
     return Err(
         ErrCode::DriverError, "CudaDeviceAdapter: CudaDriverApi unavailable");
   }
   return cudaDriverApi_->isDmaBufSupported(deviceId);
-}
-
-bool isNvlinkAvailable() {
-  return true;
 }
 
 Result<DmaBuff> CudaDeviceAdapter::exportDmaBuff(
@@ -355,19 +404,6 @@ Status CudaDeviceAdapter::closeDmaBuff(DmaBuff& buff) {
     buff.fd = -1;
   }
   return Ok();
-}
-
-std::shared_ptr<DeviceAdapter> createDeviceAdapter(
-    std::shared_ptr<CudaApi> cudaApi,
-    std::shared_ptr<CudaDriverApi> cudaDriverApi) {
-  if (!cudaApi) {
-    cudaApi = std::make_shared<CudaApi>();
-  }
-  if (!cudaDriverApi) {
-    cudaDriverApi = std::make_shared<CudaDriverApi>();
-  }
-  return std::make_shared<CudaDeviceAdapter>(
-      std::move(cudaApi), std::move(cudaDriverApi));
 }
 
 } // namespace uniflow
