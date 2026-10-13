@@ -99,13 +99,14 @@ destructor ever runs on `ncclComm`.
 **Destroy may not drop the last reference.** CommsMonitor snapshots
 `newCollTrace` in `registerComm` and `deregisterComm` only marks it `DEAD`, so
 with `NCCL_COMMSMONITOR_ENABLE` (on by default) `~CollTrace` and the worker join
-run at process exit. Do not assume the worker has stopped once
+run at process exit, or when a new comm reuses the address (on the registering
+thread, after the registry lock is released). Do not assume the worker has stopped once
 `newCollTraceDestroy` returns. Known gaps:
 
-- **Address reuse (seen on v2.32)**: CommsMonitor never erases entries and
-  `registerCommImpl` uses `emplace`, so a new comm at a destroyed comm's address
-  is not registered and `ncclCommDump` / `ncclCommDumpAll` return the dead
-  comm's snapshot. A follow-up replaces stale entries on address reuse.
+- **Address reuse (seen on v2.32)**: CommsMonitor keys entries on the comm
+  pointer and never erases them, so `registerCommImpl` must replace a stale
+  entry when a new comm lands on a destroyed comm's address; otherwise dumps
+  return the dead comm's snapshot. See `commsmonitor_commdump_baseline.md`.
 - (both trees) The watchdog's captured `comm` can be freed while a traced
   collective is in flight; the worker can then call `ncclCommGetAsyncError` on
   freed memory.
@@ -238,14 +239,14 @@ own `ncclGroupEndInternal()`, which runs `ncclLaunchPrepare` and
   `new_colltrace_dist_nolocal` (with CTRAN and the v2.32 RMA window API), and
   `comms_monitor_dist_nolocal` (its two dump cases now drop the always-present
   `"GlobalInfo"` entry; they failed identically on v2.30).
-- Excluded: `comms_monitor_ut` and `comm_dump_test` until the address-reuse
-  follow-up (item 3; `DumpAfterSendRecv` sees 0 records in-suite, passes alone);
-  `proxytrace_dist_fastinit` and `mappertrace_dist_nolocal` (need two or more
-  nodes); the `colltrace_watchdog` tests. Those call `ncclx::setGlobalHint`,
-  which v2.32's `nccl.h` does not declare yet, and even with it they do not link
-  on v2.32: their MCCL test deps bring in the third-party DOCA GPUNetIO library,
-  whose symbols collide with the copy v2.32 vendors under
-  `src/transport/net_ib/gdaki/doca-gpunetio`.
+- Also enabled: `comms_monitor_ut` and `comm_dump_test`, once CommsMonitor
+  replaces stale entries on address reuse.
+- Excluded: `proxytrace_dist_fastinit` and `mappertrace_dist_nolocal` (need two
+  or more nodes), and the `colltrace_watchdog` tests. Those call
+  `ncclx::setGlobalHint`, which v2.32's `nccl.h` does not declare yet, and even
+  with it they do not link on v2.32: their MCCL test deps bring in the
+  third-party DOCA GPUNetIO library, whose symbols collide with the copy v2.32
+  vendors under `src/transport/net_ib/gdaki/doca-gpunetio`.
 
 ## What to re-check at the next rebase
 
