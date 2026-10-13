@@ -10,9 +10,10 @@ class ErrCode:
     NotConnected: ErrCode
     TransportError: ErrCode
     ConnectionFailed: ErrCode
-    MemoryRegistrationFailed: ErrCode
+    MemoryRegistrationError: ErrCode
     Timeout: ErrCode
     ResourceExhausted: ErrCode
+    Aborted: ErrCode
     @property
     def value(self) -> int: ...
     @property

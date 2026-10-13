@@ -2,6 +2,7 @@
 
 #include <getopt.h>
 
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -67,6 +68,7 @@ struct CliOptions {
   std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
   bool dataDirect{false};
+  int requestTimeoutMs{0};
   bool noVerify{false};
   bool tcpAsyncH2d{true};
   std::vector<int> numStreams{1, 2, 4, 8};
@@ -228,6 +230,8 @@ void printUsage(const char* prog) {
       << "  --cuda-devices <list>  Comma-separated GPU indices for single-process multi-GPU (overrides --cuda-device)\n"
       << "  --gpu-nics <groups>    Per-GPU NIC map for multi-GPU: ';'-separated groups of comma-separated NICs, one per --cuda-devices entry\n"
       << "  --data-direct          Register GPU memory over the mlx5 Data Direct path (default: off)\n"
+      << "  --request-timeout-ms <ms>  RDMA requestTimeout applied to every put/get\n"
+      << "                         (default: 0 = off)\n"
       << "  --measurement-barrier-dir <path>  Host-local dir shared by the active\n"
       << "                         instances, used to line up their timed loops. Without\n"
       << "                         it their windows stagger and summed bandwidth is\n"
@@ -283,6 +287,7 @@ CliOptions parseArgs(int argc, char** argv) {
       {"measurement-barrier-dir", required_argument, nullptr, 280},
       {"measurement-barrier-ranks", required_argument, nullptr, 281},
       {"measurement-barrier-index", required_argument, nullptr, 282},
+      {"request-timeout-ms", required_argument, nullptr, 283},
       {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
@@ -413,6 +418,15 @@ CliOptions parseArgs(int argc, char** argv) {
         } catch (const std::exception&) {
           std::cerr << "Invalid value for --measurement-barrier-index: '"
                     << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 283:
+        try {
+          opts.requestTimeoutMs = std::stoi(optarg);
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --request-timeout-ms: '" << optarg
+                    << "'\n";
           std::exit(1);
         }
         break;
@@ -643,6 +657,10 @@ int main(int argc, char** argv) {
   config.loopCount = opts.loopCount;
   config.bidirectional = opts.bidirectional;
   config.dataDirect = opts.dataDirect;
+  if (opts.requestTimeoutMs != 0) {
+    config.rdmaRequestTimeout =
+        std::chrono::milliseconds{opts.requestTimeoutMs};
+  }
   config.verify = !opts.noVerify;
   config.barrierDir = opts.barrierDir;
   config.barrierRanks = opts.barrierRanks;

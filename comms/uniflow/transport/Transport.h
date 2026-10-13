@@ -24,7 +24,29 @@ struct RequestOptions {
   /// Optional GPU stream handle (e.g., cudaStream_t) for backends that
   /// support GPU-async transfers. Non-GPU backends ignore it.
   std::optional<void*> stream = std::nullopt;
-  /// Optional per-request timeout. Overrides the transport-level default.
+  /// Optional per-request timeout. RDMA ignores it unless
+  /// RdmaTransportConfig::requestTimeout is set. When it is set, every check
+  /// below runs on the caller thread, before dispatch:
+  /// - nullopt or 0ms inherits requestTimeout; any other value that differs
+  ///   from requestTimeout returns InvalidArgument.
+  /// - Copy send()/recv() return NotImplemented.
+  ///
+  /// The timeout starts at the transport's first processing pass after its
+  /// EventBase admits the operation, so EventBase delays can lengthen it but
+  /// never shorten it.
+  ///
+  /// When a timeout fires, that operation gets Timeout, and every other
+  /// in-flight or later operation on the transport gets Aborted. A Timeout or
+  /// Aborted result leaves the operation's outcome indeterminate (the remote
+  /// range of a PUT may be partially written), but local buffers are reusable
+  /// as soon as the result is visible, because the transport destroys its QPs
+  /// first. The peer's operations on the paired QPs fail. The transport cannot
+  /// be reused: recover with shutdown() and a new transport.
+  ///
+  /// Only Timeout and Aborted carry this guarantee. Any other error, such as
+  /// DriverError from a failed work request, can be returned while the
+  /// operation's work requests on other QPs are still running, so keep its
+  /// buffers until shutdown() returns.
   std::optional<std::chrono::milliseconds> timeout = std::nullopt;
 };
 

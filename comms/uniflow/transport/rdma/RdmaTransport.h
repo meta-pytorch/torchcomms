@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -40,6 +41,11 @@ class RdmaSlabPool;
  * TODO: Make configurable via runtime config (env vars or config file),
  * similar to NCCL_IB_TIMEOUT / NCCL_IB_RETRY_CNT / NCCL_IB_PKEY cvars.
  */
+/* Largest accepted RdmaTransportConfig::requestTimeout: torchcomms' default
+ * per-operation timeout, far below where now() + timeout overflows. */
+inline constexpr std::chrono::milliseconds kMaxRequestTimeout{
+    std::chrono::minutes{10}};
+
 struct RdmaTransportConfig {
   uint32_t numQps{1}; /* Total QPs distributed round-robin across NICs. */
   /* RoCE GID table index. -1 = auto-select a RoCEv2 entry by scanning the GID
@@ -68,6 +74,11 @@ struct RdmaTransportConfig {
    * other NICs fall back to the standard path. Default off = existing behavior.
    */
   bool dataDirect{false};
+  /* Timeout for every put/get. nullopt (default) ignores
+   * RequestOptions::timeout. A value outside (0, kMaxRequestTimeout] makes
+   * every request return InvalidArgument. See RequestOptions::timeout for the
+   * rules when set. */
+  std::optional<std::chrono::milliseconds> requestTimeout{std::nullopt};
 };
 
 /*
@@ -150,6 +161,19 @@ struct RdmaTransportInfo {
 // RdmaTransport
 // ---------------------------------------------------------------------------
 
+/// Counters for request timeouts. One instance is shared by an
+/// RdmaTransportFactory and every transport it creates, because transports can
+/// outlive the factory.
+struct RdmaCounters {
+  /// Timeouts that made a transport terminal; at most one per transport.
+  std::atomic<uint64_t> timeoutsFired{0};
+  /// In-flight requests that got Aborted when a timeout fired.
+  std::atomic<uint64_t> requestsAborted{0};
+  /// Total time spent destroying QPs when timeouts fired. Divide by
+  /// timeoutsFired for the average.
+  std::atomic<uint64_t> teardownNanos{0};
+};
+
 /*
  * Point-to-point RDMA transport over RC (Reliable Connection) queue pairs.
  *
@@ -169,6 +193,8 @@ struct RdmaTransportInfo {
  */
 class RdmaTransport : public Transport {
  public:
+  using Clock = std::chrono::steady_clock;
+
   /*
    * Construct an RDMA transport.
    *
@@ -177,6 +203,7 @@ class RdmaTransport : public Transport {
    *                Borrowed — must outlive this transport.
    * @param config  Transport configuration (numQps, QP attributes, etc.).
    *                numQps must be in [1, 255].
+   * @param counters  Timeout counters, usually shared with the factory.
    */
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
@@ -186,7 +213,9 @@ class RdmaTransport : public Transport {
       std::shared_ptr<std::vector<NicResources>> nics,
       uint64_t domainId,
       RdmaTransportConfig config = {},
-      std::shared_ptr<RdmaSlabPool> slabPool = nullptr);
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr,
+      std::shared_ptr<RdmaCounters> counters =
+          std::make_shared<RdmaCounters>());
 
   ~RdmaTransport() override;
 
@@ -206,7 +235,7 @@ class RdmaTransport : public Transport {
 
   /* Returns the current transport state. */
   TransportState state() const noexcept override {
-    return state_;
+    return state_.load(std::memory_order_acquire);
   }
 
   /*
@@ -269,6 +298,11 @@ class RdmaTransport : public Transport {
    */
   void shutdown() override;
 
+ protected:
+  virtual Clock::time_point now() const {
+    return Clock::now();
+  }
+
  private:
   // --- Private methods ---
 
@@ -277,6 +311,11 @@ class RdmaTransport : public Transport {
     Get,
     Send,
     Recv,
+  };
+
+  enum class TerminalReason : uint8_t {
+    None,
+    Timeout,
   };
 
   /// Tracks completion of a batch of RDMA work requests from a single
@@ -312,6 +351,27 @@ class RdmaTransport : public Transport {
       return type_;
     }
 
+    uint32_t remainingWrs() const {
+      return remainingWrs_;
+    }
+
+    void armDeadline(Clock::time_point deadline) {
+      deadline_ = deadline;
+    }
+
+    bool deadlineExpired(Clock::time_point currentTime) const {
+      return deadline_.has_value() && currentTime >= *deadline_ && !isDone();
+    }
+
+    void setTerminalResult(ErrCode code) {
+      if (!fulfilled_ && !error_) {
+        error_ =
+            Err(code,
+                code == ErrCode::Timeout ? "RDMA request deadline expired"
+                                         : "RDMA transport deadline expired");
+      }
+    }
+
     bool isDone() const {
       return isFullyDrained() || hasError();
     }
@@ -337,6 +397,7 @@ class RdmaTransport : public Transport {
 
    private:
     IOType type_{};
+    std::optional<Clock::time_point> deadline_;
     bool fulfilled_{false};
     bool postFinished_{false};
     uint32_t remainingWrs_{0};
@@ -398,6 +459,8 @@ class RdmaTransport : public Transport {
 
   // --- Caller thread methods ---
 
+  Status validateTimeout(const RequestOptions& options) const;
+
   /// Validates requests and builds a flat list of 512K-chunk SendWrs.
   /// Called on the caller thread before dispatch to EventBase.
   /// Returns error if any request has invalid handles or mismatched sizes.
@@ -427,6 +490,13 @@ class RdmaTransport : public Transport {
   /// Unified IO processing loop. Runs exclusively on EventBase thread.
   /// Posts WRs from pendingTransfers_, polls CQs, fulfills promises in order.
   void ioLooper() noexcept;
+  bool admitTask(const std::shared_ptr<Task>& task);
+  void fulfillPendingCompletions();
+  bool processDeadlines();
+  /// The only path to the terminal state. Destroys every QP before publishing
+  /// any result, so the NIC can no longer access caller buffers once a
+  /// `Timeout` or `Aborted` result is visible. `culprit` receives `Timeout`.
+  void abortTransport(Task& culprit, uint32_t culpritTaskId) noexcept;
 
   bool putGetIoProcess(PutGetTransfer& entry) noexcept;
   bool sendRecvIoProcess(SendRecvTransfer& entry) noexcept;
@@ -563,6 +633,10 @@ class RdmaTransport : public Transport {
   /// EventBase.
   bool ioLooperScheduled_{false};
 
+  /// Requests admitted since the last processDeadlines() pass, whose deadlines
+  /// that pass arms. Accessed only on EventBase.
+  size_t unarmedDeadlines_{0};
+
   /// Maps taskId → task for in-flight requests. Accessed only on EventBase.
   std::unordered_map<uint32_t, std::shared_ptr<Task>> inflightTasks_;
 
@@ -573,11 +647,15 @@ class RdmaTransport : public Transport {
   /// QP numbers are only unique within an RDMA device.
   std::unordered_map<uint64_t, uint32_t> qpNumToIdx_;
 
-  /// State of the transport.
-  TransportState state_{TransportState::Disconnected};
+  /// State of the transport. Written on the EventBase, read on caller threads.
+  std::atomic<TransportState> state_{TransportState::Disconnected};
+
+  std::shared_ptr<RdmaCounters> counters_;
 
   /// transport info. set up and return by bind()
   RdmaTransportInfo info_;
+
+  std::atomic<TerminalReason> terminalReason_{TerminalReason::None};
 
   /// guard for shutdown()
   std::atomic<bool> shutdown_{false};
@@ -678,6 +756,10 @@ class RdmaTransportFactory : public TransportFactory {
     return dmaBufFallbackCount_.load(std::memory_order_relaxed);
   }
 
+  std::shared_ptr<const RdmaCounters> counters() const {
+    return counters_;
+  }
+
  private:
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
@@ -688,6 +770,7 @@ class RdmaTransportFactory : public TransportFactory {
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};
   std::atomic<uint64_t> dmaBufFallbackCount_{0};
+  std::shared_ptr<RdmaCounters> counters_{std::make_shared<RdmaCounters>()};
   std::shared_ptr<std::vector<NicResources>> nicsHandle_;
   std::shared_ptr<DeviceAdapter> deviceAdapter_;
   const RdmaTransportConfig config_;
