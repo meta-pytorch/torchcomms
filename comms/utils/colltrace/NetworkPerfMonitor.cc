@@ -33,16 +33,17 @@ NetworkPerfMonitor::NetworkPerfMonitor(
     : bandwidthComputeIntervalTimeInSecs_(bandwidthComputeIntervalTimeInSecs),
       lastComputeTs_(std::chrono::system_clock::now()),
       running_(true) {
+  // Before the worker starts: its Scuba path reads this entry.
+  (*commHashToCommInfo_.wlock())[0] = CommInfo{
+      .logMetaData = CommLogData{
+          .commDesc = "AvgBw",
+      }};
+
   worker_ = std::thread([this] {
     const std::string commDesc = "Singleton";
     COMMS_NAMED_THREAD_START_EXT("NetworkPerfMonitor", -1, 0UL, commDesc);
     this->processEventsThreadFn();
   });
-
-  commHashToCommInfo_[0] = CommInfo{
-      .logMetaData = CommLogData{
-          .commDesc = "AvgBw",
-      }};
 }
 
 NetworkPerfMonitor::~NetworkPerfMonitor() {
@@ -123,6 +124,7 @@ NetworkPerfStats NetworkPerfMonitor::reportPerfStats() {
 void NetworkPerfMonitor::reportPerfStatsAsMap(
     std::unordered_map<std::string, std::string>& map) {
   const auto& stats = reportPerfStats();
+  const auto commInfos = commHashToCommInfo_.copy();
   folly::dynamic obj = folly::dynamic::object();
   obj["avgBw"] = stats.avgBw;
   obj["commAvgBw"] = folly::dynamic::array();
@@ -130,9 +132,8 @@ void NetworkPerfMonitor::reportPerfStatsAsMap(
     folly::dynamic commInfo = folly::dynamic::object();
     commInfo["commHash"] = hashToHexStr(commHash);
     commInfo["avgBw"] = avgBw;
-    if (commHashToCommInfo_.find(commHash) != commHashToCommInfo_.end()) {
-      commInfo["commDesc"] =
-          commHashToCommInfo_.at(commHash).logMetaData.commDesc;
+    if (auto it = commInfos.find(commHash); it != commInfos.end()) {
+      commInfo["commDesc"] = it->second.logMetaData.commDesc;
     }
     obj["commAvgBw"].push_back(commInfo);
   }
@@ -143,9 +144,10 @@ void NetworkPerfMonitor::reportPerfStatsToScuba(const NetworkPerfStats& stats) {
   if (!NCCL_NETWORK_PERF_MONITOR_SCUBA_LOGGING_ENABLE) {
     return;
   }
+  const auto commInfos = commHashToCommInfo_.copy();
   for (const auto& [commHash, avgBw] : stats.commHashToAvgBw) {
-    if (commHashToCommInfo_.find(commHash) != commHashToCommInfo_.end()) {
-      const auto& commInfo = commHashToCommInfo_.at(commHash);
+    if (auto it = commInfos.find(commHash); it != commInfos.end()) {
+      const auto& commInfo = it->second;
       NcclScubaEvent scubaEvent(
           std::make_unique<NetworkPerfMonitorEvent>(
               commInfo.logMetaData, commInfo.cudaDev, commInfo.busId, avgBw));
@@ -153,7 +155,7 @@ void NetworkPerfMonitor::reportPerfStatsToScuba(const NetworkPerfStats& stats) {
     }
   }
   if (stats.commHashToAvgBw.size() != 0) {
-    const auto& commInfo = commHashToCommInfo_[0];
+    const auto& commInfo = commInfos.at(0);
     NcclScubaEvent scubaEvent(
         std::make_unique<NetworkPerfMonitorEvent>(
             commInfo.logMetaData,
