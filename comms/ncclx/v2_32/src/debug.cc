@@ -418,14 +418,10 @@ void ncclRefreshDebugInitInternal() noexcept {
 void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char* filefunc, int line, const char* fmt, ...) {
   va_list vargs;
   va_start(vargs, fmt);
-  const char* file = nullptr;
-  const char* func = nullptr;
-  if (level == NCCL_LOG_WARN || level == NCCL_LOG_ATTN) {
-    file = filefunc;
-  } else if (level == NCCL_LOG_TRACE) {
-    func = filefunc;
-  }
-  ncclDebugLogV(level, flags, file, func, line, fmt, vargs);
+  // NCCLX: the sink's line prefix shows only file:line, so pass the plugin's
+  // combined file/function string as the file at every level. Upstream's
+  // split drops it for INFO/ERROR/VERSION/ABORT and shows ":line]" for TRACE.
+  ncclDebugLogV(level, flags, filefunc, nullptr, line, fmt, vargs);
   va_end(vargs);
 }
 
