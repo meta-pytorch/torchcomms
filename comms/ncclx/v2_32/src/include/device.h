@@ -12,6 +12,19 @@
 #include "nccl_device/core.h"
 #include "nccl_tuner.h"
 #include "bitops.h"
+// [META] In-kernel colltrace gate. Defined here, and used by every reference to
+// colltraceHdr (see common.h and CollTraceWrapper.cc), so ncclDevKernelArgs has
+// one layout across all TUs. Compiled out only on AMD: see the note on
+// device_object's exported_deps in comms/ncclx/nccl_build_config.bzl.
+// (A CUDA 13.0-13.2 carve-out used to live here; the layout bug behind it is
+// fixed in HRDWRingBufferDeviceHandle.)
+#if !defined(NCCLX_NO_INKERNEL_COLLTRACE)
+#define NCCLX_INKERNEL_COLLTRACE 1
+#endif
+
+#ifdef NCCLX_INKERNEL_COLLTRACE
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#endif
 #include <algorithm>
 #include <stdint.h>
 #include <sys/types.h>
@@ -517,6 +530,14 @@ struct alignas(16) ncclDevKernelArgs {
   enum ncclDevWorkStorageType workStorageType;
   uint32_t workMask;
   void* workBuf;
+  // [META] in-kernel colltrace graph timestamp handle (ring + collId + emit
+  // flags), armed host-side in armNcclInKernelColltrace() only on the
+  // CUDA-graph path (unarmed = no-op). Kept as the last fixed field so the
+  // trailing inline work-batch region stays sizeof(ncclDevKernelArgs)-relative
+  // on both host and device.
+#ifdef NCCLX_INKERNEL_COLLTRACE
+  meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr;
+#endif
   // A channel's first batch is at `blockIdx.x`. Use `nextJump` to follow rest of list.
   // struct ncclDevWorkBatch batches[];
 };
