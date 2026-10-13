@@ -127,6 +127,11 @@ def _lib():
         lib.ep_dispatch_defer_next.argtypes = [ctypes.c_void_p]
         lib.ep_dispatch_finish.restype = I
         lib.ep_dispatch_finish.argtypes = [ctypes.c_void_p, P]
+        lib.ep_dispatch_payload_later.restype = I
+        lib.ep_dispatch_payload_later.argtypes = [ctypes.c_void_p]
+        lib.ep_permute_epilogue.restype = I
+        lib.ep_permute_epilogue.argtypes = [ctypes.c_void_p, P, I, I, P, ctypes.c_int64, P,
+                                            ctypes.c_int64, P, ctypes.c_int64, I, I, P]
         lib.ep_combine_v3.restype = I
         lib.ep_combine_v3.argtypes = [ctypes.c_void_p, P, P, P, P, P, I, P, P, I, P, I, P, P, I,
                                       P, P, I, P]
@@ -622,7 +627,11 @@ class ElasticBuffer:
                  do_expand=False, use_tma_aligned_col_major_sf=False,
                  do_zero_padding=False, handle=None,
                  cumulative_local_expert_recv_stats=None,
-                 previous_event=None, payload_only=False, return_recv_hook=False, **kwargs):
+                 previous_event=None, payload_only=False, return_recv_hook=False,
+                 payload_later=False, **kwargs):
+        """payload_later (bf16, not expanded): the received rows stay in the window and recv_x is
+        None; permute_payload() then moves them straight into an expert-major layout, before any
+        other dispatch on this buffer."""
         lib = _lib()
         use_fp8 = isinstance(x, tuple)
         x, x_sf = x if use_fp8 else (x, None)
@@ -632,6 +641,8 @@ class ElasticBuffer:
                                           return_recv_hook)
         if return_recv_hook:
             raise ValueError("return_recv_hook is for payload_only dispatch")
+        if payload_later and (use_fp8 or do_expand):
+            raise ValueError("payload_later needs a bf16 dispatch that is not expanded")
 
         # `async_with_compute_stream` and `allocate_on_comm_stream` are accepted
         # for API compatibility and ignored: the data path runs in order on the
@@ -757,7 +768,8 @@ class ElasticBuffer:
             # buffer would keep the whole buffer alive while the caller holds it.
             cap = max(1, handle.num_recv if cached else sum(h.inter_recvc))
         hidden_sf = (self.hidden + 127) // 128
-        rx = (torch.empty((cap, self.hidden), dtype=torch.float8_e4m3fn, device=x.device)
+        rx = (None if payload_later else
+              torch.empty((cap, self.hidden), dtype=torch.float8_e4m3fn, device=x.device)
               if use_fp8 else
               torch.empty((cap, self.hidden), dtype=torch.bfloat16, device=x.device))
         rsf = torch.empty((cap, hidden_sf), dtype=torch.float32, device=x.device) if use_fp8 else None
@@ -771,10 +783,14 @@ class ElasticBuffer:
             # for the counts its plan exchanged; a cached replay already has them.
             if cached:
                 self._inter_bind(h)
+                # Armed right before the call that consumes it, so nothing that can raise
+                # comes between.
+                if payload_later and lib.ep_dispatch_payload_later(self._h) != 0:
+                    raise RuntimeError("ep_dispatch_payload_later failed")
                 if lib.ep_dispatch_v2(self._h, x.data_ptr(), _ptr(x_sf), ti32.data_ptr(),
                                       tw.data_ptr(), num_tokens, send_list.data_ptr(),
                                       sendc.data_ptr(), 1 if use_fp8 else 0, num_sms,
-                                      rx.data_ptr(), _ptr(rsf), rtk.data_ptr(),
+                                      _ptr(rx), _ptr(rsf), rtk.data_ptr(),
                                       rtw.data_ptr(), rsrc.data_ptr(), 0, 0, stream) != 0:
                     raise RuntimeError("ep_dispatch_v2 failed")
                 n = handle.num_recv
@@ -789,10 +805,12 @@ class ElasticBuffer:
                     self._inter_host = torch.empty((1 + epr,), dtype=torch.int32, device="cpu",
                                                    pin_memory=True)
                 host = self._inter_host
+                if payload_later and lib.ep_dispatch_payload_later(self._h) != 0:
+                    raise RuntimeError("ep_dispatch_payload_later failed")
                 if lib.ep_dispatch_v2(self._h, x.data_ptr(), _ptr(x_sf), ti32.data_ptr(),
                                       tw.data_ptr(), num_tokens, send_list.data_ptr(),
                                       sendc.data_ptr(), 1 if use_fp8 else 0, num_sms,
-                                      rx.data_ptr(), _ptr(rsf), rtk.data_ptr(),
+                                      _ptr(rx), _ptr(rsf), rtk.data_ptr(),
                                       rtw.data_ptr(), rsrc.data_ptr(), nt_counts.data_ptr(),
                                       0 if self.hybrid else host.data_ptr(), stream) != 0:
                     raise RuntimeError("ep_dispatch_v2 failed")
@@ -826,10 +844,12 @@ class ElasticBuffer:
                     hl = host.tolist()
                     n, cl = hl[0], hl[1:]
             else:
+                if payload_later and lib.ep_dispatch_payload_later(self._h) != 0:
+                    raise RuntimeError("ep_dispatch_payload_later failed")
                 if lib.ep_dispatch_v3(self._h, x.data_ptr(), _ptr(x_sf), ti32.data_ptr(),
                                       tw.data_ptr(), num_tokens, send_list.data_ptr(),
                                       sendc.data_ptr(), 1 if use_fp8 else 0, num_sms,
-                                      rx.data_ptr(), _ptr(rsf), rtk.data_ptr(),
+                                      _ptr(rx), _ptr(rsf), rtk.data_ptr(),
                                       rtw.data_ptr(), rsrc.data_ptr(), stream) != 0:
                     raise RuntimeError("ep_dispatch_v3 failed")
                 # Enqueue all device-only work before the host wait, so the GPU runs
@@ -845,7 +865,8 @@ class ElasticBuffer:
                     cumulative_local_expert_recv_stats += nt_counts
                 n, cl = self._wait_counts(h, epr)
 
-            rx, rsf = rx[:n], (rsf[:n] if use_fp8 else None)
+            rx = rx[:n] if rx is not None else None
+            rsf = rsf[:n] if use_fp8 else None
             rtk, rtw, rsrc = rtk[:n], rtw[:n], rsrc[:n]
             h.num_recv, h.recv_topk_idx = n, rtk
             if not cached:
@@ -1073,6 +1094,29 @@ class ElasticBuffer:
         h.recv_pairs_per_rank = list(b[1 + epr:1 + epr + R])
         h.max_tokens_per_rank = b[1 + epr + R]
         return b[0], list(b[1:1 + epr])
+
+    def permute_payload(self, handle, token_ids, num_rows, ids_dtype=torch.int64, num_sms=0):
+        """The rows of the last payload_later dispatch, straight from the window into
+        expert-major rows: (tokens [num_rows, hidden] bf16, topk_weights [num_rows, num_topk]
+        fp32, topk_ids [num_rows, num_topk] ids_dtype), all contiguous, where row token_ids[g, d]
+        gets received token d, its weights and its local top-k ids (-1 for an expert elsewhere)
+        -- what scattering the received tokens and their metadata by token_ids would write."""
+        token_ids = token_ids.contiguous()
+        if token_ids.dtype != torch.int64 or token_ids.dim() != 2 or token_ids.shape[1] != handle.num_recv:
+            raise ValueError(f"token_ids must be int64 [groups, {handle.num_recv}]")
+        if ids_dtype not in (torch.int32, torch.int64):
+            raise ValueError("ids_dtype must be torch.int32 or torch.int64")
+        dev, K = token_ids.device, self.num_topk
+        out_x = torch.empty((num_rows, self.hidden), dtype=torch.bfloat16, device=dev)
+        out_w = torch.empty((num_rows, K), dtype=torch.float32, device=dev)
+        out_ids = torch.empty((num_rows, K), dtype=ids_dtype, device=dev)
+        ib = ids_dtype.itemsize
+        if _lib().ep_permute_epilogue(self._h, token_ids.data_ptr(), token_ids.shape[0],
+                                      handle.num_recv, out_x.data_ptr(), 2 * self.hidden,
+                                      out_w.data_ptr(), 4 * K, out_ids.data_ptr(), ib * K, ib,
+                                      num_sms, _stream()) != 0:
+            raise RuntimeError("ep_permute_epilogue failed")
+        return out_x, out_w, out_ids
 
     def _dispatch_payload(self, x, handle, use_fp8, num_sms, previous_event,
                           return_recv_hook=False):

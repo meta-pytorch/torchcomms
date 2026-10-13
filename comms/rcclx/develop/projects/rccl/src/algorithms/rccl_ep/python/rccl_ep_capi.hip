@@ -157,8 +157,18 @@ struct EpHandle {
   // The same for a hybrid dispatch (ep_dispatch_defer_next): the local push is queued and the
   // rail transfer in flight; forwarding, barrier B and the epilogue wait for ep_dispatch_finish.
   bool defer_dispatch{false};
+  // ep_dispatch_payload_later: the next dispatch's epilogue writes the metadata only and leaves
+  // the rows in the window for ep_permute_epilogue; `perm` holds the offsets that epilogue used
+  // until then. No dispatch may come between, since it would overwrite those rows.
+  bool payload_later{false};
   struct {
     bool on{false};
+    const int32_t* offsets{};
+    int inclusive{0};
+  } perm;
+  struct {
+    bool on{false};
+    int payload_later{0};
     int use_fp8{0}, with_meta{1}, cta{0}, hcta{0}, run_epilogue{1}, notified{0};
     uintptr_t psum_incl{}, expert_counts{}, out_x{}, out_sf{}, out_topk{}, out_tw{}, out_src{};
   } pend_d;
@@ -924,6 +934,8 @@ int ep_configure_v2(void* handle, int num_experts, int num_topk, int grouped_onl
   h->cfg.num_experts = num_experts;
   h->cfg.num_topk = num_topk;
   h->grouped_only = grouped_only != 0;
+  h->payload_later = false;  // a new window holds no deferred payload
+  h->perm.on = false;
   // RCCL_EP_HYB_Y_LOCAL=1: in a hybrid window that reduces within the node, only this node's
   // ranks write y and cw -- each its own slot(rank, t) in a local owner's window, while rows for a
   // remote owner go to the forwarder's staging -- and the reduce epilogue reads only those. So
@@ -1124,6 +1136,17 @@ static int dispatch_tail(EpHandle* h, hipStream_t s) {
   }
 
   const int epi_cta = copy_epilogue_cta(t.cta, c.num_ranks);
+  if (t.payload_later) {
+    const int32_t* offs = t.psum_incl ? (const int32_t*)t.psum_incl : h->d_recvoff;
+    hipLaunchKernelGGL(dispatch_meta_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, h->self_view, offs, (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
+                       (int32_t*)t.expert_counts, t.psum_incl ? 1 : 0);
+    h->pending_x = true;  // ep_permute_epilogue still reads the dispatch region
+    h->perm.on = true;
+    h->perm.offsets = offs;
+    h->perm.inclusive = t.psum_incl ? 1 : 0;
+    return 0;
+  }
   if (t.use_fp8) {
     hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, h->self_view, h->d_recvoff, (fp8_t*)t.out_x, (float*)t.out_sf,
@@ -1155,6 +1178,16 @@ static int dispatch_enqueue(EpHandle* h,
   // Consumed here, so a call that fails below does not leave the next one deferred.
   const bool defer = h->defer_dispatch;
   h->defer_dispatch = false;
+  const bool payload_later = h->payload_later;
+  h->payload_later = false;
+  if (h->perm.on) {
+    fprintf(stderr, "[rccl_ep] dispatch: the previous dispatch's payload is still in the window (ep_permute_epilogue)\n");
+    return -1;
+  }
+  if (payload_later && (use_fp8 || out_topk == 0 || !run_epilogue)) {
+    fprintf(stderr, "[rccl_ep] ep_dispatch_payload_later needs a bf16 dispatch with metadata and its epilogue\n");
+    return -1;
+  }
   if (h->pend.on || h->pend_d.on) {
     fprintf(stderr, "[rccl_ep] dispatch: a deferred %s is still pending\n",
             h->pend.on ? "combine (ep_combine_finish)" : "dispatch (ep_dispatch_finish)");
@@ -1258,6 +1291,7 @@ static int dispatch_enqueue(EpHandle* h,
                        with_meta, (const int32_t*)rank);
   }
   auto& t = h->pend_d;
+  t.payload_later = payload_later ? 1 : 0;
   t.use_fp8 = use_fp8;
   t.with_meta = with_meta;
   t.cta = cta;
@@ -1411,6 +1445,11 @@ static int plan_notify_enqueue(EpHandle* h, uintptr_t topk_idx, int topk_i64, ui
   // a remote peer's store would land in the outbox and the wait would never end.
   if (h->inter) {
     fprintf(stderr, "[rccl_ep] ep_plan_notify is intranode only; plan with ep_plan and ep_inter_counts\n");
+    return -1;
+  }
+  // Its reduce rewrites the receive offsets a pending ep_permute_epilogue reads.
+  if (h->perm.on) {
+    fprintf(stderr, "[rccl_ep] ep_plan_notify: the previous dispatch's payload is still in the window (ep_permute_epilogue)\n");
     return -1;
   }
   if ((out_rank != 0) != (out_srcpref != 0) || (out_rank != 0) != (out_ebase != 0)) {
@@ -1655,6 +1694,52 @@ int ep_expand_scatter(void* handle, int use_fp8,
                        (float*)out_sf, sf_row_stride, sf_col_stride, (float*)out_w);
   }
   HC(hipStreamSynchronize(s));
+  return 0;
+}
+
+// The next dispatch on this handle (bf16, with metadata) writes only the metadata in its
+// epilogue and leaves its rows in the window; ep_permute_epilogue moves them, and no other
+// dispatch may come between.
+int ep_dispatch_payload_later(void* handle) {
+  static_cast<EpHandle*>(handle)->payload_later = true;
+  return 0;
+}
+
+// The rows of the last ep_dispatch_payload_later dispatch, straight from the window into the
+// caller's expert-major rows: see dispatch_permute_epilogue_impl. token_ids is int64
+// [groups, n], n that dispatch's received tokens. Row r of the result is the bf16 payload at
+// out_x + r * x_stride, the fp32 top-k weights at out_w + r * w_stride and the local top-k ids
+// (ids_bytes 4 or 8) at out_ids + r * ids_stride; strides are in bytes.
+int ep_permute_epilogue(void* handle, uintptr_t token_ids, int groups, int n, uintptr_t out_x,
+                        int64_t x_stride, uintptr_t out_w, int64_t w_stride, uintptr_t out_ids,
+                        int64_t ids_stride, int ids_bytes, int num_sms, uintptr_t stream) {
+  auto* h = static_cast<EpHandle*>(handle);
+  REQUIRE_CONFIGURED(h, "ep_permute_epilogue");
+  const EpConfig& c = h->cfg;
+  if (!h->perm.on) {
+    fprintf(stderr, "[rccl_ep] ep_permute_epilogue: no dispatch left its payload in the window\n");
+    return -1;
+  }
+  const int64_t payload = (int64_t)c.hidden * (int64_t)sizeof(bf16_t);
+  // The payload goes in 16-byte vectors, the weights and ids in their own width.
+  if ((ids_bytes != 4 && ids_bytes != 8) || groups < 0 || n < 0 || x_stride < payload ||
+      x_stride % 16 != 0 || out_x % 16 != 0 || w_stride < 4 * c.num_topk || w_stride % 4 != 0 ||
+      out_w % 4 != 0 || ids_stride < (int64_t)ids_bytes * c.num_topk || ids_stride % ids_bytes != 0 ||
+      out_ids % ids_bytes != 0) {
+    fprintf(stderr, "[rccl_ep] ep_permute_epilogue: bad output layout (strides %lld / %lld / %lld, ids_bytes %d)\n",
+            (long long)x_stride, (long long)w_stride, (long long)ids_stride, ids_bytes);
+    return -1;
+  }
+  hipStream_t s = (hipStream_t)stream;
+  note_stream(h, s);
+  h->rdv_x = false;
+  h->pending_x = false;
+  h->perm.on = false;
+  const int cta = copy_epilogue_cta(ctas_per_rank(num_sms, 128, c.num_ranks), c.num_ranks);
+  hipLaunchKernelGGL(dispatch_permute_epilogue_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                     c, h->self_view, h->perm.offsets, h->perm.inclusive, (const int64_t*)token_ids, groups, n,
+                     (uint8_t*)out_x, x_stride, (uint8_t*)out_w, w_stride, (uint8_t*)out_ids, ids_stride,
+                     ids_bytes);
   return 0;
 }
 
@@ -2102,8 +2187,8 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
   auto* h = static_cast<EpHandle*>(handle);
   REQUIRE_CONFIGURED(h, "ep_hcounts_post");
   // dispatch_enqueue's guards, before the rail overwrites so_send and posts into so_recv.
-  if (h->pend.on || h->pend_d.on || h->rail_posted.on) {
-    fprintf(stderr, "[rccl_ep] ep_hcounts_post: a deferred combine or dispatch is still pending\n");
+  if (h->pend.on || h->pend_d.on || h->perm.on || h->rail_posted.on) {
+    fprintf(stderr, "[rccl_ep] ep_hcounts_post: a deferred combine, dispatch or permute is still pending\n");
     return -1;
   }
   if (ep_hcounts(handle, sendc, node_cnt, topk_idx, num_tokens, out, out_expert, stream) != 0)
