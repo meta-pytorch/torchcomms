@@ -604,7 +604,7 @@ public:
     bool removeDecoder(marker_id_t id)
     {
         uint64_t addr = 0;
-        if(decoders.find(id) != decoders.end()) addr = decoders.at(id)->begin();
+        if(decoders.contains(id)) addr = decoders.at(id)->begin();
 
         return removeDecoder(id, addr);
     }
@@ -649,7 +649,7 @@ public:
 
     std::map<uint64_t, SymbolInfo> getSymbolMap(marker_id_t id) const
     {
-        if(decoders.find(id) == decoders.end()) return {};
+        if(!decoders.contains(id)) return {};
 
         try
         {
