@@ -1,0 +1,5 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+uniflow_add_unit_test(uniflow_transport_provider_registry_test TransportProviderRegistryTest.cpp)
+uniflow_add_unit_test(uniflow_platform_registry_test PlatformRegistryTest.cpp)
+uniflow_add_unit_test(uniflow_runtime_version_test RuntimeVersionTest.cpp)

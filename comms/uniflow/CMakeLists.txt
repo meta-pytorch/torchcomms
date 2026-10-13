@@ -493,6 +493,7 @@ add_subdirectory(transport)
 add_subdirectory(core)
 add_subdirectory(drivers)
 add_subdirectory(logging)
+add_subdirectory(registry)
 
 # Sources
 set(UNIFLOW_SOURCES
@@ -523,6 +524,7 @@ target_sources(uniflow_implementation INTERFACE
     $<TARGET_OBJECTS:uniflow_objects>
     $<TARGET_OBJECTS:uniflow_controller>
     $<TARGET_OBJECTS:uniflow_logging>
+    $<TARGET_OBJECTS:uniflow_registry>
     $<TARGET_OBJECTS:uniflow_transport>
 )
 target_link_libraries(uniflow_implementation INTERFACE
@@ -531,6 +533,7 @@ target_link_libraries(uniflow_implementation INTERFACE
     uniflow_drivers
     uniflow_executor
     uniflow_logging
+    uniflow_registry
     uniflow_transport
 )
 

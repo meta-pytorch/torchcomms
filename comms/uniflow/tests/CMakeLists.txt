@@ -62,6 +62,7 @@ endif()
 
 add_subdirectory(headers)
 add_subdirectory(unit)
+add_subdirectory(registry)
 add_subdirectory(../controller/tests controller_tests)
 add_subdirectory(../core/tests core_tests)
 add_subdirectory(../executor/tests executor_tests)

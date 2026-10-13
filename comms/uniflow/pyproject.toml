@@ -46,6 +46,7 @@ sdist.exclude = [
   "tests/headers/**",
   "tests/integration/**",
   "tests/package/**",
+  "tests/registry/**",
   "tests/py/test_uniflow_integration.py",
   "tests/unit/**",
   "transport/tests/**",
