@@ -179,6 +179,10 @@ class TopologyTest : public ::testing::Test {
 
 TEST_F(TopologyTest, DiscoverWithZeroGpusSucceeds) {
   setupGpus(0);
+  EXPECT_CALL(*cuda_, getDevice()).Times(Exactly(0));
+  EXPECT_CALL(*cuda_, setDevice(_)).Times(Exactly(0));
+  EXPECT_CALL(*cuda_, getDevicePCIBusId(_, _, _)).Times(Exactly(0));
+  EXPECT_CALL(*nvml_, nvmlDeviceGetHandleByPciBusId(_, _)).Times(Exactly(0));
   auto topo = createTopology();
   EXPECT_TRUE(topo->available());
   EXPECT_EQ(topo->gpuCount(), 0u);

@@ -22,6 +22,9 @@ struct PlatformRegistration {
   std::function<Result<std::unique_ptr<TopologyDiscoveryBackend>>()>
       createDiscoveryBackend;
   RuntimeVersion version;
+
+  /// Pure, nonthrowing pointer metadata; never initializes a device or loader.
+  DevicePointerResolver resolveDevicePointer;
 };
 
 /// Stores platform factories without selecting a vendor or probing devices.
@@ -36,6 +39,11 @@ class PlatformRegistry {
   Result<std::shared_ptr<DeviceAdapter>> createDeviceAdapter(
       std::string_view name) const;
   Result<std::unique_ptr<TopologyDiscoveryBackend>> createDiscoveryBackend(
+      std::string_view name) const;
+
+  /// Ordinary virtual addresses need no vendor factory. MTIA requires its
+  /// explicitly registered UID decoder; missing policy is an error.
+  Result<DevicePointerResolver> devicePointerResolver(
       std::string_view name) const;
 
  private:

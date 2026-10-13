@@ -4,6 +4,7 @@ set(UNIFLOW_CUDA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDriverApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDeviceAdapter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CudaDeviceAdapterFactory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaTopologyDiscovery.cpp
 )
 
@@ -38,6 +39,8 @@ target_link_libraries(uniflow_cuda PUBLIC
     ${UNIFLOW_GPU_LIBRARIES}
     uniflow_nvml
     uniflow_sysfs
+    uniflow_nic_topology
+    uniflow_registry
 )
 
 if(UNIFLOW_ENABLE_RDMA)
