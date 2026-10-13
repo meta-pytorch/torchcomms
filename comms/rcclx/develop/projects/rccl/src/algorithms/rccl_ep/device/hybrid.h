@@ -124,6 +124,36 @@ __global__ void k_hyb_pack(EpConfig cfg, HybInfo hi, const void* __restrict__ x,
   }
 }
 
+// k_hyb_pack (bf16, with metadata) with each node's record count read from the node plan's
+// node_cnt on the device, so it can run before the count exchange (RCCL_EP_HYB_PREFIX). A copy
+// rather than a shared body, so k_hyb_pack's code stays as it is.
+__global__ void k_hyb_pack_dev(EpConfig cfg, HybInfo hi, const void* __restrict__ x,
+                               const int32_t* __restrict__ topk_idx, const float* __restrict__ topk_w,
+                               int num_tokens, const int32_t* __restrict__ node_list,
+                               const int32_t* __restrict__ slot_of, const int32_t* __restrict__ node_cnt,
+                               uint8_t* __restrict__ so_send) {
+  const int n = blockIdx.x;
+  if (n >= hi.SO || n == hi.D) return;
+  const int np = hyb_np(hi, n);
+  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
+  const int K = cfg.num_topk, T = cfg.num_max_tokens_per_rank;
+  const int row_bytes = cfg.hidden * (int)sizeof(bf16_t);
+  const int cnt = node_cnt[n];
+  for (int p = blockIdx.y * nwarps + warp; p < cnt; p += nwarps * gridDim.y) {
+    const int t = node_list[(size_t)n * num_tokens + p];
+    uint8_t* rec = so_send + ((size_t)np * T + p) * hi.rec_bytes;
+    wave_copy_local_bytes<false, 1>(rec, (const uint8_t*)x + (size_t)t * row_bytes, row_bytes);
+    if (lane < K) {
+      reinterpret_cast<int32_t*>(rec + hi.off_topk)[lane] = topk_idx[(size_t)t * K + lane];
+      reinterpret_cast<float*>(rec + hi.off_w)[lane] = topk_w[(size_t)t * K + lane];
+    }
+    if (lane == 0) *reinterpret_cast<int32_t*>(rec + hi.off_src) = cfg.rank * T + t;
+    if (lane < hi.SU)
+      reinterpret_cast<int32_t*>(rec + hi.off_slots)[lane] =
+          slot_of[(size_t)(n * hi.SU + lane) * num_tokens + t];
+  }
+}
+
 // Forwarder: writes each record from the rail peer on node n into every local rank it names,
 // at the sender's slot in source (n, u)'s region -- exactly what a direct push would write.
 // with_meta 0 moves the payload only. fwd_meta (optional, [SO-1, T, 1+K]) keeps each record's
