@@ -242,13 +242,13 @@ BUILDDIR=${BUILDDIR:="${PWD}/build/ncclx"}
 CUDA_HOME=${CUDA_HOME:="/usr/local/cuda"}
 NVCC_ARCH=${NVCC_ARCH:="a100,h100"}
 
+# Architecture selection is shared with the other comms build scripts
+# (nvcc_gencode.sh sits beside this script in every layout it runs from).
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=nvcc_gencode.sh
+. "$(dirname "${BASH_SOURCE[0]}")/nvcc_gencode.sh"
 # Add b200 support if CUDA 12.8+ is available
-CUDA_VERSION=$("${CUDA_HOME}/bin/nvcc" --version | grep -oP 'release \K[0-9]+\.[0-9]+')
-CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
-CUDA_MINOR=$(echo "$CUDA_VERSION" | cut -d. -f2)
-if [[ "$CUDA_MAJOR" -gt 12 ]] || [[ "$CUDA_MAJOR" -eq 12 && "$CUDA_MINOR" -ge 8 ]]; then
-    NVCC_ARCH="${NVCC_ARCH},b200"
-fi
+NVCC_ARCH=$(nvcc_arch_with_b200 "$NVCC_ARCH" "$CUDA_HOME")
 NCCL_FP8=${NCCL_FP8:=1}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
 LIB_SUFFIX=${LIB_SUFFIX:-lib}
@@ -342,32 +342,7 @@ THIRD_PARTY_LDFLAGS+="-Wl,-rpath,'\$\$ORIGIN' "
 echo "$THIRD_PARTY_LDFLAGS"
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then
-    IFS=',' read -ra arch_array <<< "$NVCC_ARCH"
-    arch_gencode=""
-    for arch in "${arch_array[@]}"
-    do
-        case "$arch" in
-        "p100")
-        arch_gencode="$arch_gencode -gencode=arch=compute_60,code=sm_60"
-            ;;
-        "v100")
-        arch_gencode="$arch_gencode -gencode=arch=compute_70,code=sm_70"
-            ;;
-        "a100")
-        arch_gencode="$arch_gencode -gencode=arch=compute_80,code=sm_80"
-        ;;
-        "h100")
-            arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
-        ;;
-        "b200")
-            arch_gencode="$arch_gencode -gencode=arch=compute_100a,code=sm_100a"
-        ;;
-        "b300")
-            arch_gencode="$arch_gencode -gencode=arch=compute_103a,code=sm_103a"
-        ;;
-        esac
-    done
-    NVCC_GENCODE=$arch_gencode
+    NVCC_GENCODE=$(nvcc_gencode_from_arch "$NVCC_ARCH")
 fi
 
 if [ "$CLEAN_BUILD" == 1 ]; then

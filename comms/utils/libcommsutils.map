@@ -1,0 +1,61 @@
+# Export map for libcommsutils.so.1 and libobservatory.so.1.
+#
+# Every library that loads beside these (libnccl, libmccl, libctran, the
+# torchcomms extension) carries its own static folly, fmt, spdlog, glog and
+# gflags. A default-visibility symbol of the same name in two of them binds to
+# whichever copy the dynamic linker saw first, so a folly singleton vault or a
+# gflags flag registry ends up shared between copies and the second
+# registration aborts the process. --exclude-libs keeps the archives' own
+# symbols out of the export table; this map does the same for the template
+# instantiations, vtables and function-local statics that the comms/utils
+# objects themselves emit from those libraries' headers.
+#
+# Everything else -- the whole of comms/utils and comms/observatory -- stays
+# exported, including comms/utils' own symbols whose signatures mention folly
+# types (a nested N5folly after the first component does not match below). The
+# two folly specializations under global are comms/utils' own (for its
+# CommLogData type) and are defined out of line here, so consumers resolve them
+# from this library.
+#
+# Itanium mangling: _Z, then optionally a special-name prefix (TV/TT/TI/TS/TC
+# vtables and RTTI, GV guard variables, GR reference temporaries), then up to
+# two Z for entities local to a function, then N (NK for const members) and
+# the namespace. Thunks are _ZTh/_ZTv/_ZTc <offset> _ <encoding>.
+{
+  global:
+    _ZN5folly16DynamicConverterI11CommLogData*;
+    _ZN5folly18DynamicConstructorI11CommLogData*;
+  local:
+    # folly
+    _ZN5folly*; _ZNK5folly*; _ZZN5folly*; _ZZNK5folly*;
+    _ZZZN5folly*; _ZZZNK5folly*; _Z[GT][VRISTC]N5folly*; _Z[GT][VRISTC]NK5folly*;
+    _Z[GT][VRISTC]ZN5folly*; _Z[GT][VRISTC]ZNK5folly*; _Z[GT][VRISTC]ZZN5folly*; _Z[GT][VRISTC]ZZNK5folly*;
+    _ZT[hvc]*_N5folly*;
+    # fmt
+    _ZN3fmt*; _ZNK3fmt*; _ZZN3fmt*; _ZZNK3fmt*;
+    _ZZZN3fmt*; _ZZZNK3fmt*; _Z[GT][VRISTC]N3fmt*; _Z[GT][VRISTC]NK3fmt*;
+    _Z[GT][VRISTC]ZN3fmt*; _Z[GT][VRISTC]ZNK3fmt*; _Z[GT][VRISTC]ZZN3fmt*; _Z[GT][VRISTC]ZZNK3fmt*;
+    _ZT[hvc]*_N3fmt*;
+    # spdlog
+    _ZN6spdlog*; _ZNK6spdlog*; _ZZN6spdlog*; _ZZNK6spdlog*;
+    _ZZZN6spdlog*; _ZZZNK6spdlog*; _Z[GT][VRISTC]N6spdlog*; _Z[GT][VRISTC]NK6spdlog*;
+    _Z[GT][VRISTC]ZN6spdlog*; _Z[GT][VRISTC]ZNK6spdlog*; _Z[GT][VRISTC]ZZN6spdlog*; _Z[GT][VRISTC]ZZNK6spdlog*;
+    _ZT[hvc]*_N6spdlog*;
+    # glog / gflags
+    _ZN6google*; _ZNK6google*; _ZZN6google*; _ZZNK6google*;
+    _ZZZN6google*; _ZZZNK6google*; _Z[GT][VRISTC]N6google*; _Z[GT][VRISTC]NK6google*;
+    _Z[GT][VRISTC]ZN6google*; _Z[GT][VRISTC]ZNK6google*; _Z[GT][VRISTC]ZZN6google*; _Z[GT][VRISTC]ZZNK6google*;
+    _ZT[hvc]*_N6google*;
+    # abseil
+    _ZN4absl*; _ZNK4absl*; _ZZN4absl*; _ZZNK4absl*;
+    _ZZZN4absl*; _ZZZNK4absl*; _Z[GT][VRISTC]N4absl*; _Z[GT][VRISTC]NK4absl*;
+    _Z[GT][VRISTC]ZN4absl*; _Z[GT][VRISTC]ZNK4absl*; _Z[GT][VRISTC]ZZN4absl*; _Z[GT][VRISTC]ZZNK4absl*;
+    _ZT[hvc]*_N4absl*;
+    # boost
+    _ZN5boost*; _ZNK5boost*; _ZZN5boost*; _ZZNK5boost*;
+    _ZZZN5boost*; _ZZZNK5boost*; _Z[GT][VRISTC]N5boost*; _Z[GT][VRISTC]NK5boost*;
+    _Z[GT][VRISTC]ZN5boost*; _Z[GT][VRISTC]ZNK5boost*; _Z[GT][VRISTC]ZZN5boost*; _Z[GT][VRISTC]ZZNK5boost*;
+    _ZT[hvc]*_N5boost*;
+    # gflags flag objects
+    _ZN3fLB*; _ZN3fLS*; _ZN3fLI*; _ZN3fLU*; _ZN3fLD*; _ZN4fL64*; _ZN4fLU64*;
+};
