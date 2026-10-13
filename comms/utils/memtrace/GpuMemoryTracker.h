@@ -119,6 +119,10 @@ class GpuMemoryTracker : public std::enable_shared_from_this<GpuMemoryTracker> {
   void updateContext(GpuMemoryContext context);
   GpuMemorySnapshot snapshot() const;
 
+  // Restarts every peak from the current usage, so later snapshots report the
+  // peak since this call rather than since the tracker was created.
+  void resetPeak();
+
  private:
   friend void recordGpuMemoryAllocation(
       GpuMemoryResourceType resource,

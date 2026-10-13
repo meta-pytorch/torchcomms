@@ -62,6 +62,38 @@ TEST(GpuMemoryTrackerTest, AttributesUsageAndTracksPeak) {
   recordGpuMemoryFree(0x2000);
 }
 
+TEST(GpuMemoryTrackerTest, ResetPeakRestartsFromCurrentUsage) {
+  auto gpuMemoryTracker = std::make_shared<GpuMemoryTracker>(kContext);
+  ScopedGpuMemoryContext scope{gpuMemoryTracker.get()};
+  recordGpuMemoryAllocation(
+      GpuMemoryResourceType::kNvlP2pDataStaging, 0x1000, 128);
+  recordGpuMemoryAllocation(
+      GpuMemoryResourceType::kIbSendRecvPeerBulk, 0x2000, 256);
+  recordGpuMemoryFree(0x2000);
+
+  gpuMemoryTracker->resetPeak();
+  auto snapshot = gpuMemoryTracker->snapshot();
+  EXPECT_EQ(snapshot.total.peakBytes, 128);
+  EXPECT_EQ(snapshot.prims.peakBytes, 128);
+  EXPECT_EQ(
+      snapshot.components[index(GpuMemoryComponent::kNvl)].peakBytes, 128);
+  EXPECT_EQ(snapshot.components[index(GpuMemoryComponent::kIb)].peakBytes, 0);
+  EXPECT_EQ(
+      snapshot.resources[index(GpuMemoryResourceType::kIbSendRecvPeerBulk)]
+          .peakBytes,
+      0);
+  // Lifetime totals are kept.
+  EXPECT_EQ(snapshot.total.totalAllocatedBytes, 384);
+
+  recordGpuMemoryAllocation(
+      GpuMemoryResourceType::kIbSendRecvPeerBulk, 0x3000, 64);
+  snapshot = gpuMemoryTracker->snapshot();
+  EXPECT_EQ(snapshot.total.peakBytes, 192);
+  EXPECT_EQ(snapshot.components[index(GpuMemoryComponent::kIb)].peakBytes, 64);
+  recordGpuMemoryFree(0x1000);
+  recordGpuMemoryFree(0x3000);
+}
+
 TEST(GpuMemoryTrackerTest, AccountsUnclassifiedMemoryOutsidePrims) {
   auto gpuMemoryTracker = std::make_shared<GpuMemoryTracker>(kContext);
   ScopedGpuMemoryContext scope{gpuMemoryTracker.get()};

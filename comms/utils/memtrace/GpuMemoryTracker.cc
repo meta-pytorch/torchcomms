@@ -445,6 +445,21 @@ void GpuMemoryTracker::recordFree(
   }
 }
 
+void GpuMemoryTracker::resetPeak() {
+  auto state = impl_->state.wlock();
+  const auto reset = [](GpuMemoryUsage& usage) {
+    usage.peakBytes = usage.currentBytes;
+  };
+  for (auto& usage : state->components) {
+    reset(usage);
+  }
+  for (auto& usage : state->resources) {
+    reset(usage);
+  }
+  reset(state->prims);
+  reset(state->total);
+}
+
 GpuMemorySnapshot GpuMemoryTracker::snapshot() const {
   auto state = impl_->state.rlock();
   return GpuMemorySnapshot{
