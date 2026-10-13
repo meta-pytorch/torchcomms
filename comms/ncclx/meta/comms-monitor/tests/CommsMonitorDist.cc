@@ -173,8 +173,10 @@ TEST_F(CommsMonitorDist, testOneCommDump) {
   auto commDumpsMaybe = CommsMonitor::commDumpAll();
   ASSERT_TRUE(commDumpsMaybe.has_value());
   auto& commDumps = commDumpsMaybe.value();
+  // Without hints commDumpAll() also emits a process-wide "GlobalInfo" entry.
+  EXPECT_EQ(commDumps.erase("GlobalInfo"), 1);
 
-  EXPECT_EQ(commDumps.size(), 1);
+  ASSERT_EQ(commDumps.size(), 1);
   const auto& [commHash, commDump] = *commDumps.cbegin();
   EXPECT_EQ(commHash, hashToHexStr(comm->commHash));
   EXPECT_GT(commDump.size(), 0);
@@ -219,6 +221,8 @@ TEST_F(CommsMonitorDist, testMultipleCommDump) {
   auto commDumpsMaybe = CommsMonitor::commDumpAll();
   ASSERT_TRUE(commDumpsMaybe.has_value());
   auto& commDumps = commDumpsMaybe.value();
+  // Without hints commDumpAll() also emits a process-wide "GlobalInfo" entry.
+  EXPECT_EQ(commDumps.erase("GlobalInfo"), 1);
 
   std::unordered_set<std::string> commHashes{
       hashToHexStr(comm1->commHash),
