@@ -2,6 +2,8 @@
 
 #include "meta/comms-monitor/CommsMonitor.h"
 
+#include <utility>
+
 #include <folly/Singleton.h>
 
 #include "comms/ctran/Ctran.h" // access to incomplete type
@@ -66,8 +68,21 @@ bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
 }
 
 bool CommsMonitor::registerCommImpl(ncclComm_t comm) {
-  auto lockedMap = commsMap_.wlock();
-  lockedMap->emplace(comm, NcclCommMonitorInfo::fromNcclComm(comm));
+  auto info = NcclCommMonitorInfo::fromNcclComm(comm);
+  // Entries are keyed on the comm pointer and kept after deregistration, so a
+  // new comm can land on a dead comm's address. Replace that stale entry;
+  // otherwise the new comm would be dumped with the dead comm's snapshot. The
+  // stale entry may hold the last reference to the dead comm's CollTrace, whose
+  // destructor joins a thread and frees pinned memory, so it is destroyed only
+  // after the registry lock is released.
+  NcclCommMonitorInfo stale;
+  {
+    auto lockedMap = commsMap_.wlock();
+    auto [it, inserted] = lockedMap->try_emplace(comm, std::move(info));
+    if (!inserted) {
+      stale = std::exchange(it->second, std::move(info));
+    }
+  }
   return true;
 }
 
