@@ -17,8 +17,13 @@
 #include <cmath>
 
 // [NCCLX] Upstream defaults this to 1. 2.30 overrides it to 0 because GIN unit tests
-// failed with GIN on; that note names no test. Keep 2.32 at 0 until the 2.32 GIN tests
-// under comms/ncclx/meta/tests pass without setting NCCL_GIN_ENABLE.
+// failed with GIN on; that note names no test. Keep 2.32 at 0 until every *_v2_32
+// suite under comms/ncclx/meta/tests, including the multi-node ones, passes with
+// NCCL_GIN_ENABLE=1 forced. A flip inverts GinIsOffByDefault's default
+// assertion but keeps its 1x2_gin_off run, which tests the discovery gate in
+// plugin/gin.cc independently of this default. This default also decides whether
+// comms spanning more than one LSA team get symmetricSupport, and with it the
+// device API, symmetric kernels and host RMA, not only GIN.
 NCCL_PARAM(GinEnable, "GIN_ENABLE", 0);
 
 // Backend version compatibility. Index: backend version. Value: min compatible NCCL version
