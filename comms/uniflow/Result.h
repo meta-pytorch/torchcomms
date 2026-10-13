@@ -66,7 +66,8 @@ namespace uniflow {
   X(ConnectionFailed)          \
   X(MemoryRegistrationError)   \
   X(Timeout)                   \
-  X(ResourceExhausted)
+  X(ResourceExhausted)         \
+  X(Aborted)
 
 /// Error codes for UniFlow operations
 enum class ErrCode : uint32_t {

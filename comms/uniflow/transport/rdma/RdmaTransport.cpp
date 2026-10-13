@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cstdlib>
 #include <random>
 #include <stdexcept>
 
@@ -234,7 +233,8 @@ RdmaTransport::RdmaTransport(
     std::shared_ptr<std::vector<NicResources>> nics,
     uint64_t domainId,
     RdmaTransportConfig config,
-    std::shared_ptr<RdmaSlabPool> slabPool)
+    std::shared_ptr<RdmaSlabPool> slabPool,
+    std::shared_ptr<RdmaCounters> counters)
     : ibvApi_(std::move(ibvApi)),
       cudaApi_(std::move(cudaApi)),
       cudaDriverApi_(std::move(cudaDriverApi)),
@@ -242,6 +242,7 @@ RdmaTransport::RdmaTransport(
       nicsHandle_(std::move(nics)),
       config_(config),
       domainId_(domainId),
+      counters_(std::move(counters)),
       slabPool_(std::move(slabPool)) {
   CHECK_THROW_EXCEPTION(
       nicsHandle_ && !nicsHandle_->empty(), std::invalid_argument);
@@ -936,9 +937,201 @@ Result<uint32_t> RdmaTransport::spray(
 // Unified IO processing loop (EventBase thread)
 // ---------------------------------------------------------------------------
 
+bool RdmaTransport::admitTask(const std::shared_ptr<Task>& task) {
+  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+    task->setTerminalResult(ErrCode::Aborted);
+    task->fulfill();
+    return false;
+  }
+  if (config_.requestTimeout.has_value()) {
+    ++unarmedDeadlines_;
+  }
+  return true;
+}
+
+void RdmaTransport::fulfillPendingCompletions() {
+  while (!pendingCompletions_.empty()) {
+    auto& entry = pendingCompletions_.front();
+    const bool broken = state_ != TransportState::Connected;
+    if (entry.task->isDone()) {
+      entry.task->fulfill();
+    } else if (broken) {
+      entry.task->recordCompletion(
+          Err(ErrCode::TransportError, "RDMA transport is broken"));
+      entry.task->fulfill();
+    }
+
+    if (entry.task->isFullyDrained() || broken) {
+      inflightTasks_.erase(entry.taskId);
+      pendingCompletions_.pop_front();
+      continue;
+    }
+    break;
+  }
+}
+
+bool RdmaTransport::processDeadlines() {
+  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+    return true;
+  }
+  if (!config_.requestTimeout.has_value()) {
+    return false;
+  }
+
+  Task* deadlineHead = nullptr;
+  uint32_t deadlineHeadTaskId = 0;
+  // Skip done tasks, including errored tasks that remain queued solely to
+  // drain their outstanding CQEs.
+  for (const auto& entry : pendingCompletions_) {
+    if (!entry.task->isDone()) {
+      deadlineHead = entry.task.get();
+      deadlineHeadTaskId = entry.taskId;
+      break;
+    }
+  }
+  if (!deadlineHead && !pendingTransfers_.empty()) {
+    const auto& transfer = pendingTransfers_.front().putGetTransfer;
+    if (transfer && !transfer->task->isDone()) {
+      deadlineHead = transfer->task.get();
+      deadlineHeadTaskId = transfer->taskId;
+    }
+  }
+  if (!deadlineHead && unarmedDeadlines_ == 0) {
+    return false;
+  }
+
+  // Deadlines are armed here, from one clock read per pass, rather than in
+  // admitTask(), which would read the clock once per request. Admission only
+  // appends to pendingTransfers_, and nothing is posted before this point in
+  // the pass, so the requests admitted since the last pass are its last
+  // unarmedDeadlines_ entries (all put/get: copy requests are rejected while
+  // requestTimeout is set). Their deadlines start up to one EventBase queue
+  // delay after admission, never before it.
+  const auto currentTime = now();
+  assert(unarmedDeadlines_ <= pendingTransfers_.size());
+  const auto deadline = currentTime + *config_.requestTimeout;
+  for (size_t i = pendingTransfers_.size() - unarmedDeadlines_;
+       i < pendingTransfers_.size();
+       ++i) {
+    pendingTransfers_[i].putGetTransfer->task->armDeadline(deadline);
+  }
+  unarmedDeadlines_ = 0;
+
+  if (!deadlineHead || !deadlineHead->deadlineExpired(currentTime)) {
+    return false;
+  }
+  abortTransport(*deadlineHead, deadlineHeadTaskId);
+  return true;
+}
+
+void RdmaTransport::abortTransport(
+    Task& culprit,
+    uint32_t culpritTaskId) noexcept {
+  TerminalReason expected = TerminalReason::None;
+  if (!terminalReason_.compare_exchange_strong(
+          expected, TerminalReason::Timeout, std::memory_order_acq_rel)) {
+    return;
+  }
+
+  // Real time, not now(): tests fake now() to drive deadlines.
+  const auto teardownStart = Clock::now();
+  std::string qpNums;
+  for (auto*& qp : qps_) {
+    if (!qp) {
+      continue;
+    }
+    qpNums += (qpNums.empty() ? "" : ",") + std::to_string(qp->qp_num);
+    ibv_qp_attr attr{};
+    attr.qp_state = IBV_QPS_ERR;
+    if (auto status = ibvApi_->modifyQp(qp, &attr, IBV_QP_STATE);
+        status.hasError()) {
+      UNIFLOW_LOG_ERROR(
+          "abortTransport: failed to move QP {} to error: {}",
+          qp->qp_num,
+          status.error().message());
+    }
+    // A QP that cannot be destroyed may still access caller buffers, so no
+    // terminal result may be published.
+    if (auto status = ibvApi_->destroyQp(qp); status.hasError()) {
+      UNIFLOW_LOG_ERROR(
+          "abortTransport: failed to destroy QP {}: {}",
+          qp->qp_num,
+          status.error().message());
+      ::uniflow::logging::getLogger()->flush();
+      std::terminate();
+    }
+    qp = nullptr;
+  }
+  counters_->teardownNanos.fetch_add(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now() - teardownStart)
+          .count(),
+      std::memory_order_relaxed);
+
+  // Every in-flight task is in exactly one queue, so this is admission order.
+  std::vector<std::shared_ptr<Task>> tasks;
+  tasks.reserve(inflightTasks_.size());
+  for (auto& entry : pendingCompletions_) {
+    tasks.push_back(std::move(entry.task));
+  }
+  for (auto& entry : pendingTransfers_) {
+    if (entry.putGetTransfer) {
+      tasks.push_back(std::move(entry.putGetTransfer->task));
+    } else if (entry.sendRecvTransfer) {
+      tasks.push_back(std::move(entry.sendRecvTransfer->task));
+    }
+  }
+  pendingTransfers_.clear();
+  pendingCompletions_.clear();
+  inflightTasks_.clear();
+  state_.store(TransportState::Error, std::memory_order_release);
+
+  size_t putTasks = 0;
+  size_t getTasks = 0;
+  uint64_t abortedTasks = 0;
+  for (const auto& task : tasks) {
+    putTasks += task->type() == IOType::Put;
+    getTasks += task->type() == IOType::Get;
+    if (!task->isDone()) {
+      const bool isCulprit = task.get() == &culprit;
+      abortedTasks += !isCulprit;
+      task->setTerminalResult(isCulprit ? ErrCode::Timeout : ErrCode::Aborted);
+    }
+  }
+  // Update the counters before publishing, so they are current once any
+  // result is visible.
+  counters_->timeoutsFired.fetch_add(1, std::memory_order_relaxed);
+  counters_->requestsAborted.fetch_add(abortedTasks, std::memory_order_relaxed);
+  for (const auto& task : tasks) {
+    task->fulfill();
+  }
+  UNIFLOW_LOG_ERROR(
+      "abortTransport: terminalReason=Timeout requestTimeout={}ms "
+      "winner={} taskId={} remainingWrs={} remoteDomainId={} qps=[{}] "
+      "putTasks={} getTasks={}",
+      config_.requestTimeout->count(),
+      culprit.type() == IOType::Put ? "put" : "get",
+      culpritTaskId,
+      culprit.remainingWrs(),
+      remoteDomainId_,
+      qpNums,
+      putTasks,
+      getTasks);
+}
+
 void RdmaTransport::ioLooper() noexcept {
+  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+    ioLooperScheduled_ = false;
+    return;
+  }
+
   // Phase 1 — Poll: drain all CQs (round-robin).
   pollCompletions();
+
+  if (processDeadlines()) {
+    ioLooperScheduled_ = false;
+    return;
+  }
 
   // Phase 2 — Post: walk pendingTransfers_ front-to-back.
   bool tryNext = true;
@@ -953,27 +1146,7 @@ void RdmaTransport::ioLooper() noexcept {
 
   // Phase 3 — Fulfill: walk pendingCompletions_ front-to-back for in-order
   // promise delivery.
-  while (!pendingCompletions_.empty()) {
-    auto& entry = pendingCompletions_.front();
-
-    if (entry.task->isDone()) {
-      entry.task->fulfill();
-    } else if (state_ != TransportState::Connected) {
-      entry.task->recordCompletion(
-          Err(ErrCode::TransportError, "RDMA transport is broken"));
-      entry.task->fulfill();
-    }
-
-    // Remove when fully drained (all CQEs received), or when the transport
-    // is broken (no more CQEs will ever arrive).
-    if (entry.task->isFullyDrained() || state_ != TransportState::Connected) {
-      inflightTasks_.erase(entry.taskId);
-      pendingCompletions_.pop_front();
-      continue;
-    }
-
-    break;
-  }
+  fulfillPendingCompletions();
 
   // Phase 4 — Yield & reschedule.
   if (!pendingTransfers_.empty() || !pendingCompletions_.empty()) {
@@ -1028,10 +1201,48 @@ bool RdmaTransport::putGetIoProcess(PutGetTransfer& entry) noexcept {
 // Transfer dispatch (caller thread → EventBase thread)
 // ---------------------------------------------------------------------------
 
+Status RdmaTransport::validateTimeout(const RequestOptions& options) const {
+  if (!config_.requestTimeout.has_value()) {
+    return Ok();
+  }
+  const auto configured = *config_.requestTimeout;
+  if (configured <= std::chrono::milliseconds::zero() ||
+      configured > kMaxRequestTimeout) {
+    return Err(
+        ErrCode::InvalidArgument,
+        fmt::format(
+            "RDMA requestTimeout {}ms must be in (0, {}ms]",
+            configured.count(),
+            kMaxRequestTimeout.count()));
+  }
+  // With the configured timeout in range, this one comparison also rejects
+  // negative values and values above kMaxRequestTimeout.
+  const auto requested =
+      options.timeout.value_or(std::chrono::milliseconds::zero());
+  if (requested != std::chrono::milliseconds::zero() &&
+      requested != configured) {
+    return Err(
+        ErrCode::InvalidArgument,
+        fmt::format(
+            "RDMA request timeout {}ms must be unset, 0ms, or the configured "
+            "requestTimeout {}ms",
+            requested.count(),
+            configured.count()));
+  }
+  return Ok();
+}
+
 std::future<Status> RdmaTransport::rdmaPutGetTransfer(
     std::span<const TransferRequest> requests,
     ibv_wr_opcode opcode,
-    const RequestOptions& /*options*/) {
+    const RequestOptions& options) {
+  if (auto status = validateTimeout(options); status.hasError()) {
+    return make_ready_future<Status>(std::move(status));
+  }
+  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+    return make_ready_future<Status>(
+        Err(ErrCode::Aborted, "RDMA transport deadline expired"));
+  }
   if (state_ != TransportState::Connected) {
     return make_ready_future<Status>(
         Err(ErrCode::NotConnected, "RDMA transfer: not connected"));
@@ -1065,6 +1276,9 @@ std::future<Status> RdmaTransport::rdmaPutGetTransfer(
   evb_->dispatch([this,
                   task = std::move(task),
                   transfer = std::move(transfer)]() mutable noexcept {
+    if (!admitTask(task)) {
+      return;
+    }
     uint32_t taskId = nextTaskId_++;
     UNIFLOW_LOG_DEBUG(
         "rdmaPutGetTransfer: taskId={} dispatched to EventBase", taskId);
@@ -1086,6 +1300,18 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
     IOType ioType,
     Segment::Span data,
     const RequestOptions& options) {
+  if (auto status = validateTimeout(options); status.hasError()) {
+    return make_ready_future<Status>(std::move(status));
+  }
+  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+    return make_ready_future<Status>(
+        Err(ErrCode::Aborted, "RDMA transport deadline expired"));
+  }
+  if (config_.requestTimeout.has_value()) {
+    return make_ready_future<Status>(
+        Err(ErrCode::NotImplemented,
+            "RDMA copy send/recv is not supported with requestTimeout set"));
+  }
   if (data.size() == 0) {
     return make_ready_future(Ok());
   }
@@ -1130,6 +1356,9 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
   evb_->dispatch([this,
                   task = std::move(task),
                   transfer = std::move(transfer)]() mutable noexcept {
+    if (!admitTask(task)) {
+      return;
+    }
     uint32_t taskId = nextTaskId_++;
     transfer->taskId = taskId;
     inflightTasks_[taskId] = std::move(task);
@@ -1139,7 +1368,7 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
         transfer->taskId,
         transfer->totalSteps,
         transfer->localSlabs.size(),
-        info_.slabSize);
+        info_.header.slabSize);
 
     pendingTransfers_.push_back(
         {.putGetTransfer = nullptr, .sendRecvTransfer = std::move(transfer)});
@@ -1733,10 +1962,10 @@ void RdmaTransport::shutdown() {
         if (pendingTransfers_.empty() && pendingCompletions_.empty() &&
             inflightTasks_.empty()) {
           state_ = TransportState::Disconnected;
-          {
-            std::lock_guard<std::mutex> lock(m);
-            done = true;
-          }
+          // Notify under the lock: `cv` lives on the waiter's stack and is
+          // destroyed as soon as the waiter observes `done`.
+          std::lock_guard<std::mutex> lock(m);
+          done = true;
           cv.notify_one();
         } else {
           evb_->dispatch([self = std::move(self)]() noexcept { self(self); });
@@ -2177,7 +2406,8 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
       nicsHandle_,
       domainId_,
       config,
-      slabPool_);
+      slabPool_,
+      counters_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for

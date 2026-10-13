@@ -364,11 +364,13 @@ std::optional<TransportSession> setupTransport(
     PeerConnection& peer,
     const BootstrapConfig& bootstrap,
     size_t chunkSize,
-    bool dataDirect) {
+    bool dataDirect,
+    std::optional<std::chrono::milliseconds> requestTimeout) {
   RdmaTransportConfig rdmaConfig{};
   rdmaConfig.chunkSize = chunkSize;
   rdmaConfig.numQps = static_cast<uint32_t>(devices.size());
   rdmaConfig.dataDirect = dataDirect;
+  rdmaConfig.requestTimeout = requestTimeout;
 
   auto cudaDriverApi = std::make_shared<CudaDriverApi>();
   auto factory = std::make_unique<RdmaTransportFactory>(
@@ -933,7 +935,8 @@ std::vector<BenchmarkResult> RdmaBandwidthBenchmark::run(
         peers[0],
         bootstrap,
         config.chunkSize,
-        config.dataDirect);
+        config.dataDirect,
+        config.rdmaRequestTimeout);
     if (!session) {
       return {};
     }
