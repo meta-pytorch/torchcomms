@@ -32,6 +32,7 @@ using LogEmitter = void (*)(const std::string&);
 
 struct LoggerProbe {
   const char* directoryName;
+  const char* debugFileVariable;
   const char* subsystem;
   bool asyncLogging;
   Initializer initialize;
@@ -89,7 +90,7 @@ size_t countOccurrences(std::string_view output, std::string_view token) {
     const LoggerProbe& probe) {
   if (::setenv("NCCL_DEBUG", "INFO", 1) != 0 ||
       ::setenv("NCCL_DEBUG_SUBSYS", probe.subsystem, 1) != 0 ||
-      ::setenv("NCCL_DEBUG_FILE", logPath.c_str(), 1) != 0 ||
+      ::setenv(probe.debugFileVariable, logPath.c_str(), 1) != 0 ||
       ::setenv("NCCL_DEBUG_LOGGING_ASYNC", probe.asyncLogging ? "1" : "0", 1) !=
           0) {
     exitProbe(
@@ -195,6 +196,7 @@ TEST_F(
     CtranReadsEnvironmentAndDrainsAsyncOutput) {
   expectLoggerProbe(
       {.directoryName = "ctran_logger_initialization",
+       .debugFileVariable = "NCCL_DEBUG_FILE",
        .subsystem = "COLL",
        .asyncLogging = true,
        .initialize = initializeCtranLogger,
@@ -208,6 +210,7 @@ TEST_F(
     CtranSuppressesDisabledSubsystemWithoutEvaluatingArguments) {
   expectLoggerProbe(
       {.directoryName = "ctran_logger_filter",
+       .debugFileVariable = "NCCL_DEBUG_FILE",
        .subsystem = "INIT",
        .asyncLogging = false,
        .initialize = initializeCtranLogger,
@@ -221,6 +224,7 @@ TEST_F(
     McclReadsEnvironmentAndDrainsAsyncOutput) {
   expectLoggerProbe(
       {.directoryName = "mccl_logger_initialization",
+       .debugFileVariable = "MCCL_DEBUG_FILE",
        .subsystem = "COLL",
        .asyncLogging = true,
        .initialize = initializeMcclLogger,
@@ -234,6 +238,7 @@ TEST_F(
     McclSuppressesDisabledSubsystemWithoutEvaluatingArguments) {
   expectLoggerProbe(
       {.directoryName = "mccl_logger_filter",
+       .debugFileVariable = "MCCL_DEBUG_FILE",
        .subsystem = "INIT",
        .asyncLogging = false,
        .initialize = initializeMcclLogger,

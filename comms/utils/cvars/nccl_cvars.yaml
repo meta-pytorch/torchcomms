@@ -3668,11 +3668,11 @@ cvars:
 
  - name        : MCCL_DEBUG_FILE
    type        : string
-   default     : "__MCCL_INHERIT__"
+   default     : ""
    description : |-
      Directs MCCL text logs to a separate file. Supports the same %h and %p
-     substitutions as NCCL_DEBUG_FILE. When this variable is absent, MCCL
-     inherits NCCL_DEBUG_FILE for backward compatibility.
+     substitutions as NCCL_DEBUG_FILE. When this variable is absent or empty,
+     MCCL writes to stdout independently of NCCL_DEBUG_FILE.
 
  - name        : MCCL_DEBUG_SUBSYS
    type        : string
