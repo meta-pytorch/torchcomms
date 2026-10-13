@@ -14,6 +14,9 @@ set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/core/Func.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/core/MpscQueue.h
 
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/DeviceAdapter.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/TopologyDiscovery.h
+
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/executor/EpollEventBase.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/executor/EventBase.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/executor/LockFreeEventBase.h
@@ -23,6 +26,10 @@ set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/executor/ScopedEventBaseThread.h
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/logging/Logger.h
+
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/PlatformRegistry.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/RuntimeVersion.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/TransportProviderRegistry.h
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/Topology.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/Transport.h

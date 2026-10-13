@@ -10,10 +10,15 @@
 namespace uniflow {
 
 class EventBase;
+class Topology;
+struct MultiTransportFactoryOptions;
 
 struct TransportProviderContext {
   int deviceId{-1};
   EventBase* eventBase{nullptr};
+  /// Optional borrowed inputs. Copy any data retained after createFactory().
+  const MultiTransportFactoryOptions* options{nullptr};
+  const Topology* topology{nullptr};
 };
 
 /// Creates transport factories without selecting platform defaults.
@@ -26,6 +31,8 @@ class TransportProvider {
 
   /// Capability query, separate from endpoint-specific factory creation.
   /// Used by default backend composition for capability discovery.
+  /// NotImplemented and ResourceExhausted mean unavailable; other errors
+  /// propagate when the registry creates factories.
   /// Explicit-provider construction does not call this query.
   virtual Status supported() const = 0;
 

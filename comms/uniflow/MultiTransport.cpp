@@ -91,6 +91,7 @@ MultiTransportFactory::MultiTransportFactory(
   const TransportProviderContext context{
       .deviceId = deviceId_,
       .eventBase = eventBaseThread_->getEventBase(),
+      .options = &options_,
   };
   factories_.reserve(providers.size());
   for (const auto& provider : providers) {

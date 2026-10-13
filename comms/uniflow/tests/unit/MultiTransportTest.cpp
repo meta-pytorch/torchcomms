@@ -214,14 +214,22 @@ class MockTransportProvider : public TransportProvider {
   }
 
   Result<std::shared_ptr<TransportFactory>> createFactory(
-      const TransportProviderContext&) const override {
+      const TransportProviderContext& context) const override {
+    if (context.options) {
+      receivedOptions_ = *context.options;
+    }
     return factory_;
+  }
+
+  const std::optional<MultiTransportFactoryOptions>& receivedOptions() const {
+    return receivedOptions_;
   }
 
  private:
   TransportType type_;
   Result<std::shared_ptr<TransportFactory>> factory_;
   Status support_;
+  mutable std::optional<MultiTransportFactoryOptions> receivedOptions_;
 };
 
 class EventBaseCopyTransport : public MockTransport {
@@ -511,6 +519,24 @@ TEST_F(MultiTransportFactoryTest, ExplicitProvidersRejectInvalidConfiguration) {
         MultiTransportFactory(-1, {}, TransportProviderList{invalid}),
         std::invalid_argument);
   }
+}
+
+TEST_F(MultiTransportFactoryTest, ExplicitProvidersReceiveFactoryOptions) {
+  MultiTransportFactoryOptions options;
+  options.gidIndex = 7;
+  options.trafficClass = 42;
+  options.netdevPrefix = "test";
+  options.maxCpuNics = 1;
+  auto provider = makeProvider(
+      TransportType::RDMA, makeFactory(TransportType::RDMA, {0x01}, {0xAA}));
+
+  MultiTransportFactory factory(-1, options, TransportProviderList{provider});
+
+  ASSERT_TRUE(provider->receivedOptions());
+  EXPECT_EQ(provider->receivedOptions()->gidIndex, options.gidIndex);
+  EXPECT_EQ(provider->receivedOptions()->trafficClass, options.trafficClass);
+  EXPECT_EQ(provider->receivedOptions()->netdevPrefix, options.netdevPrefix);
+  EXPECT_EQ(provider->receivedOptions()->maxCpuNics, options.maxCpuNics);
 }
 
 TEST_F(MultiTransportFactoryTest, ExplicitProvidersRequireMatchingFactoryId) {
