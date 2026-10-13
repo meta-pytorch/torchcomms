@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "comms/uniflow/Result.h"
@@ -14,6 +15,10 @@ class CudaApi;
 class CudaDriverApi;
 
 using DeviceStream = void*;
+
+/// Pure pointer metadata only: no device initialization, allocation or loading.
+/// Registered implementations must not throw.
+using DevicePointerResolver = std::function<uint64_t(const void*)>;
 
 enum class DeviceCopyKind {
   HostToDevice,
@@ -148,6 +153,23 @@ class DeviceAdapter {
   /// Return a device-accessible pointer for `hostPtr` (which must have been
   /// obtained from pinnedHostAlloc()).
   virtual Result<void*> hostGetDevicePointer(void* hostPtr) = 0;
+
+  /// Device-scoped pinned storage for GPU staging. The adapter retains vendor
+  /// identity; callers retain deviceId through matching allocation/map/free.
+  /// Legacy adapters may use context-independent host storage.
+  virtual Result<void*> pinnedHostAlloc(int /* deviceId */, size_t size) {
+    return pinnedHostAlloc(size);
+  }
+
+  virtual Status pinnedHostFree(int /* deviceId */, void* ptr) {
+    return pinnedHostFree(ptr);
+  }
+
+  virtual Result<void*> hostGetDevicePointer(
+      int /* deviceId */,
+      void* hostPtr) {
+    return hostGetDevicePointer(hostPtr);
+  }
 
   /// Query whether DMA-BUF export is available for `deviceId`.
   virtual Result<bool> isDmaBuffSupported(int deviceId) = 0;

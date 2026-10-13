@@ -20,4 +20,6 @@ std::unique_ptr<TopologyDiscoveryBackend> createDefaultDiscoveryBackend() {
   return std::make_unique<EmptyTopologyDiscovery>();
 }
 
+void ensureDefaultPlatformRegistration() {}
+
 } // namespace uniflow

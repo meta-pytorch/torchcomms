@@ -678,6 +678,90 @@ TEST_F(CudaDeviceTransferTest, CompletionKeepsApiAliveAfterAdapterDestruction) {
   EXPECT_TRUE(weakApi.expired());
 }
 
+TEST_F(CudaDeviceTransferTest, ScopedPinnedStorageUsesAllocationDevice) {
+  enter();
+  EXPECT_CALL(
+      *api_, hostAlloc(kSize, cudaHostAllocMapped | cudaHostAllocPortable))
+      .InSequence(sequence_)
+      .WillOnce(Return(Result<void*>(&dst_)));
+  leave();
+  enter();
+  EXPECT_CALL(*api_, hostGetDevicePointer(&dst_))
+      .InSequence(sequence_)
+      .WillOnce(Return(Result<void*>(&src_)));
+  leave();
+  enter();
+  EXPECT_CALL(*api_, hostFree(&dst_))
+      .InSequence(sequence_)
+      .WillOnce(Return(Ok()));
+  leave();
+  CudaDeviceAdapter adapter(api_, driver_);
+
+  auto allocation = adapter.pinnedHostAlloc(kDevice, kSize);
+  ASSERT_TRUE(allocation);
+  EXPECT_EQ(allocation.value(), &dst_);
+  auto mapped = adapter.hostGetDevicePointer(kDevice, allocation.value());
+  ASSERT_TRUE(mapped);
+  EXPECT_EQ(mapped.value(), &src_);
+  EXPECT_TRUE(adapter.pinnedHostFree(kDevice, allocation.value()));
+}
+
+TEST_F(
+    CudaDeviceTransferTest,
+    ScopedAllocationRestorationErrorFreesUnpublishedStorage) {
+  enter();
+  EXPECT_CALL(
+      *api_, hostAlloc(kSize, cudaHostAllocMapped | cudaHostAllocPortable))
+      .InSequence(sequence_)
+      .WillOnce(Return(Result<void*>(&dst_)));
+  leave(Err(ErrCode::DriverError, "restore failed"));
+  enter();
+  EXPECT_CALL(*api_, hostFree(&dst_))
+      .InSequence(sequence_)
+      .WillOnce(Return(Ok()));
+  leave();
+  CudaDeviceAdapter adapter(api_, driver_);
+
+  auto result = adapter.pinnedHostAlloc(kDevice, kSize);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().message(), "restore failed");
+}
+
+TEST_F(CudaDeviceTransferTest, ScopedAllocationFailureStillRestoresDevice) {
+  enter();
+  EXPECT_CALL(*api_, hostAlloc(kSize, _))
+      .InSequence(sequence_)
+      .WillOnce(
+          Return(Err(ErrCode::ResourceExhausted, "host allocation failed")));
+  leave();
+  CudaDeviceAdapter adapter(api_, driver_);
+
+  auto result = adapter.pinnedHostAlloc(kDevice, kSize);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrCode::ResourceExhausted);
+  EXPECT_EQ(result.error().message(), "host allocation failed");
+}
+
+TEST(DeviceAdapterTest, ScopedHostMethodsPreserveLegacyOverrides) {
+  StrictMock<LegacyDeviceAdapter> legacy;
+  DeviceAdapter& adapter = legacy;
+  int storage{0};
+  EXPECT_CALL(legacy, pinnedHostAlloc(kSize))
+      .WillOnce(Return(Result<void*>(&storage)));
+  EXPECT_CALL(legacy, hostGetDevicePointer(&storage))
+      .WillOnce(Return(Result<void*>(&storage)));
+  EXPECT_CALL(legacy, pinnedHostFree(&storage)).WillOnce(Return(Ok()));
+
+  auto allocation = adapter.pinnedHostAlloc(0, kSize);
+  ASSERT_TRUE(allocation);
+  auto mapped = adapter.hostGetDevicePointer(0, allocation.value());
+  ASSERT_TRUE(mapped);
+  EXPECT_EQ(mapped.value(), &storage);
+  EXPECT_TRUE(adapter.pinnedHostFree(0, allocation.value()));
+}
+
 TEST(CudaDeviceAdapterTest, PinnedHostAllocPassesMappedPortableFlags) {
   // pinnedHostAlloc must request mapped + portable so the returned host
   // pointer is usable for both DMA from a NIC and host-mapped device

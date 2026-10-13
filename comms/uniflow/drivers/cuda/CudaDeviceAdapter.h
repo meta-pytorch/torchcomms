@@ -40,6 +40,9 @@ class CudaDeviceAdapter : public DeviceAdapter {
   Result<void*> pinnedHostAlloc(size_t size) override;
   Status pinnedHostFree(void* ptr) override;
   Result<void*> hostGetDevicePointer(void* hostPtr) override;
+  Result<void*> pinnedHostAlloc(int deviceId, size_t size) override;
+  Status pinnedHostFree(int deviceId, void* ptr) override;
+  Result<void*> hostGetDevicePointer(int deviceId, void* hostPtr) override;
 
   Result<bool> isDmaBuffSupported(int deviceId) override;
   Result<DmaBuff> exportDmaBuff(

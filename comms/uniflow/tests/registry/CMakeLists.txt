@@ -3,3 +3,8 @@
 uniflow_add_unit_test(uniflow_transport_provider_registry_test TransportProviderRegistryTest.cpp)
 uniflow_add_unit_test(uniflow_platform_registry_test PlatformRegistryTest.cpp)
 uniflow_add_unit_test(uniflow_runtime_version_test RuntimeVersionTest.cpp)
+
+uniflow_add_unit_test(uniflow_platform_resources_test PlatformResourcesTest.cpp)
+if(UNIFLOW_ENABLE_RDMA)
+  uniflow_add_unit_test(uniflow_nic_topology_discovery_test NicTopologyDiscoveryTest.cpp)
+endif()

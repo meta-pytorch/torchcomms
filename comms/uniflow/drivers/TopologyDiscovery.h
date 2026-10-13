@@ -36,6 +36,10 @@ class TopologyDiscoveryBackend {
 /// accelerator backend selected by the build's GPU config).
 std::unique_ptr<TopologyDiscoveryBackend> createDefaultDiscoveryBackend();
 
+/// Registration-only anchor for the selected legacy platform assembly.
+/// Common runtime resources never call this entry point.
+void ensureDefaultPlatformRegistration();
+
 /// Process-wide singleton Topology, populated lazily on first call via
 /// `createDefaultDiscoveryBackend()->discover(topo)`. If discovery fails the
 /// error is logged; the (unavailable) topology is still returned.

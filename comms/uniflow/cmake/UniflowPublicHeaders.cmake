@@ -16,7 +16,12 @@ set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/core/MpscQueue.h
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/DeviceAdapter.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/DeviceAdapterAccess.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/HostDeviceAdapter.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/TopologyDiscovery.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/topology/GpuTopologyCache.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/topology/NicTopologyDiscovery.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/drivers/topology/PciTopology.h
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/executor/EpollEventBase.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/executor/EventBase.h
