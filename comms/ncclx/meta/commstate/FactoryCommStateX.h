@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <algorithm>
 #include "comm.h"
+#include "meta/MnnvlCliqueId.h"
 #include "meta/RankUtil.h"
 #include "socket.h"
 
@@ -12,6 +13,4 @@ namespace ncclx {
 // allgather and sets up NVL fabric topologies. Virtual topology overrides
 // (noLocal, vnode, vClique) are applied internally.
 ncclResult_t initCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm);
-
-ncclResult_t assignMnnvlCliqueIdBasedOnCliqueSize(int* cliqueId);
 } // namespace ncclx
