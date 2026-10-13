@@ -3,10 +3,9 @@
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
 #include "comms/uniflow/core/NumaUtils.h"
 #include "comms/uniflow/drivers/DeviceAdapter.h"
-#include "comms/uniflow/drivers/TopologyDiscovery.h"
-#include "comms/uniflow/drivers/cuda/CudaDevicePtr.h"
-#include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
+#include "comms/uniflow/drivers/DeviceAdapterAccess.h"
 #include "comms/uniflow/drivers/ibverbs/Mlx5Core.h"
+#include "comms/uniflow/drivers/topology/NicTopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
@@ -16,6 +15,7 @@
 #include <cstdlib>
 #include <random>
 #include <stdexcept>
+#include <utility>
 
 namespace uniflow {
 
@@ -227,18 +227,15 @@ void RdmaTransportInfo::reset() {
 // ---------------------------------------------------------------------------
 
 RdmaTransport::RdmaTransport(
+    std::shared_ptr<DeviceAdapterAccess> deviceAdapters,
     std::shared_ptr<IbvApi> ibvApi,
-    std::shared_ptr<CudaApi> cudaApi,
-    std::shared_ptr<CudaDriverApi> cudaDriverApi,
     EventBase* evb,
     std::shared_ptr<std::vector<NicResources>> nics,
     uint64_t domainId,
     RdmaTransportConfig config,
-    std::shared_ptr<RdmaSlabPool> slabPool,
-    std::shared_ptr<DeviceAdapter> deviceAdapter)
+    std::shared_ptr<RdmaSlabPool> slabPool)
     : ibvApi_(std::move(ibvApi)),
-      cudaApi_(std::move(cudaApi)),
-      cudaDriverApi_(std::move(cudaDriverApi)),
+      deviceAdapters_(std::move(deviceAdapters)),
       evb_(evb),
       nicsHandle_(std::move(nics)),
       config_(config),
@@ -250,8 +247,10 @@ RdmaTransport::RdmaTransport(
   CHECK_THROW_EXCEPTION(
       config_.numQps > 0 && config_.numQps <= 255, std::invalid_argument);
 
-  deviceAdapter_ =
-      deviceAdapter ? std::move(deviceAdapter) : createDeviceAdapter(cudaApi_);
+  if (!deviceAdapters_) {
+    deviceAdapters_ = std::make_shared<DeviceAdapterAccess>();
+  }
+  deviceAdapter_ = deviceAdapters_->hostAdapter();
 
   nics_ = std::span<NicResources>(nicsHandle_->data(), nicsHandle_->size());
 
@@ -1101,21 +1100,26 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
   if (data.memType() == MemoryType::VRAM && !options.stream.has_value()) {
     return make_ready_future<Status>(
         Err(ErrCode::InvalidArgument,
-            "VRAM transfer requires an explicit CUDA stream"));
+            "VRAM transfer requires an explicit device stream"));
   }
 
   auto task = std::make_shared<Task>(ioType);
   auto future = task->get_future();
   auto transfer = std::make_unique<SendRecvTransfer>(ioType, std::move(data));
-  if (options.stream.has_value()) {
-    transfer->stream = static_cast<cudaStream_t>(options.stream.value());
+  transfer->stream = options.stream;
+  auto copyAdapter = deviceAdapters_->hostAdapter();
+  if (transfer->data.memType() == MemoryType::VRAM) {
+    auto result = deviceAdapters_->gpuAdapter(transfer->data.deviceId());
+    if (!result) {
+      return make_ready_future<Status>(std::move(result).error());
+    }
+    copyAdapter = std::move(result).value();
   }
   transfer->copyEngine.emplace(
       transfer->data.memType(),
       transfer->data.deviceId(),
       transfer->stream,
-      cudaApi_.get(),
-      cudaDriverApi_.get());
+      std::move(copyAdapter));
   transfer->totalSteps = (transfer->data.size() + slabSize - 1) / slabSize;
   const uint16_t depth = static_cast<uint16_t>(std::min(
       {static_cast<uint64_t>(config_.pipelineDepth),
@@ -1127,6 +1131,12 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
     return make_ready_future<Status>(std::move(slabResult).error());
   }
   transfer->localSlabs = std::move(slabResult.value());
+  for (const auto& slab : transfer->localSlabs) {
+    auto valid = transfer->copyEngine->validate(slab);
+    if (!valid) {
+      return make_ready_future<Status>(std::move(valid).error());
+    }
+  }
   transfer->task = task;
 
   evb_->dispatch([this,
@@ -1323,7 +1333,7 @@ Status RdmaTransport::sendProgress(SendRecvTransfer& transfer) {
   const size_t slabSize = info_.header.slabSize;
 
   if (transfer.done < transfer.totalSteps) {
-    sendCopyProgress(transfer, depth, slabSize);
+    CHECK_EXPR(sendCopyProgress(transfer, depth, slabSize));
     CHECK_EXPR(sendTransmitProgress(transfer, depth, slabSize));
     CHECK_EXPR(pollCompletions());
   }
@@ -1347,13 +1357,13 @@ Status RdmaTransport::sendProgress(SendRecvTransfer& transfer) {
   return Ok();
 }
 
-void RdmaTransport::sendCopyProgress(
+Status RdmaTransport::sendCopyProgress(
     SendRecvTransfer& transfer,
     uint32_t depth,
     size_t slabSize) {
   if (transfer.copied >= transfer.totalSteps ||
       transfer.copied >= transfer.done + depth) {
-    return;
+    return Ok();
   }
 
   uint32_t slot = transfer.copied % depth;
@@ -1361,9 +1371,11 @@ void RdmaTransport::sendCopyProgress(
   size_t len = std::min(slabSize, transfer.data.size() - offset);
   const void* src = transfer.ptr(offset);
 
-  transfer.copyEngine->copyToSlab(transfer.localSlabs[slot], src, len);
+  CHECK_EXPR(
+      transfer.copyEngine->copyToSlab(transfer.localSlabs[slot], src, len));
 
   ++transfer.copied;
+  return Ok();
 }
 
 Status RdmaTransport::sendTransmitProgress(
@@ -1377,7 +1389,9 @@ Status RdmaTransport::sendTransmitProgress(
   uint32_t slot = transfer.notified % depth;
   auto& slab = transfer.localSlabs[slot];
 
-  if (!transfer.copyEngine->isCopyDone(slab)) {
+  auto copyDone = transfer.copyEngine->isCopyDone(slab);
+  CHECK_RETURN(copyDone);
+  if (!copyDone.value()) {
     return Ok();
   }
 
@@ -1398,7 +1412,7 @@ Status RdmaTransport::sendTransmitProgress(
     return Ok();
   }
 
-  transfer.copyEngine->resetState(slab);
+  CHECK_EXPR(transfer.copyEngine->resetState(slab));
   ctrlCts(slot).store(kSlabIdxInvalid, std::memory_order_release);
   ++transfer.notified;
   return Ok();
@@ -1528,7 +1542,7 @@ Status RdmaTransport::recvProgress(SendRecvTransfer& transfer) {
 
   if (transfer.done < transfer.totalSteps) {
     recvNotifyProgress(transfer, depth, slabSize);
-    recvCopyProgress(transfer, depth, slabSize);
+    CHECK_EXPR(recvCopyProgress(transfer, depth, slabSize));
     CHECK_EXPR(recvDoneProgress(transfer, depth));
     CHECK_EXPR(pollCompletions());
   }
@@ -1572,12 +1586,12 @@ void RdmaTransport::recvNotifyProgress(
   ++transfer.notified;
 }
 
-void RdmaTransport::recvCopyProgress(
+Status RdmaTransport::recvCopyProgress(
     SendRecvTransfer& transfer,
     uint32_t depth,
     size_t slabSize) {
   if (transfer.copied >= transfer.notified) {
-    return;
+    return Ok();
   }
 
   uint32_t slot = transfer.copied % depth;
@@ -1586,9 +1600,10 @@ void RdmaTransport::recvCopyProgress(
   size_t len = std::min(slabSize, transfer.data.size() - offset);
   void* dst = transfer.ptr(offset);
 
-  transfer.copyEngine->copyFromSlab(dst, slab, len);
+  CHECK_EXPR(transfer.copyEngine->copyFromSlab(dst, slab, len));
 
   ++transfer.copied;
+  return Ok();
 }
 
 Status RdmaTransport::recvDoneProgress(
@@ -1609,7 +1624,9 @@ Status RdmaTransport::recvDoneProgress(
 
   auto& slab = transfer.localSlabs[slot];
 
-  if (!transfer.copyEngine->isCopyDone(slab)) {
+  auto copyDone = transfer.copyEngine->isCopyDone(slab);
+  CHECK_RETURN(copyDone);
+  if (!copyDone.value()) {
     return Ok();
   }
 
@@ -1625,7 +1642,7 @@ Status RdmaTransport::recvDoneProgress(
     }
   }
 
-  transfer.copyEngine->resetState(slab);
+  CHECK_EXPR(transfer.copyEngine->resetState(slab));
 
   ++transfer.done;
   return Ok();
@@ -1843,18 +1860,18 @@ Status RdmaTransportFactory::supported(std::shared_ptr<IbvApi> ibvApi) {
 }
 
 RdmaTransportFactory::RdmaTransportFactory(
+    std::shared_ptr<DeviceAdapterAccess> deviceAdapters,
     const std::vector<std::string>& deviceNames,
     EventBase* evb,
     RdmaTransportConfig config,
     std::shared_ptr<IbvApi> ibvApi,
-    std::shared_ptr<CudaDriverApi> cudaDriverApi,
-    std::shared_ptr<CudaApi> cudaApi,
     std::optional<uint8_t> portNum,
-    std::shared_ptr<DeviceAdapter> deviceAdapter)
+    int deviceId,
+    const Topology* nicTopology)
     : TransportFactory(TransportType::RDMA),
       ibvApi_(std::move(ibvApi)),
-      cudaDriverApi_(std::move(cudaDriverApi)),
-      cudaApi_(std::move(cudaApi)),
+      deviceAdapters_(std::move(deviceAdapters)),
+      deviceId_(deviceId),
       evb_(evb),
       nicsHandle_(std::make_shared<std::vector<NicResources>>()),
       config_(config) {
@@ -1865,16 +1882,16 @@ RdmaTransportFactory::RdmaTransportFactory(
   if (!ibvApi_) {
     ibvApi_ = std::make_shared<IbvApi>();
   }
-  if (!cudaDriverApi_) {
-    cudaDriverApi_ = std::make_shared<CudaDriverApi>();
+  if (!deviceAdapters_) {
+    deviceAdapters_ = std::make_shared<DeviceAdapterAccess>();
   }
-  if (!cudaApi_) {
-    cudaApi_ = std::make_shared<CudaApi>();
+  deviceAdapter_ = deviceAdapters_->hostAdapter();
+  if (deviceId_ >= 0) {
+    auto adapter = deviceAdapters_->gpuAdapter(deviceId_);
+    CHECK_THROW_ERROR(adapter);
+    deviceAdapter_ = std::move(adapter).value();
   }
-
-  deviceAdapter_ = deviceAdapter
-      ? std::move(deviceAdapter)
-      : createDeviceAdapter(cudaApi_, cudaDriverApi_);
+  const auto& topology = nicTopology ? *nicTopology : sharedNicTopology();
 
   // Generate a random domain id to identify handles from this factory.
   std::mt19937_64 rng{std::random_device{}()};
@@ -1909,14 +1926,18 @@ RdmaTransportFactory::RdmaTransportFactory(
       throw std::runtime_error("RDMA device not found: " + deviceName);
     }
 
-    int numaNode = sharedTopology().nicNumaNode(deviceName);
+    int numaNode = topology.nicNumaNode(deviceName);
     nicsHandle_->emplace_back(
         targetDevice, ibvApi_, numaNode, config_.gidIndex, portNum);
   }
 
   if (config_.slabPoolConfig.slabNum > 0) {
     slabPool_ = std::make_shared<RdmaSlabPool>(
-        config_.slabPoolConfig, cudaApi_, ibvApi_, nicsHandle_, deviceAdapter_);
+        deviceAdapter_,
+        config_.slabPoolConfig,
+        ibvApi_,
+        nicsHandle_,
+        deviceId_);
   }
 }
 
@@ -1924,6 +1945,13 @@ Result<std::unique_ptr<RegistrationHandle>>
 RdmaTransportFactory::registerSegment(Segment& segment) {
   if (nicsHandle_->empty()) {
     return Err(ErrCode::InvalidArgument, "No NICs available for registration");
+  }
+
+  auto deviceAdapter = deviceAdapters_->hostAdapter();
+  if (segment.memType() == MemoryType::VRAM) {
+    auto adapter = deviceAdapters_->gpuAdapter(segment.deviceId());
+    CHECK_RETURN(adapter);
+    deviceAdapter = std::move(adapter).value();
   }
 
   int access =
@@ -1934,7 +1962,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
   // back to standard ibv_reg_mr.
   // RAII guard ensures closeDmaBuff() runs on every exit path.
   DmaBuff dmaBuff;
-  DmaBuffCloseGuard closeGuard{*deviceAdapter_, dmaBuff};
+  DmaBuffCloseGuard closeGuard{*deviceAdapter, dmaBuff};
   uint64_t registrationBase = 0;
 
   /*
@@ -1967,10 +1995,10 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
     }
 
     auto dmaBufSupported =
-        deviceAdapter_->isDmaBuffSupported(segment.deviceId());
+        deviceAdapter->isDmaBuffSupported(segment.deviceId());
     CHECK_RETURN(dmaBufSupported);
     if (dmaBufSupported.value()) {
-      auto exportRes = deviceAdapter_->exportDmaBuff(
+      auto exportRes = deviceAdapter->exportDmaBuff(
           segment.deviceId(),
           segment.mutable_data(),
           segment.len(),
@@ -2025,7 +2053,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
             segment.len(),
             exportRes.error().toString());
         return std::move(exportRes).error();
-      } else if (deviceAdapter_->allowsRegMrFallback()) {
+      } else if (deviceAdapter->allowsRegMrFallback()) {
         UNIFLOW_LOG_WARN(
             "registerSegment: exportDmaBuff failed for VRAM segment "
             "(device={}, ptr=0x{:x}, len={}): {}. Falling back to ibv_reg_mr; "
@@ -2047,7 +2075,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
             exportRes.error().toString());
         return std::move(exportRes).error();
       }
-    } else if (!deviceAdapter_->allowsRegMrFallback()) {
+    } else if (!deviceAdapter->allowsRegMrFallback()) {
       // DMA-BUF is the only valid registration path for this backend's
       // accelerator memory; a plain ibv_reg_mr would mis-register it.
       UNIFLOW_LOG_ERROR(
@@ -2125,7 +2153,7 @@ RdmaTransportFactory::registerSegment(Segment& segment) {
       ibvApi_,
       domainId_,
       registrationBase,
-      deviceAdapter_,
+      deviceAdapter,
       segment.deviceId(),
       numaNode);
 }
@@ -2163,8 +2191,18 @@ RdmaTransportFactory::importSegment(
 
   uint64_t domainId = header.domainId;
   const uint64_t registrationBase = header.registrationBase;
+  DevicePointerResolver pointerResolver;
+  if (registrationBase != 0) {
+    auto resolver = deviceAdapters_->devicePointerResolver();
+    CHECK_RETURN(resolver);
+    pointerResolver = std::move(resolver).value();
+  }
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), domainId, registrationBase, deviceAdapter_);
+      std::move(rkeys),
+      domainId,
+      registrationBase,
+      deviceAdapters_->hostAdapter(),
+      std::move(pointerResolver));
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
@@ -2175,15 +2213,13 @@ Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(
   config.numQps = std::min(peerTopo.numQps, config.numQps);
 
   return std::make_unique<RdmaTransport>(
+      deviceAdapters_,
       ibvApi_,
-      cudaApi_,
-      cudaDriverApi_,
       evb_,
       nicsHandle_,
       domainId_,
       config,
-      slabPool_,
-      deviceAdapter_);
+      slabPool_);
 }
 
 // TODO: get ai_zone_name from fbwhoami / serfwhoami or develop a plugin for

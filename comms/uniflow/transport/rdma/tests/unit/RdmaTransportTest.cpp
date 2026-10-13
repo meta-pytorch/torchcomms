@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/transport/rdma/RdmaTransport.h" // @manual=//comms/uniflow/transport/rdma:rdma-transport
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 #include "comms/uniflow/transport/rdma/RdmaTransportProvider.h"
 

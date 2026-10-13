@@ -2,18 +2,20 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "comms/uniflow/Result.h"
-#include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 
 namespace uniflow {
 
 struct NicResources;
+class CudaApi;
 class DeviceAdapter;
 class SlabAllocator;
 class PinnedBuffer;
@@ -28,7 +30,7 @@ class RdmaSlab;
 
 /// Factory-level shared pool of host-pinned staging buffers for copy-based
 /// send/recv. Composed from three RAII subsystems:
-///   - PinnedBuffer: host-pinned memory allocation + CUDA device pointer
+///   - PinnedBuffer: host storage and an optional device-scoped mapping
 ///   - MrSet: per-NIC ibv_mr registration
 ///   - SlabAllocator: index allocation (atomic bitmap ≤128 slabs, mutex
 ///     free-list otherwise)
@@ -36,6 +38,14 @@ class RdmaSlab;
 /// acquire() returns RdmaSlab RAII handles that auto-release on destruction.
 class RdmaSlabPool : public std::enable_shared_from_this<RdmaSlabPool> {
  public:
+  RdmaSlabPool(
+      std::shared_ptr<DeviceAdapter> deviceAdapter,
+      const RdmaSlabPoolConfig& config,
+      std::shared_ptr<IbvApi> ibvApi,
+      std::shared_ptr<std::vector<NicResources>> nics,
+      int deviceId = -1);
+
+  /// Legacy CUDA-shaped constructor, supplied by NVIDIA compatibility code.
   RdmaSlabPool(
       const RdmaSlabPoolConfig& config,
       std::shared_ptr<CudaApi> cudaApi,
@@ -60,6 +70,7 @@ class RdmaSlabPool : public std::enable_shared_from_this<RdmaSlabPool> {
   void* statePtr(uint16_t idx) const;
   uint64_t stateAddr(uint16_t idx) const;
   uint64_t stateDeviceAddr(uint16_t idx) const;
+  std::optional<uint64_t> mappedStateAddr(uint16_t idx, int deviceId) const;
 
   size_t slabSize() const {
     return config_.slabSize;
@@ -100,6 +111,14 @@ class RdmaSlab {
 
   uint64_t addr() const {
     return pool_->slabAddr(index_);
+  }
+
+  size_t size() const {
+    return pool_->slabSize();
+  }
+
+  std::optional<uint64_t> mappedStateAddr(int deviceId) const {
+    return pool_->mappedStateAddr(index_, deviceId);
   }
 
   uint64_t stateDeviceAddr() const {

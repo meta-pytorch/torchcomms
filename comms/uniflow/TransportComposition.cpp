@@ -3,7 +3,10 @@
 #include "comms/uniflow/TransportComposition.h"
 
 #include "comms/uniflow/drivers/DeviceAdapter.h"
+#include "comms/uniflow/drivers/DeviceAdapterAccess.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
+#include "comms/uniflow/drivers/topology/GpuTopologyCache.h"
+#include "comms/uniflow/drivers/topology/NicTopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/registry/GpuBackendSelector.h"
 
@@ -181,7 +184,7 @@ Status MultiTransportFactory::supported(TransportType type) {
   switch (type) {
     case TransportType::RDMA:
 #ifdef UNIFLOW_ENABLE_RDMA_TRANSPORT
-      return RdmaTransportProvider({}).supported();
+      return RdmaTransportProvider(nullptr, {}).supported();
 #else
       return Err(ErrCode::NotImplemented, "rdma transport is not enabled");
 #endif
@@ -227,10 +230,21 @@ TransportProviderList makeDefaultTransportProviders(
     const MultiTransportFactoryOptions& options) {
   validateGpuBackendRequest(options.gpuBackend);
   TransportProviderList providers;
-  auto& topo = sharedTopology();
-  CHECK_THROW_EXCEPTION(
-      deviceId >= -1 && deviceId < static_cast<int>(topo.gpuCount()),
-      std::runtime_error);
+  CHECK_THROW_EXCEPTION(deviceId >= -1, std::runtime_error);
+  ensureDefaultPlatformRegistration();
+  std::shared_ptr<Topology> gpuTopology;
+  const Topology* topology = nullptr;
+  if (deviceId >= 0) {
+    auto discovered = sharedGpuTopology(options.gpuBackend);
+    CHECK_THROW_ERROR(discovered);
+    gpuTopology = std::move(discovered).value();
+    topology = gpuTopology.get();
+    CHECK_THROW_EXCEPTION(
+        deviceId < static_cast<int>(topology->gpuCount()), std::runtime_error);
+  } else {
+    topology = &sharedNicTopology();
+  }
+  const auto& topo = *topology;
 
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
   // An explicit TCP request (via preferred/intra/interNodeTransport) must carry
@@ -280,7 +294,13 @@ TransportProviderList makeDefaultTransportProviders(
     config.trafficClass = options.trafficClass;
     config.numQps = static_cast<uint32_t>(nics.size());
     providers.emplace_back(
-        std::make_shared<RdmaTransportProvider>(std::move(nics), config));
+        std::make_shared<RdmaTransportProvider>(
+            std::make_shared<DeviceAdapterAccess>(options.gpuBackend),
+            std::move(nics),
+            config,
+            nullptr,
+            std::nullopt,
+            gpuTopology));
   }
 #endif
 

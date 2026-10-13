@@ -124,7 +124,8 @@ class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
       std::vector<uint32_t> rkeys,
       uint64_t domainId,
       uint64_t registrationBase = 0,
-      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr,
+      DevicePointerResolver pointerResolver = {});
 
   ~RdmaRemoteRegistrationHandle() override = default;
 
@@ -163,6 +164,7 @@ class RdmaRemoteRegistrationHandle : public RemoteRegistrationHandle {
   uint64_t domainId_;
   uint64_t registrationBase_{0};
   std::shared_ptr<DeviceAdapter> deviceAdapter_;
+  DevicePointerResolver pointerResolver_;
 };
 
 } // namespace uniflow

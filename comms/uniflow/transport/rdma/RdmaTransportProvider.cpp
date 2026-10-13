@@ -2,25 +2,28 @@
 
 #include "comms/uniflow/transport/rdma/RdmaTransportProvider.h"
 
+#include <optional>
+#include <string>
 #include <utility>
+
+#include "comms/uniflow/MultiTransportOptions.h"
+#include "comms/uniflow/drivers/DeviceAdapterAccess.h"
 
 namespace uniflow {
 
 RdmaTransportProvider::RdmaTransportProvider(
+    std::shared_ptr<DeviceAdapterAccess> deviceAdapters,
     std::vector<std::string> deviceNames,
     RdmaTransportConfig config,
     std::shared_ptr<IbvApi> ibvApi,
-    std::shared_ptr<CudaDriverApi> cudaDriverApi,
-    std::shared_ptr<CudaApi> cudaApi,
     std::optional<uint8_t> portNum,
-    std::shared_ptr<DeviceAdapter> deviceAdapter)
-    : deviceNames_(std::move(deviceNames)),
+    std::shared_ptr<const Topology> topology)
+    : deviceAdapters_(std::move(deviceAdapters)),
+      deviceNames_(std::move(deviceNames)),
       config_(config),
       ibvApi_(std::move(ibvApi)),
-      cudaDriverApi_(std::move(cudaDriverApi)),
-      cudaApi_(std::move(cudaApi)),
       portNum_(portNum),
-      deviceAdapter_(std::move(deviceAdapter)) {}
+      topology_(std::move(topology)) {}
 
 TransportType RdmaTransportProvider::transportType() const noexcept {
   return TransportType::RDMA;
@@ -39,23 +42,24 @@ Result<std::shared_ptr<TransportFactory>> RdmaTransportProvider::createFactory(
     return Err(ErrCode::InvalidArgument, "RDMA provider requires an EventBase");
   }
 
-  auto ibvApi = ibvApi_ ? ibvApi_ : std::make_shared<IbvApi>();
-  auto cudaDriverApi =
-      cudaDriverApi_ ? cudaDriverApi_ : std::make_shared<CudaDriverApi>();
-  auto cudaApi = cudaApi_ ? cudaApi_ : std::make_shared<CudaApi>();
-  auto deviceAdapter = deviceAdapter_
-      ? deviceAdapter_
-      : createDeviceAdapter(cudaApi, cudaDriverApi);
-
+  auto deviceAdapters = deviceAdapters_;
+  if (!deviceAdapters) {
+    std::optional<std::string> gpuBackend;
+    if (context.options) {
+      gpuBackend = context.options->gpuBackend;
+    }
+    deviceAdapters =
+        std::make_shared<DeviceAdapterAccess>(std::move(gpuBackend));
+  }
   return std::make_shared<RdmaTransportFactory>(
+      std::move(deviceAdapters),
       deviceNames_,
       context.eventBase,
       config_,
-      std::move(ibvApi),
-      std::move(cudaDriverApi),
-      std::move(cudaApi),
+      ibvApi_,
       portNum_,
-      std::move(deviceAdapter));
+      context.deviceId,
+      topology_ ? topology_.get() : context.topology);
 }
 
 } // namespace uniflow

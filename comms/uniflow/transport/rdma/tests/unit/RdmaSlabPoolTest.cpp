@@ -4,7 +4,7 @@
 
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/drivers/ibverbs/mock/MockIbvApi.h"
-#include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/transport/rdma/RdmaTransport.h" // @manual=//comms/uniflow/transport/rdma:rdma-transport
 
 #include <algorithm>
 #include <cstdlib>
