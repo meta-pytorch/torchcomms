@@ -13,14 +13,17 @@
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
 
 #include "comms/uniflow/drivers/DeviceAdapter.h"
-#include "comms/uniflow/drivers/cuda/CudaApi.h"
-#include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/EventBase.h"
+#include "comms/uniflow/transport/Topology.h"
 #include "comms/uniflow/transport/Transport.h"
 #include "comms/uniflow/transport/rdma/RdmaResources.h"
 
 namespace uniflow {
+
+class CudaApi;
+class CudaDriverApi;
+class DeviceAdapterAccess;
 
 constexpr uint8_t kRdmaVersion{2};
 
@@ -178,6 +181,16 @@ class RdmaTransport : public Transport {
    * @param config  Transport configuration (numQps, QP attributes, etc.).
    *                numQps must be in [1, 255].
    */
+  RdmaTransport(
+      std::shared_ptr<DeviceAdapterAccess> deviceAdapters,
+      std::shared_ptr<IbvApi> ibvApi,
+      EventBase* evb,
+      std::shared_ptr<std::vector<NicResources>> nics,
+      uint64_t domainId,
+      RdmaTransportConfig config = {},
+      std::shared_ptr<RdmaSlabPool> slabPool = nullptr);
+
+  /// Legacy CUDA-shaped constructor, supplied by NVIDIA compatibility code.
   RdmaTransport(
       std::shared_ptr<IbvApi> ibvApi,
       std::shared_ptr<CudaApi> cudaApi,
@@ -370,7 +383,7 @@ class RdmaTransport : public Transport {
     IOType opType;
     Segment::Span data;
     uint32_t taskId{};
-    std::optional<cudaStream_t> stream;
+    std::optional<DeviceStream> stream;
     uint32_t initStep{0};
     uint64_t totalSteps{0};
 
@@ -496,7 +509,7 @@ class RdmaTransport : public Transport {
   // --- Send pipeline ---
 
   Status sendProgress(SendRecvTransfer& transfer);
-  void
+  Status
   sendCopyProgress(SendRecvTransfer& transfer, uint32_t depth, size_t slabSize);
   Status sendTransmitProgress(
       SendRecvTransfer& transfer,
@@ -517,7 +530,7 @@ class RdmaTransport : public Transport {
       SendRecvTransfer& transfer,
       uint32_t depth,
       size_t slabSize);
-  void
+  Status
   recvCopyProgress(SendRecvTransfer& transfer, uint32_t depth, size_t slabSize);
   Status recvDoneProgress(SendRecvTransfer& transfer, uint32_t depth);
   Result<bool>
@@ -526,8 +539,7 @@ class RdmaTransport : public Transport {
   friend class GetQpAvailNumaTest;
 
   const std::shared_ptr<IbvApi> ibvApi_;
-  const std::shared_ptr<CudaApi> cudaApi_;
-  std::shared_ptr<CudaDriverApi> cudaDriverApi_;
+  std::shared_ptr<DeviceAdapterAccess> deviceAdapters_;
   std::shared_ptr<DeviceAdapter> deviceAdapter_;
   EventBase* evb_{nullptr};
 
@@ -639,10 +651,20 @@ class RdmaTransportFactory : public TransportFactory {
    *                     a default IbvApi is created and init()'d.
    * @param portNum      Physical port number. If nullopt, auto-discovers the
    *                     first active port on each device.
-   * @param deviceAdapter  Shared allocator and registration adapter, also used
-   *                       by transports and slab pools. Null selects the
-   *                       current build's default adapter.
+   * @param deviceAdapters  Host allocations and lazy access to an actual GPU.
+   *                        Null creates access without resolving a GPU backend.
    */
+  RdmaTransportFactory(
+      std::shared_ptr<DeviceAdapterAccess> deviceAdapters,
+      const std::vector<std::string>& deviceNames,
+      EventBase* evb,
+      RdmaTransportConfig config = {},
+      std::shared_ptr<IbvApi> ibvApi = nullptr,
+      std::optional<uint8_t> portNum = std::nullopt,
+      int deviceId = -1,
+      const Topology* nicTopology = nullptr);
+
+  /// Legacy CUDA-shaped constructor, supplied by NVIDIA compatibility code.
   explicit RdmaTransportFactory(
       const std::vector<std::string>& deviceNames,
       EventBase* evb,
@@ -687,8 +709,8 @@ class RdmaTransportFactory : public TransportFactory {
   Status canConnect(std::span<const uint8_t> peerTopology) override;
 
   std::shared_ptr<IbvApi> ibvApi_;
-  std::shared_ptr<CudaDriverApi> cudaDriverApi_;
-  std::shared_ptr<CudaApi> cudaApi_;
+  std::shared_ptr<DeviceAdapterAccess> deviceAdapters_;
+  const int deviceId_;
 
   EventBase* evb_{nullptr};
   uint64_t domainId_{0};

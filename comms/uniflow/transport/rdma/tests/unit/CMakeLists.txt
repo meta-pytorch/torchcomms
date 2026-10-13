@@ -8,3 +8,5 @@ uniflow_add_gpu_test(
   uniflow_rdma_slab_pool_test RdmaSlabPoolTest.cpp unit)
 uniflow_add_gpu_test(
   uniflow_rdma_transport_test RdmaTransportTest.cpp unit)
+
+uniflow_add_unit_test(uniflow_rdma_neutral_test RdmaNeutralTest.cpp)

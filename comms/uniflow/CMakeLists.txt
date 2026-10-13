@@ -553,6 +553,12 @@ if(UNIFLOW_ENABLE_RDMA)
     $<TARGET_OBJECTS:uniflow_rdma_transport>)
   target_link_libraries(uniflow_implementation INTERFACE
     uniflow_rdma_transport)
+  if(TARGET uniflow_rdma_compatibility)
+    target_sources(uniflow_implementation INTERFACE
+      $<TARGET_OBJECTS:uniflow_rdma_compatibility>)
+    target_link_libraries(uniflow_implementation INTERFACE
+      uniflow_rdma_compatibility)
+  endif()
 endif()
 if(UNIFLOW_ENABLE_TCP)
   target_sources(uniflow_implementation INTERFACE

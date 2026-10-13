@@ -18,18 +18,25 @@ namespace uniflow {
 
 class PinnedBuffer {
  public:
-  PinnedBuffer(size_t size, std::shared_ptr<DeviceAdapter> deviceAdapter)
-      : deviceAdapter_(std::move(deviceAdapter)) {
-    auto result = deviceAdapter_->pinnedHostAlloc(size);
+  PinnedBuffer(
+      size_t size,
+      std::shared_ptr<DeviceAdapter> deviceAdapter,
+      int deviceId)
+      : deviceAdapter_(std::move(deviceAdapter)), deviceId_(deviceId) {
+    auto result = deviceId_ >= 0
+        ? deviceAdapter_->pinnedHostAlloc(deviceId_, size)
+        : deviceAdapter_->pinnedHostAlloc(size);
     if (!result) {
       throw std::runtime_error(
           "PinnedBuffer: pinnedHostAlloc failed: " + result.error().toString());
     }
     hostPtr_ = result.value();
 
-    auto devResult = deviceAdapter_->hostGetDevicePointer(hostPtr_);
+    auto devResult = deviceId_ >= 0
+        ? deviceAdapter_->hostGetDevicePointer(deviceId_, hostPtr_)
+        : deviceAdapter_->hostGetDevicePointer(hostPtr_);
     if (!devResult) {
-      deviceAdapter_->pinnedHostFree(hostPtr_);
+      free();
       throw std::runtime_error(
           "PinnedBuffer: hostGetDevicePointer failed: " +
           devResult.error().toString());
@@ -38,9 +45,7 @@ class PinnedBuffer {
   }
 
   ~PinnedBuffer() {
-    if (hostPtr_) {
-      deviceAdapter_->pinnedHostFree(hostPtr_);
-    }
+    free();
   }
 
   PinnedBuffer(const PinnedBuffer&) = delete;
@@ -54,9 +59,27 @@ class PinnedBuffer {
   uintptr_t devicePtr() const {
     return devicePtr_;
   }
+  std::optional<uintptr_t> mappedDevicePtr(int deviceId) const {
+    if (deviceId < 0 || deviceId != deviceId_ || devicePtr_ == 0) {
+      return std::nullopt;
+    }
+    return devicePtr_;
+  }
 
  private:
+  void free() {
+    if (hostPtr_) {
+      if (deviceId_ >= 0) {
+        deviceAdapter_->pinnedHostFree(deviceId_, hostPtr_);
+      } else {
+        deviceAdapter_->pinnedHostFree(hostPtr_);
+      }
+      hostPtr_ = nullptr;
+    }
+  }
+
   std::shared_ptr<DeviceAdapter> deviceAdapter_;
+  const int deviceId_;
   void* hostPtr_{nullptr};
   uintptr_t devicePtr_{0};
 };
@@ -267,26 +290,25 @@ RdmaSlab& RdmaSlab::operator=(RdmaSlab&& other) noexcept {
 // --- RdmaSlabPool ---
 
 RdmaSlabPool::RdmaSlabPool(
+    std::shared_ptr<DeviceAdapter> deviceAdapter,
     const RdmaSlabPoolConfig& config,
-    std::shared_ptr<CudaApi> cudaApi,
     std::shared_ptr<IbvApi> ibvApi,
     std::shared_ptr<std::vector<NicResources>> nics,
-    std::shared_ptr<DeviceAdapter> deviceAdapter)
+    int deviceId)
     : config_(config), nics_(std::move(nics)) {
   if (config_.slabSize == 0 || config_.slabNum == 0) {
     throw std::invalid_argument(
         "RdmaSlabPool: slabSize must be > 0 and slabNum must be > 0");
   }
 
-  if (!deviceAdapter) {
-    deviceAdapter = createDeviceAdapter(cudaApi);
-  }
+  CHECK_THROW_EXCEPTION(deviceAdapter != nullptr, std::invalid_argument);
 
   const size_t bufferSize = config_.slabNum * config_.slabSize;
   const size_t stateSize = config_.slabNum * sizeof(uint64_t);
   const size_t totalSize = bufferSize + stateSize;
 
-  buffer_ = std::make_unique<PinnedBuffer>(totalSize, std::move(deviceAdapter));
+  buffer_ = std::make_unique<PinnedBuffer>(
+      totalSize, std::move(deviceAdapter), deviceId);
   std::memset(static_cast<char*>(buffer_->hostPtr()), 0, totalSize);
 
   mrSet_ = std::make_unique<MrSet>(
@@ -362,6 +384,16 @@ uint64_t RdmaSlabPool::stateAddr(uint16_t idx) const {
 uint64_t RdmaSlabPool::stateDeviceAddr(uint16_t idx) const {
   return buffer_->devicePtr() + config_.slabNum * config_.slabSize +
       idx * sizeof(uint64_t);
+}
+
+std::optional<uint64_t> RdmaSlabPool::mappedStateAddr(
+    uint16_t idx,
+    int deviceId) const {
+  const auto ptr = buffer_->mappedDevicePtr(deviceId);
+  if (!ptr) {
+    return std::nullopt;
+  }
+  return *ptr + config_.slabNum * config_.slabSize + idx * sizeof(uint64_t);
 }
 
 } // namespace uniflow

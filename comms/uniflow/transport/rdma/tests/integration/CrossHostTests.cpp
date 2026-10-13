@@ -18,7 +18,7 @@
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/transport/rdma/RdmaTransport.h" // @manual=//comms/uniflow/transport/rdma:rdma-transport
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 

@@ -20,7 +20,7 @@
 #include "comms/uniflow/drivers/ibverbs/IbvApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/logging/Logger.h"
-#include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/transport/rdma/RdmaTransport.h" // @manual=//comms/uniflow/transport/rdma:rdma-transport
 
 namespace uniflow::benchmark {
 

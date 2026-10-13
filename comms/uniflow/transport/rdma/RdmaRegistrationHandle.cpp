@@ -81,17 +81,16 @@ RdmaRemoteRegistrationHandle::RdmaRemoteRegistrationHandle(
     std::vector<uint32_t> rkeys,
     uint64_t domainId,
     uint64_t registrationBase,
-    std::shared_ptr<DeviceAdapter> deviceAdapter)
+    std::shared_ptr<DeviceAdapter> deviceAdapter,
+    DevicePointerResolver pointerResolver)
     : rkeys_(std::move(rkeys)),
       domainId_(domainId),
       registrationBase_(registrationBase),
-      deviceAdapter_(std::move(deviceAdapter)) {
-  // toWireAddr() dereferences deviceAdapter_ whenever registrationBase_ != 0,
-  // so a translated handle must be given a non-null adapter. Enforced in
-  // release builds too: a null adapter here is a programming error, not a
-  // runtime input.
+      deviceAdapter_(std::move(deviceAdapter)),
+      pointerResolver_(std::move(pointerResolver)) {
+  // Translated wire addresses require a retained decoder or injected adapter.
   CHECK_THROW_EXCEPTION(
-      registrationBase_ == 0 || deviceAdapter_ != nullptr,
+      registrationBase_ == 0 || pointerResolver_ || deviceAdapter_ != nullptr,
       std::invalid_argument);
 }
 
@@ -99,8 +98,11 @@ uint64_t RdmaRemoteRegistrationHandle::toWireAddr(const void* ptr) const {
   /// Remote handles don't carry information on whether the target is a device
   /// ptr or not So we use the fact that only targets that have a non-zero
   /// registrationBase require pointer translation
-  auto devAddr = registrationBase_ ? deviceAdapter_->resolveDevicePointer(ptr)
-                                   : reinterpret_cast<uint64_t>(ptr);
+  auto devAddr = reinterpret_cast<uint64_t>(ptr);
+  if (registrationBase_ != 0) {
+    devAddr = pointerResolver_ ? pointerResolver_(ptr)
+                               : deviceAdapter_->resolveDevicePointer(ptr);
+  }
   return devAddr - registrationBase_;
 }
 

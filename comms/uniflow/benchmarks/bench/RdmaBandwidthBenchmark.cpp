@@ -26,7 +26,7 @@
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/Topology.h"
 #include "comms/uniflow/transport/rdma/RdmaResources.h"
-#include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/transport/rdma/RdmaTransport.h" // @manual=//comms/uniflow/transport/rdma:rdma-transport
 
 namespace uniflow::benchmark {
 

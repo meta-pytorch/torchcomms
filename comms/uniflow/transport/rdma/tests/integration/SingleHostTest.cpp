@@ -10,7 +10,7 @@
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/transport/rdma/RdmaRegistrationHandle.h"
 #include "comms/uniflow/transport/rdma/RdmaSlabPool.h"
-#include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#include "comms/uniflow/transport/rdma/RdmaTransport.h" // @manual=//comms/uniflow/transport/rdma:rdma-transport
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 #include <algorithm>
