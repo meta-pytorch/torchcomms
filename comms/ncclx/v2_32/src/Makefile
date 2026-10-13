@@ -85,6 +85,7 @@ LIBSRCFILES := \
 LIBSRCFILES += \
 	${SHAREDDIR}/meta/RankUtil.cc \
 	${SHAREDDIR}/meta/DeviceRackSerial.cc \
+	${SHAREDDIR}/meta/MnnvlCliqueId.cc \
 	${SHAREDDIR}/meta/collectives/AllReduceSparseBlock.cc \
 	${SHAREDDIR}/meta/colltrace/CollTraceWrapper.cc \
 	${SHAREDDIR}/meta/colltrace/ProxyMock.cc \
