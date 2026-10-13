@@ -500,6 +500,8 @@ PyTorch                 RegCache              IpcRegCache         CtranMapper(s)
    |                       |-- lookupSegments --->|                    |
    |                       |                      |                    |
    |                       |-- releaseFromAll --->|                    |
+   |                       |   (removeFromAll if  |                    |
+   |                       |    skipRemRelease)   |                    |
    |                       |                      |-- remReleaseMem -->|
    |                       |                      |   (for each        |
    |                       |                      |    active mapper)  |

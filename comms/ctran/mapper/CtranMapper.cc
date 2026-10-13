@@ -119,10 +119,6 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
     ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
     ipcRegCache->init();
 
-    // Register this mapper as an IpcExportClient so globalDeregister
-    // can iterate all active mappers to send remote releases.
-    ipcRegCache->registerExportClient(this);
-
     // AllGather IPC server addresses after comm is set
     FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
   } else {
@@ -278,7 +274,14 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
 
   this->rank = statex->rank();
 
-  return;
+  if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+    // Register this mapper as an IpcExportClient so globalDeregister can
+    // iterate all active mappers to send remote releases. Register last:
+    // ~CtranMapper() does not run if the constructor throws.
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
+    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+    ipcRegCache->registerExportClient(this);
+  }
 }
 
 void CtranMapper::reportProfiling(bool flush) {
@@ -471,6 +474,27 @@ void CtranMapper::setAtDestruction() {
 }
 
 CtranMapper::~CtranMapper() {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
+  const auto drainResult =
+      ipcRegCache->deregisterExportClientAndDrain(this, [this] {
+        auto result = commSuccess;
+        const auto entries = exportRegCache_.rlock()->dump();
+        for (const auto& [regElem, _] : entries) {
+          const auto releaseResult = remReleaseMem(regElem);
+          if (result == commSuccess && releaseResult != commSuccess) {
+            result = releaseResult;
+          }
+        }
+        return result;
+      });
+  if (drainResult != commSuccess) {
+    CTRAN_LOG(
+        WARN,
+        "CTRAN-MAPPER: failed to drain exported registrations during destruction: {}",
+        static_cast<int>(drainResult));
+  }
+
 #ifdef ENABLE_META_COMPRESSION
   ctran::utils::compressionManagerDestroy(this);
 #endif
@@ -481,28 +505,10 @@ CtranMapper::~CtranMapper() {
 
   this->reportProfiling(true);
 
-  // Release all remote IPC registrations tracked by this mapper.
-  // This sends kRelease to remote peers so they can decrement their refCounts
-  // and eventually unmap CUDA IPC memory. Must happen BEFORE
-  // deregisterExportClient so the mapper is still in the client list during
-  // cleanup.
-  {
-    auto entries = exportRegCache_.rlock()->dump();
-    for (auto& [regElem, _] : entries) {
-      remReleaseMem(regElem);
-    }
-  }
-
-  // Deregister from IpcRegCache so globalDeregister won't call this mapper
-  // after it's destroyed.
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-  ipcRegCache->deregisterExportClient(this);
-
   // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
   // blocked.
-  this->postedCbCtrlReqs_.clear();
+  this->postedCbCtrlReqs_.wlock()->clear();
 
   // Dot not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in
@@ -570,7 +576,8 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
         exportedNvlRanks.size());
   }
 
-  for (auto& [peerRank, exportCount] : exportedNvlRanks) {
+  for (auto it = exportedNvlRanks.begin(); it != exportedNvlRanks.end(); ++it) {
+    const auto [peerRank, exportCount] = *it;
     // Warning: the remote rank may release the memory after the next import,
     // becase exportMem msgs are transferred over CtranIB&CtranSocket while
     // releaseMem msgs are transferred over AsyncSocket. To prevent the remote
@@ -578,16 +585,20 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     // add version ID to each exported segment
 
     folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
-    std::unique_ptr<regcache::IpcReqCb> req =
-        std::make_unique<regcache::IpcReqCb>();
+    auto req = std::make_shared<regcache::IpcReqCb>();
     auto ipcRegCache = ctran::IpcRegCache::getInstance();
     ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-    FB_COMMCHECK(ipcRegCache->notifyRemoteIpcRelease(
+    const auto result = ipcRegCache->notifyRemoteIpcRelease(
         comm->statex_->gPid(),
         peerAddr,
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
-        req.get(),
-        exportCount));
+        req,
+        exportCount);
+    if (result != commSuccess) {
+      const std::unordered_map<int, int> pending(it, exportedNvlRanks.end());
+      exportRegCache_.wlock()->restore(regElem, pending);
+      return result;
+    }
 
     CTRAN_LOG_TRACE(
         COLL,
@@ -597,10 +608,14 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
 
     // IPC release requests will be checked in progress and erased at
     // completion. Mapper needs to free up all requests at destruction.
-    this->postedCbCtrlReqs_.push_back(std::move(req));
+    this->postedCbCtrlReqs_.wlock()->push_back(std::move(req));
   }
 
   return commSuccess;
+}
+
+void CtranMapper::removeExportedMem(ctran::regcache::RegElem* regElem) {
+  exportRegCache_.wlock()->remove(regElem);
 }
 
 commResult_t CtranMapper::regMem(
@@ -765,7 +780,7 @@ commResult_t CtranMapper::deregDynamic(void* regHdl) {
 
 void CtranMapper::removeFromExportCache(void* regHdl) {
   auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
-  exportRegCache_.wlock()->remove(regElem);
+  removeExportedMem(regElem);
 }
 
 commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {

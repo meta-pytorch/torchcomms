@@ -313,14 +313,17 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
       EXPECT_EQ(it->completed.load(), true);
     }
     // Send release message to all other ranks
-    std::vector<ctran::regcache::IpcReqCb> releaseReqs(numRanks - 1);
+    std::vector<std::shared_ptr<ctran::regcache::IpcReqCb>> releaseReqs;
+    releaseReqs.reserve(numRanks - 1);
     for (int peer = 1; peer < numRanks; peer++) {
+      auto request = std::make_shared<ctran::regcache::IpcReqCb>();
       COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcRelease(
-          myId, peerServerAddrs[peer], ipcRegElem, &releaseReqs[peer - 1]));
+          myId, peerServerAddrs[peer], ipcRegElem, request));
+      releaseReqs.push_back(std::move(request));
     }
     mapper->barrier();
     for (auto it = releaseReqs.begin(); it != releaseReqs.end(); it++) {
-      EXPECT_EQ(it->completed.load(), true);
+      EXPECT_EQ((*it)->completed.load(), true);
     }
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
     CUDACHECK_TEST(cudaFree(data));
