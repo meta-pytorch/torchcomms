@@ -282,6 +282,10 @@ __device__ __noinline__ void reduce_token_rows_any(const bf16_t* __restrict__ in
 // grouped=0 is [nrecv, num_topk, hidden] at row i*K+k, or the expanded layout
 // addressed through row_map. `expert_rows` (grouped only, instead of row_map)
 // indexes a grouped-by-expert input; see the branch below.
+// kSel picks which source ranks' tokens a launch covers, block-uniformly: 0 all of them;
+// 1 those outside [sel_lo, sel_hi), 2 those inside it. The hybrid combine uses 1 and 2 to push
+// the partials bound for other nodes first (RCCL_EP_HYB_COMB_SPLIT).
+template <int kSel>
 __global__ void combine_impl(EpConfig cfg,
                              const bf16_t* __restrict__ in_y,        // [nrecv, hidden] or [rows, hidden]
                              const float* __restrict__ in_w,         // weights or nullptr
@@ -291,12 +295,17 @@ __global__ void combine_impl(EpConfig cfg,
                              int fma_mode,
                              const int32_t* __restrict__ recv_topk,  // [nrecv, num_topk] local ids, -1 outside
                              const int32_t* __restrict__ src_idx,    // [nrecv]
-                             int num_recv, int grouped, WindowView self, WindowView* __restrict__ peer_views) {
+                             int num_recv, int grouped, WindowView self, WindowView* __restrict__ peer_views,
+                             int sel_lo, int sel_hi) {
   // Grid mirrors dispatch: block x owns one SOURCE rank, so the peer view is
   // loaded once per CTA and every write goes to a single peer. Parallelism is
   // gridDim.y * nwarps and only gridDim.y follows the budget; see kEpWaves.
   const int src_rank = blockIdx.x;
   if (src_rank >= cfg.num_ranks) return;   // block-uniform, so the barrier below is safe
+  if constexpr (kSel != 0) {
+    const bool in = src_rank >= sel_lo && src_rank < sel_hi;
+    if ((kSel == 2) != in) return;  // block-uniform too
+  }
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int K = cfg.num_topk;
 
