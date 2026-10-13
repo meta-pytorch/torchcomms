@@ -56,6 +56,7 @@ extern "C" {
 // [NCCLX] ncclConfig_t carries commDesc and splitGroupRanks.
 #define NCCL_COMM_DESCRIPTION
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
+#define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
 
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
