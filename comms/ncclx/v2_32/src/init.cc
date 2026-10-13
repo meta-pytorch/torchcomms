@@ -2197,6 +2197,19 @@ static ncclResult_t getParentRanks(int parentRanks, int parentRank, int* exclude
   return ncclSuccess;
 }
 
+// [META] The logging identity every NCCLX subsystem reads: allocation tracing
+// stages it before each comm allocation, and CollTrace and ProxyTrace key their
+// records on it. Filled right after commAlloc, before bootstrap: ncclProxyInit
+// runs inside bootstrapInit / bootstrapSplit and starts ProxyTrace, which
+// registers the comm under it.
+static void ncclxFillLogMetaData(struct ncclComm* comm, uint64_t commId) {
+  comm->logMetaData.commId = commId;
+  comm->logMetaData.commHash = comm->commHash;
+  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
+  comm->logMetaData.rank = comm->rank;
+  comm->logMetaData.nRanks = comm->nRanks;
+}
+
 static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   struct ncclCommInitRankAsyncJob* job = (struct ncclCommInitRankAsyncJob*)job_;
   ncclComm_t comm = job->comm;
@@ -2250,6 +2263,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     timers[TIMER_INIT_ALLOC] = clockNano();
     NCCLCHECKGOTO(commAlloc(comm, job->parent, job->nranks, job->myrank), res, fail);
     timers[TIMER_INIT_ALLOC] = clockNano() - timers[TIMER_INIT_ALLOC];
+    ncclxFillLogMetaData(comm, /*commId=*/0);
     comm->isGrow = false;
     INFO(NCCL_INIT,
          "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%" PRIx64 " parent %p childCount %d "
@@ -2276,6 +2290,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     timers[TIMER_INIT_ALLOC] = clockNano();
     NCCLCHECKGOTO(commAlloc(comm, NULL, job->nranks, job->myrank), res, fail);
     timers[TIMER_INIT_ALLOC] = clockNano() - timers[TIMER_INIT_ALLOC];
+    ncclxFillLogMetaData(comm, commIdHash);
 
     comm->isGrow = job->isGrow;
     INFO(NCCL_INIT, "[Rank %d] %s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init START",
@@ -2287,15 +2302,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   }
   comm->cudaArch = cudaArch;
   comm->maxSharedMemOptin = maxSharedMem;
-
-  // [META] Populate the logging identity every NCCLX subsystem reads. Allocation
-  // tracing stages it before each comm allocation, and CollTrace and ProxyTrace
-  // key their records on it, so it has to be filled before initTransportsRank.
-  comm->logMetaData.commId = commIdHash;
-  comm->logMetaData.commHash = comm->commHash;
-  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
-  comm->logMetaData.rank = comm->rank;
-  comm->logMetaData.nRanks = comm->nRanks;
 
   // [META] Comms that share resources, including ones that may lend them to split/shrink children later
   // (shareResources is only set at split time), have channel metadata that outlives any single comm, so they keep

@@ -27,6 +27,10 @@
 #include <mutex>
 #include <condition_variable>
 
+// [META] ProxyTrace. Kept after the std includes above: ProxyTrace.h uses
+// std::string and std::chrono without including <string>/<chrono> itself.
+#include "meta/colltrace/ProxyTrace.h"
+
 typedef enum : uint8_t {
   ncclPatternRing,
   ncclPatternRingTwice,
@@ -117,6 +121,9 @@ struct ncclProxyOp {
   uint64_t workCounter;
 
   struct ncclProxyOp* enqNext;
+
+  // NCCLX - ProxyTrace
+  struct ProxyTraceArgs traceArgs;
 };
 
 struct ncclProxySubArgs;
@@ -169,6 +176,9 @@ struct ncclProxySubArgs {
 
   void* recvRequestsCache[NCCL_STEPS];
   int recvRequestsSubCount;
+
+  // NCCLX - ProxyTrace
+  struct ProxyTraceArgs traceArgs;
 };
 
 struct ncclProxyArgs {
@@ -370,6 +380,9 @@ struct ncclProxyState {
 
   // Queue of expected responses from the proxy
   struct ncclExpectedProxyResponse* expectedResponses;
+
+  // NCCLX - ProxyTrace
+  std::shared_ptr<ProxyTrace> trace{nullptr};
 };
 
 enum proxyConnectState {
