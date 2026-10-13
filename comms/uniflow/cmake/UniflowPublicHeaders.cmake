@@ -5,6 +5,7 @@ set(_UNIFLOW_PUBLIC_HEADER_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/Connection.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/MultiTransport.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/MultiTransportOptions.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/Result.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/Segment.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/Uniflow.h
@@ -27,6 +28,7 @@ set(UNIFLOW_PUBLIC_HEADERS
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/logging/Logger.h
 
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/GpuBackendSelector.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/PlatformRegistry.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/RuntimeVersion.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/registry/TransportProviderRegistry.h

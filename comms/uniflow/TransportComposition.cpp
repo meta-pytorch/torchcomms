@@ -5,6 +5,7 @@
 #include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
+#include "comms/uniflow/registry/GpuBackendSelector.h"
 
 #ifndef UNIFLOW_CMAKE_BUILD
 #define UNIFLOW_ENABLE_RDMA_TRANSPORT 1
@@ -224,6 +225,7 @@ MultiTransportFactory::MultiTransportFactory(
 TransportProviderList makeDefaultTransportProviders(
     int deviceId,
     const MultiTransportFactoryOptions& options) {
+  validateGpuBackendRequest(options.gpuBackend);
   TransportProviderList providers;
   auto& topo = sharedTopology();
   CHECK_THROW_EXCEPTION(

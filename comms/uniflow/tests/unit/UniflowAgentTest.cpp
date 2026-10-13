@@ -1,7 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/Uniflow.h"
+#include "comms/uniflow/registry/GpuBackendSelector.h"
 
+#include <array>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -131,6 +133,24 @@ class MockTransportProvider : public TransportProvider {
   }
 };
 
+class BackendRecordingProvider : public MockTransportProvider {
+ public:
+  explicit BackendRecordingProvider(std::optional<std::string>& requested)
+      : requested_(requested) {}
+
+  Result<std::shared_ptr<TransportFactory>> createFactory(
+      const TransportProviderContext& context) const override {
+    if (context.options == nullptr) {
+      return Err(ErrCode::InvalidArgument, "provider options are missing");
+    }
+    requested_ = context.options->gpuBackend;
+    return MockTransportProvider::createFactory(context);
+  }
+
+ private:
+  std::optional<std::string>& requested_;
+};
+
 class SingleAcceptBlockingServer : public controller::Server {
  public:
   SingleAcceptBlockingServer()
@@ -194,6 +214,39 @@ class UniflowAgentTest {
 // ---------------------------------------------------------------------------
 // getUniqueId tests
 // ---------------------------------------------------------------------------
+
+TEST(UniflowAgentTest, CpuConfigForwardingAndRegistrationDoNotClaimBackend) {
+  const auto selected = gpuBackendSelector().selectedBackend();
+  for (const auto& request :
+       {std::optional<std::string>{}, std::optional<std::string>{"amd"}}) {
+    std::optional<std::string> observed;
+    auto provider = std::make_shared<BackendRecordingProvider>(observed);
+    UniflowAgentConfig config;
+    config.deviceId = -1;
+    config.gpuBackend = request;
+    UniflowAgent agent(config, TransportProviderList{provider});
+
+    EXPECT_EQ(observed, request);
+    std::array<uint8_t, 8> memory{};
+    Segment segment(memory.data(), memory.size(), MemoryType::DRAM, -1);
+    auto registered = agent.registerSegment(segment);
+    EXPECT_TRUE(registered.hasValue());
+    EXPECT_EQ(gpuBackendSelector().selectedBackend(), selected);
+  }
+}
+
+TEST(UniflowAgentTest, InvalidGpuBackendFailsBeforeProviderCreation) {
+  const auto selected = gpuBackendSelector().selectedBackend();
+  UniflowAgentConfig config;
+  config.deviceId = -1;
+  config.gpuBackend = "unknown";
+  auto provider = std::make_shared<MockTransportProvider>();
+
+  EXPECT_THROW(
+      UniflowAgent(config, TransportProviderList{provider}),
+      std::invalid_argument);
+  EXPECT_EQ(gpuBackendSelector().selectedBackend(), selected);
+}
 
 TEST(UniflowAgentTest, GetUniqueIdWithoutServer) {
   auto factory = MultiTransportFactoryTest::make(

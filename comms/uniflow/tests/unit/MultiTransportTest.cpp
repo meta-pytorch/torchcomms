@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/Segment.h"
+#include "comms/uniflow/registry/GpuBackendSelector.h"
 
 #include <array>
 #include <chrono>
@@ -497,6 +498,7 @@ TEST_F(MultiTransportFactoryTest, DefaultOptionsUseBoundedNumaLocalCpuNics) {
       options.cpuNicSelectionPolicy, CpuNicSelectionPolicy::kNumaLocalBounded);
   EXPECT_EQ(options.maxCpuNics, 2u);
   EXPECT_FALSE(options.preferredTransport.has_value());
+  EXPECT_FALSE(options.gpuBackend.has_value());
 }
 
 TEST_F(MultiTransportFactoryTest, ExplicitProvidersRejectInvalidConfiguration) {
@@ -537,6 +539,22 @@ TEST_F(MultiTransportFactoryTest, ExplicitProvidersReceiveFactoryOptions) {
   EXPECT_EQ(provider->receivedOptions()->trafficClass, options.trafficClass);
   EXPECT_EQ(provider->receivedOptions()->netdevPrefix, options.netdevPrefix);
   EXPECT_EQ(provider->receivedOptions()->maxCpuNics, options.maxCpuNics);
+}
+
+TEST_F(
+    MultiTransportFactoryTest,
+    InvalidGpuBackendFailsBeforeProviderCreation) {
+  const auto selected = gpuBackendSelector().selectedBackend();
+  auto provider = makeProvider(
+      TransportType::RDMA, Err(ErrCode::DriverError, "must not create"));
+  MultiTransportFactoryOptions options;
+  options.gpuBackend = "unknown";
+
+  EXPECT_THROW(
+      MultiTransportFactory(-1, options, TransportProviderList{provider}),
+      std::invalid_argument);
+  EXPECT_THROW(MultiTransportFactory(-1, options), std::invalid_argument);
+  EXPECT_EQ(gpuBackendSelector().selectedBackend(), selected);
 }
 
 TEST_F(MultiTransportFactoryTest, ExplicitProvidersRequireMatchingFactoryId) {

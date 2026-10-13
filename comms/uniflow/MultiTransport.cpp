@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/logging/Logger.h"
+#include "comms/uniflow/registry/GpuBackendSelector.h"
 
 #include <algorithm>
 #include <cstring>
@@ -56,6 +57,7 @@ MultiTransportFactory::MultiTransportFactory(
     MultiTransportFactoryOptions options,
     TransportProviderList providers)
     : deviceId_(deviceId), options_(std::move(options)) {
+  validateGpuBackendRequest(options_.gpuBackend);
   if (deviceId_ < -1) {
     throw std::invalid_argument("deviceId must be -1 or non-negative");
   }
