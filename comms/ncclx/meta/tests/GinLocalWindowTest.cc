@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <string_view>
 #include <vector>
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -126,19 +127,25 @@ TEST_F(GinLocalWindowTest, PutFromLocalOnlyWindow) {
   EXPECT_EQ(ncclSuccess, ncclMemFree(recvBuf));
 }
 
-// Upstream defaults NCCL_GIN_ENABLE to 1; NCCLX keeps it at 0. Needs no RDMA
-// NIC.
+// Upstream defaults NCCL_GIN_ENABLE to 1; NCCLX keeps it at 0. Executes with no
+// RDMA NIC, but only discriminates on a host where GIN would otherwise come
+// up: where no GIN backend can come up, the connection stays NONE under either
+// default. Checks the connection (not ginType, which also reads NONE when GIN
+// comes up RAIL without cross-NIC support). Also runs under an explicit
+// NCCL_GIN_ENABLE=0 (1x2_gin_off), which tests the ncclGinInit discovery gate
+// independently of the default, so that run must outlive a default flip.
 TEST_F(GinLocalWindowTest, GinIsOffByDefault) {
-  if (getenv("NCCL_GIN_ENABLE") != nullptr) {
-    GTEST_SKIP()
-        << "NCCL_GIN_ENABLE is set; the 1x2_gin_default config checks the default";
+  const char* ginEnable = getenv("NCCL_GIN_ENABLE");
+  if (ginEnable != nullptr && std::string_view(ginEnable) != "0") {
+    GTEST_SKIP() << "NCCL_GIN_ENABLE enables GIN; 1x2_gin_default and "
+                    "1x2_gin_off check GIN stays off";
   }
   ncclx::test::NcclCommRAII comm(
       globalRank, numRanks, localRank, bootstrap_.get());
   ASSERT_NE(nullptr, comm.get());
   ncclCommProperties_t props = NCCL_COMM_PROPERTIES_INITIALIZER;
   ASSERT_EQ(ncclSuccess, ncclCommQueryProperties(comm, &props));
-  EXPECT_EQ(NCCL_GIN_TYPE_NONE, props.ginType);
+  EXPECT_EQ(NCCL_GIN_CONNECTION_NONE, props.ginConnectionType);
 }
 
 // Needs no GIN backend, but needs the device API: without it window
