@@ -1075,8 +1075,13 @@ Args:
 
 Raises:
     RuntimeError: If this backend does not yet support the device API.
-)",
-          py::arg("handle"));
+          )",
+          py::arg("handle"))
+      .def("as_tensor", &TorchCommWindow::as_tensor)
+      .def(
+          "close",
+          &TorchCommWindow::close,
+          py::call_guard<py::gil_scoped_release>());
 
   // Bind BatchSendRecv::P2POp class
   py::class_<BatchSendRecv::P2POp>(
@@ -2394,6 +2399,26 @@ Example:
 
       )",
           py::arg("tensor") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "create_window",
+          [](TorchComm& self,
+             const std::vector<int64_t>& shape,
+             const py::object& dtype) {
+            if (!THPDtype_Check(dtype.ptr())) {
+              throw py::type_error("dtype must be a torch.dtype");
+            }
+            const auto scalarType =
+                reinterpret_cast<THPDtype*>(dtype.ptr())->scalar_type;
+            py::gil_scoped_release release;
+            return self.create_window(shape, scalarType);
+          },
+          py::arg("shape"),
+          py::arg("dtype"))
+      .def(
+          "destroy_window",
+          &TorchComm::destroy_window,
+          py::arg("window"),
           py::call_guard<py::gil_scoped_release>())
 
       .def(

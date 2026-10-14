@@ -48,6 +48,21 @@ class TorchCommWindow {
       bool owning = true) = 0;
   virtual void tensor_deregister() = 0;
 
+  // Allocation-oriented windows use close() for collective teardown. The
+  // default preserves the registration-oriented backend behavior.
+  // Lifecycle/accessor calls require external host-thread serialization.
+  // Close explicitly after GPU quiescence; destruction is not collective.
+  virtual void close() {
+    tensor_deregister();
+  }
+
+  virtual at::Tensor as_tensor() const {
+    if (!buf_tensor_.has_value()) {
+      throw std::runtime_error("window does not own a tensor");
+    }
+    return *buf_tensor_;
+  }
+
   // Creates a new window with the same backend/comm configuration.
   // If a tensor is registered, the clone will have a cloned tensor registered.
   virtual std::shared_ptr<TorchCommWindow> clone() = 0;
