@@ -10,8 +10,8 @@ torchcomms provides:
 
 - **Simplified Object-Oriented API**: A clean, intuitive interface for communication operations
 - **Support for Multiple Backends**, including:
-  - **NCCLX**: NVIDIA Collective Communications Library (extended) - Meta's production-tested backend that powers all generative AI services
   - **NCCL**: Standard NCCL backend for NVIDIA GPUs
+  - **NCCLX** (deprecated): NVIDIA Collective Communications Library (extended). No longer included in wheels or tested in CI
   - **GLOO**: CPU-based backend for CPU tensors and metadata transfer
   - **RCCL**: AMD ROCm Collective Communications Library for AMD GPUs
 - **Synchronous and Asynchronous Operations**: Flexible execution modes for different performance needs
@@ -80,7 +80,9 @@ No build needed - uses the library provided by PyTorch
 
 :::
 
-:::{tab-item} NCCLX Backend
+:::{tab-item} NCCLX Backend (deprecated)
+
+NCCLX is deprecated and must be explicitly enabled with `USE_NCCLX=ON`.
 
 If you want to install the third-party dependencies directly from conda, run the following command:
 ```bash
@@ -130,7 +132,7 @@ You can customize the build by setting environment variables before running pip 
 ```bash
 # Enable/disable specific backends (ON/OFF or 1/0)
 export USE_NCCL=ON    # Default: ON
-export USE_NCCLX=ON   # Default: ON
+export USE_NCCLX=OFF  # Default: OFF (deprecated)
 export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 ```
@@ -154,9 +156,9 @@ import torch
 from torchcomms import new_comm, ReduceOp
 
 def main():
-    # Initialize TorchComm with NCCLX backend
+    # Initialize TorchComm with NCCL backend
     device = torch.device("cuda")
-    torchcomm = new_comm("ncclx", device, name="main_comm")
+    torchcomm = new_comm("nccl", device, name="main_comm")
 
     # Get rank and world size
     rank = torchcomm.get_rank()
@@ -224,7 +226,7 @@ import torch
 from torchcomms import new_comm, ReduceOp
 
 device = torch.device("cuda")
-torchcomm = new_comm("ncclx", device, name="main_comm")
+torchcomm = new_comm("nccl", device, name="main_comm")
 
 rank = torchcomm.get_rank()
 device_id = rank % torch.cuda.device_count()

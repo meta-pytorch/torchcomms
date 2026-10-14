@@ -21,12 +21,14 @@ add_link_options("LINKER:--push-state,--no-as-needed" "-latomic" "LINKER:--pop-s
 
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
-option(USE_NCCLX "Whether to build NCCLX or not" ON)
+# NCCLX is deprecated in OSS builds.
+option(USE_NCCLX "Whether to build NCCLX (deprecated) or not" OFF)
 option(USE_GLOO "Whether to build Gloo or not" ON)
 option(USE_RCCL "Whether to build RCCL or not" OFF)
 option(USE_RCCLX "Whether to build RCCLX or not" OFF)
 option(USE_XCCL "Whether to build XCCL or not" OFF)
-option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
+# TRANSPORT needs the folly build from build_ncclx.sh.
+option(USE_TRANSPORT "Whether to build TRANSPORT or not" ${USE_NCCLX})
 option(USE_TRANSPORT_CCA_HOOK "Build the minimal RDMA CCA-hook extension" ON)
 option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)

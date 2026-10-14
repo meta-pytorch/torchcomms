@@ -24,11 +24,6 @@ jobs:
             gpu-arch-type: "cuda"
             gpu-arch-version: "13.0"
             torch-version: "nightly"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-            build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
@@ -111,11 +106,6 @@ jobs:
             gpu-arch-type: "cuda"
             gpu-arch-version: "13.0"
             torch-version: "nightly"
-          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "13.0"
-            torch-version: "nightly"
-            build-flags: "USE_NCCLX=0 USE_TRANSPORT=0"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
