@@ -671,6 +671,78 @@ __global__ void k_capi_fill_views(ncclWindow_t w, EpWindowLayout l, int n, Windo
   }
 }
 
+// Queue probe for the normal-priority rail stream (create_stream_apart): k_queue_probe_wait, on
+// the default stream, spins until k_queue_probe_set, on a candidate stream, raises the flag, or
+// gives up after `timeout` wall-clock ticks. A candidate on the default stream's in-order hardware
+// queue cannot run its kernel before the waiter returns, so the waiter times out.
+__global__ void k_queue_probe_wait(int* flag, int* timed_out, long long timeout) {
+  const long long t0 = wall_clock64();
+  while (__hip_atomic_load(flag, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) == 0) {
+    if (wall_clock64() - t0 > timeout) { *timed_out = 1; return; }
+    __builtin_amdgcn_s_sleep(1);
+  }
+}
+
+__global__ void k_queue_probe_set(int* flag) {
+  __hip_atomic_store(flag, 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+}
+
+// One probe of candidate `c` against the default stream: sets `apart`. Returns -1 on error.
+static int probe_queue_apart(hipStream_t c, int* d, hipEvent_t cleared, hipEvent_t waited,
+                             long long timeout, bool* apart) {
+  // The flag is cleared on the default stream and the candidate waits for that, so its kernel
+  // cannot raise the flag before the clear, whichever queue it is on.
+  HC(hipMemsetAsync(d, 0, 2 * sizeof(int), nullptr));
+  HC(hipEventRecord(cleared, nullptr));
+  k_queue_probe_wait<<<1, 1, 0, nullptr>>>(d, d + 1, timeout);
+  HC(hipGetLastError());
+  HC(hipEventRecord(waited, nullptr));
+  HC(hipStreamWaitEvent(c, cleared, 0));
+  k_queue_probe_set<<<1, 1, 0, c>>>(d);
+  HC(hipGetLastError());
+  HC(hipStreamWaitEvent(c, waited, 0));
+  int timed_out = 0;
+  HC(hipMemcpyAsync(&timed_out, d + 1, sizeof(int), hipMemcpyDeviceToHost, c));
+  HC(hipStreamSynchronize(c));
+  *apart = timed_out == 0;
+  return 0;
+}
+
+// A normal-priority stream on a hardware queue that the legacy default stream, where torch runs
+// its compute, does not use. HIP gives each new stream one of GPU_MAX_HW_QUEUES queues per
+// priority, in an order that differs between HIP versions, so a plain new stream can share the
+// default stream's queue and then serializes with it. Candidates are created until one passes the
+// queue probe; the others are destroyed. Returns the number of candidates tried when one passed,
+// 0 when none did (`out` then keeps the last), -1 on error (`out` untouched, nothing leaked).
+static int create_stream_apart(int device, hipStream_t* out) {
+  constexpr int kTries = 4;
+  int rate_khz = 0;
+  HC(hipDeviceGetAttribute(&rate_khz, hipDeviceAttributeWallClockRate, device));
+  const long long timeout = 50LL * rate_khz;  // 50 ms
+  int* d = nullptr;
+  hipEvent_t cleared = nullptr, waited = nullptr;
+  hipStream_t cand[kTries] = {};
+  int n = 0, rc = 0;
+  bool apart = false;
+  if (hipMalloc(&d, 2 * sizeof(int)) != hipSuccess ||
+      hipEventCreateWithFlags(&cleared, hipEventDisableTiming) != hipSuccess ||
+      hipEventCreateWithFlags(&waited, hipEventDisableTiming) != hipSuccess) {
+    rc = -1;
+  }
+  while (rc == 0 && n < kTries && !apart) {
+    if (hipStreamCreateWithFlags(&cand[n], hipStreamNonBlocking) != hipSuccess) { rc = -1; break; }
+    ++n;
+    rc = probe_queue_apart(cand[n - 1], d, cleared, waited, timeout, &apart);
+  }
+  // Keep the last candidate, the one that passed or the last tried; release the rest.
+  for (int i = 0; i < n - (rc == 0 ? 1 : 0); ++i) (void)hipStreamDestroy(cand[i]);
+  if (rc == 0) *out = cand[n - 1];
+  if (cleared) (void)hipEventDestroy(cleared);
+  if (waited) (void)hipEventDestroy(waited);
+  if (d) (void)hipFree(d);
+  return rc < 0 ? -1 : (apart ? n : 0);
+}
+
 // The hybrid scale-out buffers and the record layout (see HybInfo). Sized for a full window
 // of tokens per remote node, since any token may go to any node.
 static int hybrid_alloc(EpHandle* h) {
@@ -1989,10 +2061,40 @@ int ep_hybrid_enable(void* handle, int multi) {
   NC(ncclCommSplit(h->comm, h->hyb.u, h->hyb.D, &h->rail_comm, &rail_cfg));
   // High priority, so HIP places `side` in a different hardware queue pool from normal-priority
   // compute streams: a spinning rail kernel on a queue shared with the caller's stream would stall
-  // its next kernels. RCCL_EP_RAIL_STREAM=normal keeps a normal-priority stream.
+  // its next kernels. RCCL_EP_RAIL_STREAM=normal keeps normal priority instead, on a queue the
+  // default stream does not use (create_stream_apart): whether a plain new stream lands on the
+  // default stream's queue depends on how many streams the process created before it and on the
+  // HIP version's queue assignment order.
   const char* rs = getenv("RCCL_EP_RAIL_STREAM");
   if (rs && strcmp(rs, "normal") == 0) {
-    HC(hipStreamCreateWithFlags(&h->side, hipStreamNonBlocking));
+    // The probe allocates and launches on the legacy default stream, which invalidates a stream
+    // capture in progress in global or thread-local mode, so it is skipped while one is active.
+    // Relaxed mode on this thread keeps the probe's own calls, and the fallback stream's
+    // creation, from counting against another thread's capture.
+    hipStreamCaptureMode mode = hipStreamCaptureModeRelaxed;
+    HC(hipThreadExchangeStreamCaptureMode(&mode));
+    hipStreamCaptureStatus cap = hipStreamCaptureStatusNone;
+    const bool capturing =
+        hipStreamIsCapturing(nullptr, &cap) != hipSuccess || cap != hipStreamCaptureStatusNone;
+    const int tries = capturing ? -1 : create_stream_apart(h->device, &h->side);
+    hipError_t made = hipSuccess;
+    if (tries < 0) {
+      (void)hipGetLastError();
+      made = hipStreamCreateWithFlags(&h->side, hipStreamNonBlocking);
+    }
+    (void)hipThreadExchangeStreamCaptureMode(&mode);
+    HC(made);
+    if (tries < 0) {
+      fprintf(stderr, "[rccl_ep] rank %d: %s; using a plain normal-priority rail stream\n",
+              h->cfg.rank, capturing ? "stream capture active, queue probe skipped"
+                                     : "rail stream queue probe failed");
+    } else if (tries == 0) {
+      fprintf(stderr, "[rccl_ep] rank %d: no rail stream candidate is apart from the default "
+                      "stream's queue; keeping the last\n", h->cfg.rank);
+    } else if (h->cfg.rank % h->node_size == 0) {
+      fprintf(stderr, "[rccl_ep] rank %d: rail stream apart from the default stream's queue "
+                      "(candidate %d)\n", h->cfg.rank, tries);
+    }
   } else {
     int least = 0, greatest = 0;
     HC(hipDeviceGetStreamPriorityRange(&least, &greatest));
