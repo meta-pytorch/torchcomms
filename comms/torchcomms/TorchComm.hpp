@@ -199,6 +199,12 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt);
 
+  std::shared_ptr<TorchCommWindow> create_window(
+      const std::vector<int64_t>& shape,
+      at::ScalarType dtype);
+
+  void destroy_window(const std::shared_ptr<TorchCommWindow>& window);
+
   // Persistent AllGather operations
   using AllGatherPHandle = TorchCommBackend::AllGatherPHandle;
 
