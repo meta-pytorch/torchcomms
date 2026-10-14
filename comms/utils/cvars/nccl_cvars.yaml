@@ -2729,6 +2729,18 @@ cvars:
      exists so deployments that have observed CUDA-on-non-main-thread hangs
      can disable the feature without rebuilding.
 
+ - name        : NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP
+   type        : bool
+   default     : True
+   description : |-
+     When true (default), colltrace's one-time graph-mode bring-up
+     (GlobaltimerCalibration plus shared ring buffer allocation) runs on a
+     short-lived background thread so communicator init does not pay its
+     process-cold CUDA cost. Graph-captured collectives recorded before it
+     finishes wait for it. When false, bring-up runs synchronously on the
+     thread constructing colltrace, for deployments that have observed
+     CUDA-on-non-main-thread hangs.
+
  - name        : NCCL_COLLTRACE_FATAL_ON_CALIBRATION_FAILURE
    type        : bool
    default     : True
