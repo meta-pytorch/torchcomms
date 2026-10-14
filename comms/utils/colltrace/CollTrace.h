@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <latch>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -15,6 +17,7 @@
 #include <vector>
 
 #include <folly/MPMCQueue.h>
+#include <folly/Synchronized.h>
 #include <folly/concurrency/ConcurrentHashMap.h>
 #include <folly/container/F14Map.h>
 
@@ -79,6 +82,12 @@ struct CollTraceConfig {
   // sweep and before any ring entry is dispatched, so a test can land a
   // cancellation exactly in that window. Empty in production.
   std::function<void()> afterGraphSweepHook;
+
+  // Test seam. Invoked before graph warmup's device setup (on the warmup
+  // thread, or the constructing thread when NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP
+  // is off), so a test can gate warmup deterministically and assert that
+  // construction does not block on it. Empty in production.
+  std::function<void()> beforeGraphWarmupHook;
 };
 
 // Action types for the unified polling pipeline.
@@ -112,7 +121,10 @@ struct PendingAction {
 class CollTrace : public ICollTrace {
  public:
   // Create a thread to collect traces (In the future we should use singelton or
-  // coroutines)
+  // coroutines). When graph tracing is enabled, threadSetupFunc runs twice: on
+  // the graph warmup thread, where it selects the device used for graph
+  // bring-up, and on the poll thread. Any naming or logging it does shows up
+  // once per thread.
   CollTrace(
       CollTraceConfig config,
       CommLogData logMetaData,
@@ -197,6 +209,16 @@ class CollTrace : public ICollTrace {
   void collTraceThread(
       const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
 
+  // One-time graph-tracing bring-up (globaltimer calibration + shared ring
+  // allocation). Runs on a dedicated thread, off the construction critical
+  // path, unless NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP is off. First call pays the
+  // process-cold CUDA cost (~750ms on GB300); graph records block on
+  // graphWarmupDone_ until it completes. Recoverable failures leave
+  // ringBuffer_ null and still count the latch down; calibration failures
+  // abort the process by default.
+  void warmupGraphTracing(
+      const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
+
   // Poll all active graph-captured events (non-blocking), appending completed
   // or progressing actions to the provided vector.
   void pollGraphEvents(std::multiset<PendingAction>& actions) noexcept;
@@ -263,8 +285,11 @@ class CollTrace : public ICollTrace {
 
   // Single shared ring buffer for ALL cuda graphs. Graph user objects retain
   // shared ownership because their kernels may still write after CollTrace
-  // teardown has stopped the poller.
-  std::shared_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
+  // teardown has stopped the poller. Published once by the warmup thread;
+  // synchronized so record threads, the poll thread, and test readers can
+  // load it safely with or without waiting on graphWarmupDone_.
+  folly::Synchronized<
+      std::shared_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>>
       ringBuffer_;
   // CPU-side reader for the shared ring buffer (poll thread only).
   std::optional<::hrdw_ring_buffer::HRDWRingBufferReader<GraphCollTraceEvent>>
@@ -321,6 +346,14 @@ class CollTrace : public ICollTrace {
   // The constructor waits on this so the poll thread is actively polling
   // before any graph replays can fire.
   std::latch threadStarted_{1};
+  // Signaled by the warmup thread once graph bring-up completes (or fails).
+  // Counted down in the constructor when graph tracing is disabled, so
+  // record-side waits always terminate. Graph records wait on it; the wait
+  // performs no CUDA and is safe during stream capture.
+  std::latch graphWarmupDone_{1};
+  // Short-lived bring-up thread for calibration + ring allocation. Joined in
+  // the destructor; normally long finished by then.
+  std::thread graphWarmupThread_;
   // Always keep this thread as the last member variable to ensure that it is
   // initialized after all the other member variables.
   std::thread traceCollThread_;
