@@ -16,8 +16,9 @@ both the high level collectives API as well as several out of the box backends.
 
 > [!WARNING]
 > The NCCLX backend is deprecated in open source. It is no longer included in
-> wheels or tested in CI, and its sources are no longer updated. Use the `nccl`
-> backend instead.
+> wheels or tested in CI, and its sources are no longer updated. Use
+> [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html)
+> instead; all torchcomms features have been upstreamed in PyTorch 2.15.
 
 ## Prerequisites
 
@@ -90,7 +91,7 @@ No build needed - uses the library provided by PyTorch
 
 ##### NCCLX Backend (deprecated)
 
-NCCLX is deprecated and must be explicitly enabled with `USE_NCCLX=ON`.
+NCCLX is deprecated and must be explicitly enabled with `USE_NCCLX=ON`. Use [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html) instead; all torchcomms features have been upstreamed in PyTorch 2.15.
 
 If you want to install the third-party dependencies directly from conda, run the following command:
 ```bash
