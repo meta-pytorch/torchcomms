@@ -87,6 +87,9 @@ LIBSRCFILES += \
 	${SHAREDDIR}/meta/DeviceRackSerial.cc \
 	${SHAREDDIR}/meta/collectives/AllReduceSparseBlock.cc \
 	${SHAREDDIR}/meta/colltrace/CollTraceWrapper.cc \
+	${SHAREDDIR}/meta/colltrace/ProxyMock.cc \
+	${SHAREDDIR}/meta/colltrace/ProxyTrace.cc \
+	${SHAREDDIR}/meta/colltrace/ProxyTraceFunc.cc \
 	${SHAREDDIR}/meta/commHash.cc \
 	${SHAREDDIR}/meta/ctran-integration/BaselineBootstrap.cc \
 	${SHAREDDIR}/meta/hints/GlobalHints.cc \
