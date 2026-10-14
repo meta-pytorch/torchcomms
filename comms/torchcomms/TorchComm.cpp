@@ -476,6 +476,16 @@ std::shared_ptr<TorchCommWindow> TorchComm::new_window(
   return window;
 }
 
+std::shared_ptr<TorchCommWindow> TorchComm::create_window(
+    const std::vector<int64_t>& shape,
+    at::ScalarType dtype) {
+  return impl_->create_window(shape, dtype);
+}
+
+void TorchComm::destroy_window(const std::shared_ptr<TorchCommWindow>& window) {
+  impl_->destroy_window(window);
+}
+
 // Persistent AllGather operations
 TorchComm::AllGatherPHandle TorchComm::all_gather_p_init(
     at::Tensor& output,

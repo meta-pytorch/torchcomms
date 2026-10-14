@@ -20,8 +20,8 @@
 namespace torch::comms {
 
 // TorchWork's synchronized lifecycle state and terminal-status-producer
-// metadata are part of the cross-DSO backend ABI.
-inline constexpr char TORCHCOMM_BACKEND_ABI_VERSION[] = "1.6";
+// metadata and allocated-window methods are part of the cross-DSO backend ABI.
+inline constexpr char TORCHCOMM_BACKEND_ABI_VERSION[] = "1.7";
 
 // Epilogue applied to the all-reduced rows (one row per hidden-size slice):
 //   normed       = bf16(reduced * rsqrt(mean(reduced^2) + post_norm_eps) *
@@ -250,6 +250,22 @@ class TorchCommBackend {
     throw std::logic_error(
         "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));
+  }
+
+  // NOLINTNEXTLINE(clang-diagnostic-missing-noreturn): overrides may return.
+  virtual std::shared_ptr<TorchCommWindow> create_window(
+      [[maybe_unused]] const std::vector<int64_t>& shape,
+      [[maybe_unused]] at::ScalarType dtype) {
+    throw std::logic_error(
+        "[TorchCommBackend]: create_window not implemented for communicator:" +
+        std::string(getCommName()));
+  }
+
+  virtual void destroy_window(const std::shared_ptr<TorchCommWindow>& window) {
+    if (window == nullptr) {
+      throw std::invalid_argument("destroy_window requires a window");
+    }
+    window->close();
   }
 
   // Abort hook support (AbortHook defined in TorchCommHooks.hpp)
