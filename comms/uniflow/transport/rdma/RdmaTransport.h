@@ -161,17 +161,21 @@ struct RdmaTransportInfo {
 // RdmaTransport
 // ---------------------------------------------------------------------------
 
-/// Counters for request timeouts. One instance is shared by an
-/// RdmaTransportFactory and every transport it creates, because transports can
-/// outlive the factory.
+/// Counters for request timeouts and forced shutdowns. One instance is shared
+/// by an RdmaTransportFactory and every transport it creates, because
+/// transports can outlive the factory.
 struct RdmaCounters {
   /// Timeouts that made a transport terminal; at most one per transport.
   std::atomic<uint64_t> timeoutsFired{0};
-  /// In-flight requests that got Aborted when a timeout fired.
+  /// Requests that got Aborted in abortTransport(), from a fired timeout or a
+  /// forced shutdown.
   std::atomic<uint64_t> requestsAborted{0};
-  /// Total time spent destroying QPs when timeouts fired. Divide by
-  /// timeoutsFired for the average.
+  /// Total time spent destroying QPs in abortTransport(), for fired timeouts
+  /// and forced shutdowns.
   std::atomic<uint64_t> teardownNanos{0};
+  /// shutdown() calls that destroyed QPs through abortTransport() because
+  /// requests were still unfinished after requestTimeout.
+  std::atomic<uint64_t> shutdownsForced{0};
 };
 
 /*
@@ -295,6 +299,20 @@ class RdmaTransport : public Transport {
    * Tear down RDMA resources. Transitions QPs to ERROR state for graceful
    * drain, then destroys all QPs and CQs. Safe to call multiple times.
    * Also called by the destructor.
+   *
+   * With RdmaTransportConfig::requestTimeout set, shutdown() waits at most
+   * that long for in-flight requests, then ends them like a fired timeout:
+   * every QP is destroyed, then each unfinished request gets Aborted. Without
+   * it, shutdown() waits for every in-flight request to finish.
+   *
+   * Callers must stop submitting requests before calling shutdown() or
+   * destroying the transport. A request submitted after shutdown() starts
+   * fails with NotConnected (Aborted if a timeout already made the transport
+   * terminal), but a submission that overlaps shutdown() from another thread
+   * may still be admitted after shutdown() returns.
+   *
+   * Must not run on the EventBase thread, and the EventBase must keep running
+   * until it returns: shutdown() waits for a drain that runs on the EventBase.
    */
   void shutdown() override;
 
@@ -316,6 +334,7 @@ class RdmaTransport : public Transport {
   enum class TerminalReason : uint8_t {
     None,
     Timeout,
+    Shutdown,
   };
 
   /// Tracks completion of a batch of RDMA work requests from a single
@@ -363,12 +382,9 @@ class RdmaTransport : public Transport {
       return deadline_.has_value() && currentTime >= *deadline_ && !isDone();
     }
 
-    void setTerminalResult(ErrCode code) {
+    void setTerminalResult(ErrCode code, const char* message) {
       if (!fulfilled_ && !error_) {
-        error_ =
-            Err(code,
-                code == ErrCode::Timeout ? "RDMA request deadline expired"
-                                         : "RDMA transport deadline expired");
+        error_ = Err(code, message);
       }
     }
 
@@ -495,8 +511,14 @@ class RdmaTransport : public Transport {
   bool processDeadlines();
   /// The only path to the terminal state. Destroys every QP before publishing
   /// any result, so the NIC can no longer access caller buffers once a
-  /// `Timeout` or `Aborted` result is visible. `culprit` receives `Timeout`.
-  void abortTransport(Task& culprit, uint32_t culpritTaskId) noexcept;
+  /// `Timeout` or `Aborted` result is visible. For `TerminalReason::Timeout`,
+  /// `culprit` receives `Timeout`; for `TerminalReason::Shutdown` it is null
+  /// and every unfinished request receives `Aborted`.
+  void abortTransport(
+      TerminalReason reason,
+      Task* culprit,
+      uint32_t culpritTaskId) noexcept;
+  static const char* abortedMessage(TerminalReason reason);
 
   bool putGetIoProcess(PutGetTransfer& entry) noexcept;
   bool sendRecvIoProcess(SendRecvTransfer& entry) noexcept;

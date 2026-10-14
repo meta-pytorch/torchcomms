@@ -9,9 +9,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <queue>
+#include <thread>
 #include <utility>
 
 #include <gmock/gmock.h>
@@ -1417,7 +1419,7 @@ TEST_F(RdmaTransportTimeoutTest, ValidatesTimeoutsOnCallerThread) {
 }
 
 // Verifies that without requestTimeout, a positive request timeout is ignored:
-// the put succeeds and no deadline is armed.
+// the put succeeds, and neither the put nor shutdown() reads the clock.
 TEST_F(RdmaTransportDataPathTest, RequestTimeoutIgnoredWithoutConfig) {
   auto ts = makeTestSegments();
   TransferRequest request{
@@ -1438,11 +1440,14 @@ TEST_F(RdmaTransportDataPathTest, RequestTimeoutIgnoredWithoutConfig) {
   };
   auto status = transport_->put({&request, 1}, options).get();
   EXPECT_FALSE(status.hasError());
+  transport_->shutdown();
   EXPECT_EQ(transport_->nowCallCount(), 0);
+  EXPECT_EQ(counters_->shutdownsForced.load(), 0u);
 }
 
 // Verifies that a timeout aborts the other in-flight task and a raced
-// admission, destroys the QP exactly once, and stops all later polling.
+// admission, destroys the QP exactly once, stops all later polling, and that
+// later requests get Aborted even after shutdown().
 TEST_F(RdmaTransportTimeoutTest, TimeoutAbortsPeerAndRejectsLaterWork) {
   auto ts = makeTestSegments();
   // Exactly once: shutdown() must not destroy the QP a second time.
@@ -1507,6 +1512,226 @@ TEST_F(RdmaTransportTimeoutTest, TimeoutAbortsPeerAndRejectsLaterWork) {
   evbThread_->getEventBase()->dispatchAndWait([]() noexcept {});
   EXPECT_EQ(
       state->pollCount.load(std::memory_order_acquire), pollsAfterTimeout);
+
+  transport_->shutdown();
+  auto afterShutdownStatus = transport_->put({&request, 1}, options).get();
+  ASSERT_TRUE(afterShutdownStatus.hasError());
+  EXPECT_EQ(afterShutdownStatus.error().code(), ErrCode::Aborted);
+  std::vector<char> copyBuffer(64);
+  Segment copySegment(copyBuffer.data(), copyBuffer.size(), MemoryType::DRAM);
+  auto sendStatus =
+      transport_->send(copySegment.span(0ul, copyBuffer.size())).get();
+  ASSERT_TRUE(sendStatus.hasError());
+  EXPECT_EQ(sendStatus.error().code(), ErrCode::Aborted);
+}
+
+class RdmaTransportShutdownTest : public RdmaTransportTimeoutTest {
+ protected:
+  /// Starts shutdown() on another thread while `gate` holds the EventBase, and
+  /// returns once shutdown() has read the clock to set its abort time. With
+  /// the EventBase held, ioLooper() cannot read the clock in the meantime.
+  std::future<void> startShutdown() {
+    const auto before = transport_->nowCallCount();
+    auto done =
+        std::async(std::launch::async, [this] { transport_->shutdown(); });
+    const auto giveUp = std::chrono::steady_clock::now() + kSyncTimeout;
+    while (transport_->nowCallCount() == before &&
+           std::chrono::steady_clock::now() < giveUp) {
+      std::this_thread::yield();
+    }
+    EXPECT_EQ(transport_->nowCallCount(), before + 1);
+    return done;
+  }
+
+  /// Waits for shutdown() to return. If it never does, aborts the test binary:
+  /// returning would block in the std::async future's destructor instead.
+  void waitForShutdown(std::future<void>& done) {
+    if (done.wait_for(kSyncTimeout) != std::future_status::ready) {
+      ADD_FAILURE() << "shutdown() did not return";
+      std::abort();
+    }
+  }
+
+  /// Mocks a pollCq() that never returns a completion.
+  void neverComplete() {
+    EXPECT_CALL(*mockApi_, pollCq(&fakeCq_, _, _))
+        .WillRepeatedly(Return(Result<int>(0)));
+  }
+
+  /// Fails a put mid-post, so it gets DriverError but stays queued waiting for
+  /// the partial-post flush completion, which never arrives.
+  void failPutWaitingForFlush() {
+    EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+        .WillOnce([](ibv_qp*, ibv_send_wr* wr, ibv_send_wr** badWr) {
+          *badWr = wr->next;
+          return Err(ErrCode::DriverError, "partial post failure");
+        })
+        .WillOnce(Return(Ok()));
+    neverComplete();
+    constexpr size_t kBufSize = kChunkSize * 2;
+    auto ts = makeTestSegments(kBufSize);
+    TransferRequest request{
+        .local = ts->localReg.span(0ul, kBufSize),
+        .remote = ts->remoteReg.span(0ul, kBufSize),
+    };
+    auto status = transport_->put({&request, 1}).get();
+    ASSERT_TRUE(status.hasError());
+    ASSERT_EQ(status.error().code(), ErrCode::DriverError);
+  }
+};
+
+// Verifies that shutdown() aborts a put that is still unfinished when
+// requestTimeout passes: here the put is admitted only after shutdown() set its
+// abort time, so shutdown() ends it before its own deadline could. The QP is
+// destroyed before the put's Aborted result is visible (invariant I4).
+TEST_F(RdmaTransportShutdownTest, AbortsUnfinishedPutAfterRequestTimeout) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  struct MockState {
+    std::shared_future<Status> put;
+    std::atomic<bool> destroyedBeforeResult{false};
+  };
+  auto state = std::make_shared<MockState>();
+  EXPECT_CALL(*mockApi_, postSend(_, _, _)).Times(0);
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp_)).WillOnce([state](ibv_qp*) {
+    state->destroyedBeforeResult =
+        state->put.wait_for(std::chrono::seconds{0}) !=
+        std::future_status::ready;
+    return Ok();
+  });
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+  state->put = transport_->put({&request, 1}).share();
+  auto shutdownDone = startShutdown();
+  transport_->advanceNow(kPastRequestTimeout);
+  gate.release();
+  waitForShutdown(shutdownDone);
+
+  auto status = state->put.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::Aborted);
+  EXPECT_NE(status.error().message().find("shut down"), std::string::npos);
+  EXPECT_TRUE(state->destroyedBeforeResult);
+  EXPECT_EQ(counters_->shutdownsForced.load(), 1u);
+  EXPECT_EQ(counters_->requestsAborted.load(), 1u);
+  EXPECT_EQ(counters_->timeoutsFired.load(), 0u);
+}
+
+// Verifies that shutdown() ends, within requestTimeout, a put that already
+// failed but still waits for a completion that never arrives (here, the
+// partial-post flush). Deadlines skip such a put, so only shutdown() ends it.
+// The put keeps its DriverError, and later put and copy send/recv requests get
+// NotConnected, as after any shutdown.
+TEST_F(RdmaTransportShutdownTest, AbortsErroredPutWaitingForFlush) {
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp_)).WillOnce(Return(Ok()));
+  ASSERT_NO_FATAL_FAILURE(failPutWaitingForFlush());
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+  auto shutdownDone = startShutdown();
+  transport_->advanceNow(kPastRequestTimeout);
+  gate.release();
+  waitForShutdown(shutdownDone);
+
+  EXPECT_EQ(transport_->state(), TransportState::Disconnected);
+  EXPECT_EQ(counters_->shutdownsForced.load(), 1u);
+  EXPECT_EQ(counters_->requestsAborted.load(), 0u);
+  EXPECT_EQ(counters_->timeoutsFired.load(), 0u);
+
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  std::vector<char> copyBuffer(64);
+  Segment copySegment(copyBuffer.data(), copyBuffer.size(), MemoryType::DRAM);
+  auto copySpan = copySegment.span(0ul, copyBuffer.size());
+  const auto expectNotConnected = [](std::future<Status> future) {
+    auto status = future.get();
+    ASSERT_TRUE(status.hasError());
+    EXPECT_EQ(status.error().code(), ErrCode::NotConnected);
+  };
+  expectNotConnected(transport_->put({&request, 1}));
+  expectNotConnected(transport_->send(copySpan));
+  expectNotConnected(transport_->recv(copySpan));
+}
+
+// Verifies that shutdown() does not force teardown before requestTimeout:
+// while the clock is short of it, the drain keeps checking and destroys no QP;
+// once the clock passes it, shutdown() destroys the QP and returns.
+TEST_F(RdmaTransportShutdownTest, WaitsForRequestTimeoutBeforeForcingShutdown) {
+  auto destroyed = std::make_shared<std::atomic<bool>>(false);
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp_)).WillOnce([destroyed](ibv_qp*) {
+    destroyed->store(true, std::memory_order_release);
+    return Ok();
+  });
+  ASSERT_NO_FATAL_FAILURE(failPutWaitingForFlush());
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+  auto shutdownDone = startShutdown();
+  const auto beforeRelease = transport_->nowCallCount();
+  gate.release();
+  // Deadlines skip the errored put, so ioLooper() reads no clock here and
+  // every read is a drain pass. The second pass runs only after the first one
+  // finished without forcing teardown.
+  const auto isDone = [&shutdownDone] {
+    return shutdownDone.wait_for(std::chrono::seconds{0}) ==
+        std::future_status::ready;
+  };
+  const auto giveUp = std::chrono::steady_clock::now() + kSyncTimeout;
+  while (transport_->nowCallCount() < beforeRelease + 2 && !isDone() &&
+         std::chrono::steady_clock::now() < giveUp) {
+    std::this_thread::yield();
+  }
+  EXPECT_FALSE(isDone());
+  EXPECT_FALSE(destroyed->load(std::memory_order_acquire));
+  EXPECT_GE(transport_->nowCallCount(), beforeRelease + 2);
+
+  transport_->advanceNow(kPastRequestTimeout);
+  waitForShutdown(shutdownDone);
+  EXPECT_TRUE(destroyed->load(std::memory_order_acquire));
+  EXPECT_EQ(counters_->shutdownsForced.load(), 1u);
+}
+
+// Verifies that once shutdown() starts, a new request fails with NotConnected
+// on the caller thread and is never posted.
+TEST_F(RdmaTransportShutdownTest, RejectsRequestsOnceShutdownStarts) {
+  auto ts = makeTestSegments();
+  TransferRequest request{
+      .local = ts->localReg.span(0ul, ts->localBuf.size()),
+      .remote = ts->remoteReg.span(0ul, ts->remoteBuf.size()),
+  };
+  auto posted = std::make_shared<std::promise<void>>();
+  auto postedFuture = posted->get_future();
+  EXPECT_CALL(*mockApi_, postSend(&fakeQp_, _, _))
+      .WillOnce([posted](ibv_qp*, ibv_send_wr*, ibv_send_wr**) {
+        posted->set_value();
+        return Ok();
+      });
+  neverComplete();
+  EXPECT_CALL(*mockApi_, destroyQp(&fakeQp_)).WillOnce(Return(Ok()));
+  auto stalled = transport_->put({&request, 1});
+  ASSERT_EQ(postedFuture.wait_for(kSyncTimeout), std::future_status::ready);
+
+  EventBaseGate gate(evbThread_->getEventBase());
+  ASSERT_TRUE(gate.waitUntilEntered());
+  auto shutdownDone = startShutdown();
+  auto rejected = transport_->put({&request, 1});
+  ASSERT_EQ(
+      rejected.wait_for(std::chrono::seconds{0}), std::future_status::ready);
+  auto rejectedStatus = rejected.get();
+  ASSERT_TRUE(rejectedStatus.hasError());
+  EXPECT_EQ(rejectedStatus.error().code(), ErrCode::NotConnected);
+
+  transport_->advanceNow(kPastRequestTimeout);
+  gate.release();
+  waitForShutdown(shutdownDone);
+  ASSERT_EQ(stalled.wait_for(kSyncTimeout), std::future_status::ready);
 }
 
 class RdmaTransportTwoQpDataPathTest : public RdmaTransportDataPathTest {
