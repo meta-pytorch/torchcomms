@@ -3317,6 +3317,17 @@ cvars:
      NVL phase, the effective block cap may decrease but cannot exceed the
      capacity established when the communicator was created.
 
+ - name        : MCCL_REDUCESCATTER_DIRECT_NVLS_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Allow explicit reducescatter:direct to use owned-window or registered
+     multicast input for its local reduction phase. NVLS is FP32/SUM-only and
+     always uses four-CTA clusters with a padded physical grid. Falls back to
+     ordinary Direct if multicast input or safe clustered launch is unavailable.
+     Must be set identically on every rank because enabling it
+     adds an NVL-domain readiness agreement before kernel selection.
+
  - name        : MCCL_ABORT_TIMEOUT_MS
    type        : float
    default     : 30000.0
