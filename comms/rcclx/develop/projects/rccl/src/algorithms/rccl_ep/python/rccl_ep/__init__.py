@@ -1114,7 +1114,7 @@ class ElasticBuffer:
         if _lib().ep_permute_epilogue(self._h, token_ids.data_ptr(), token_ids.shape[0],
                                       handle.num_recv, out_x.data_ptr(), 2 * self.hidden,
                                       out_w.data_ptr(), 4 * K, out_ids.data_ptr(), ib * K, ib,
-                                      num_sms, _stream()) != 0:
+                                      num_sms, torch.cuda.current_stream().cuda_stream) != 0:
             raise RuntimeError("ep_permute_epilogue failed")
         return out_x, out_w, out_ids
 
