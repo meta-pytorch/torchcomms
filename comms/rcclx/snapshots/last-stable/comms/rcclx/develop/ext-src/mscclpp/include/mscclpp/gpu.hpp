@@ -108,7 +108,7 @@ constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE = hipMemAccessFlagsProtReadWri
 #endif  // !defined(__HIP_PLATFORM_AMD__)
 
 // GPU sync threads
-#if defined(__HIP_PLATFORM_AMD__)
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__gfx1250__)
 #define __syncshm() asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier");
 #else
 #define __syncshm() __syncthreads();
