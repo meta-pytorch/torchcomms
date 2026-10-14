@@ -61,8 +61,6 @@ constexpr unsigned int kAllocFlags = hipDeviceMallocUncached;
 constexpr unsigned int kAllocFlags = hipDeviceMallocFinegrained;
 #endif
 
-constexpr size_t kVectorBytes = 16;
-
 struct Config {
   int32_t lanes;
   int32_t slots;
@@ -525,30 +523,20 @@ hipError_t registeredRelayLaunch(
     size_t bytes,
     hipStream_t stream) {
   const Config& c = relay->config;
-  const int paths = relay->helpers + 1;
-  const size_t sliceBytes = std::clamp<size_t>(
-      powerOfTwoFloor(std::max<size_t>(bytes / (paths * c.lanes), 1)),
-      c.minSliceBytes,
-      c.sliceBytes);
-  RegisteredRelayArgs args{};
-  args.mine = mine;
-  args.peer = peer;
-  args.output = output;
-  args.vectors = bytes / kVectorBytes;
-  args.sliceVectors = sliceBytes / kVectorBytes;
-  args.slotVectors = c.sliceBytes / kVectorBytes;
-  args.directWeight = c.directWeight;
-  args.helpers = relay->helpers;
-  args.directLanes = c.lanes;
-  args.lanes = c.lanes;
-  args.slots = c.slots;
-  args.rank = relay->rank;
-  for (int h = 0; h < relay->helpers; ++h) {
-    args.push[h] = relay->staging[h];
-    args.pull[h] = relay->peerStaging[h];
-  }
-  args.myFlags = relay->flags;
-  args.peerFlags = relay->peerFlags;
+  const RegisteredRelayLaunchPolicy policy{
+      c.minSliceBytes, c.sliceBytes, c.directWeight, c.lanes, c.lanes, c.slots};
+  const RegisteredRelayArgs args = makeRegisteredRelayArgs(
+      mine,
+      peer,
+      output,
+      bytes,
+      relay->rank,
+      relay->helpers,
+      policy,
+      relay->staging.data(),
+      relay->peerStaging.data(),
+      relay->flags,
+      relay->peerFlags);
   launches().fetch_add(1, std::memory_order_relaxed);
   return launchRegisteredRelayAllReduce(args, stream);
 }
