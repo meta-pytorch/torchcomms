@@ -31,9 +31,14 @@
  */
 __device__ __forceinline__ rccl_float8 quantize_float_to_fp8_e4m3(float value) {
   uint32_t ival = 0;
+#if defined(__gfx1250__)
+  ival = static_cast<uint32_t>(
+      __builtin_amdgcn_cvt_pk_fp8_f32(value, value, 0, false));
+#else
   asm volatile("v_cvt_pk_fp8_f32 %0, %1, %2"
                : "=v"(ival)
                : "v"(value), "v"(value));
+#endif
   rccl_float8* packed_fp8 = reinterpret_cast<rccl_float8*>(&ival);
   return packed_fp8[0];
 }
@@ -44,9 +49,13 @@ __device__ __forceinline__ rccl_float8 quantize_float_to_fp8_e4m3(float value) {
 ALWAYS_INLINE PURE float dequantize_fp8_e4m3_to_float(rccl_float8 fp8_value) {
   float result;
   uint32_t fp8_bits = *reinterpret_cast<const uint8_t*>(&fp8_value);
+#if defined(__gfx1250__)
+  result = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(fp8_bits), 0);
+#else
   asm volatile("v_cvt_f32_fp8 %0, %1 src0_sel:BYTE_0"
                : "=v"(result)
                : "v"(fp8_bits));
+#endif
   return result;
 }
 
@@ -59,11 +68,18 @@ __device__ __forceinline__ void quantize_float4_to_fp8_batch(
   rccl_float8* fp8_output = static_cast<rccl_float8*>(output);
   uint32_t packed_result = 0;
 
+#if defined(__gfx1250__)
+  int acc = 0;
+  acc = __builtin_amdgcn_cvt_pk_fp8_f32(input.x, input.y, acc, false);
+  acc = __builtin_amdgcn_cvt_pk_fp8_f32(input.z, input.w, acc, true);
+  packed_result = static_cast<uint32_t>(acc);
+#else
   asm volatile(
       "v_cvt_pk_fp8_f32 %0, %1, %2\n"
       "v_cvt_pk_fp8_f32 %0, %3, %4, op_sel:[0, 0, 1]\n"
       : "=v"(packed_result)
       : "v"(input.x), "v"(input.y), "v"(input.z), "v"(input.w));
+#endif
 
   rccl_float8* packed_fp8 = reinterpret_cast<rccl_float8*>(&packed_result);
   fp8_output[0] = packed_fp8[0];
@@ -81,6 +97,13 @@ dequantize_fp8_batch_to_float4(const void* input) {
   float4 result;
   uint32_t packed_input = *reinterpret_cast<const uint32_t*>(fp8_input);
 
+#if defined(__gfx1250__)
+  const int bits = static_cast<int>(packed_input);
+  result.x = __builtin_amdgcn_cvt_f32_fp8(bits, 0);
+  result.y = __builtin_amdgcn_cvt_f32_fp8(bits, 1);
+  result.z = __builtin_amdgcn_cvt_f32_fp8(bits, 2);
+  result.w = __builtin_amdgcn_cvt_f32_fp8(bits, 3);
+#else
   asm volatile("v_cvt_f32_fp8 %0, %1 src0_sel:BYTE_0"
                : "=v"(result.x)
                : "v"(packed_input));
@@ -93,6 +116,7 @@ dequantize_fp8_batch_to_float4(const void* input) {
   asm volatile("v_cvt_f32_fp8 %0, %1 src0_sel:BYTE_3"
                : "=v"(result.w)
                : "v"(packed_input));
+#endif
 
   return result;
 }
@@ -108,6 +132,16 @@ __device__ __forceinline__ void quantize_float8_to_fp8_batch(
   uint32_t packed_result_0 = 0;
   uint32_t packed_result_1 = 0;
 
+#if defined(__gfx1250__)
+  int acc0 = 0;
+  acc0 = __builtin_amdgcn_cvt_pk_fp8_f32(input[0], input[1], acc0, false);
+  acc0 = __builtin_amdgcn_cvt_pk_fp8_f32(input[2], input[3], acc0, true);
+  int acc1 = 0;
+  acc1 = __builtin_amdgcn_cvt_pk_fp8_f32(input[4], input[5], acc1, false);
+  acc1 = __builtin_amdgcn_cvt_pk_fp8_f32(input[6], input[7], acc1, true);
+  packed_result_0 = static_cast<uint32_t>(acc0);
+  packed_result_1 = static_cast<uint32_t>(acc1);
+#else
   asm volatile(
       "v_cvt_pk_fp8_f32 %0, %1, %2\n"
       "v_cvt_pk_fp8_f32 %0, %3, %4, op_sel:[0, 0, 1]\n"
@@ -119,6 +153,7 @@ __device__ __forceinline__ void quantize_float8_to_fp8_batch(
       "v_cvt_pk_fp8_f32 %0, %3, %4, op_sel:[0, 0, 1]\n"
       : "=v"(packed_result_1)
       : "v"(input[4]), "v"(input[5]), "v"(input[6]), "v"(input[7]));
+#endif
 
   rccl_float8* packed_fp8_0 = reinterpret_cast<rccl_float8*>(&packed_result_0);
   rccl_float8* packed_fp8_1 = reinterpret_cast<rccl_float8*>(&packed_result_1);
@@ -144,6 +179,16 @@ __device__ __forceinline__ void dequantize_fp8_batch_to_float8(
   uint32_t packed_input_0 = *reinterpret_cast<const uint32_t*>(&fp8_input[0]);
   uint32_t packed_input_1 = *reinterpret_cast<const uint32_t*>(&fp8_input[4]);
 
+#if defined(__gfx1250__)
+  output[0] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_0), 0);
+  output[1] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_0), 1);
+  output[2] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_0), 2);
+  output[3] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_0), 3);
+  output[4] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_1), 0);
+  output[5] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_1), 1);
+  output[6] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_1), 2);
+  output[7] = __builtin_amdgcn_cvt_f32_fp8(static_cast<int>(packed_input_1), 3);
+#else
   asm volatile("v_cvt_f32_fp8 %0, %1 src0_sel:BYTE_0"
                : "=v"(output[0])
                : "v"(packed_input_0));
@@ -169,6 +214,7 @@ __device__ __forceinline__ void dequantize_fp8_batch_to_float8(
   asm volatile("v_cvt_f32_fp8 %0, %1 src0_sel:BYTE_3"
                : "=v"(output[7])
                : "v"(packed_input_1));
+#endif
 }
 
 /**

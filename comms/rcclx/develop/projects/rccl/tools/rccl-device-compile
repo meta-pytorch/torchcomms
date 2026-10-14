@@ -382,6 +382,27 @@ def _normalize_file_directives(lines):
             for line in lines]
 
 
+def _lower_waitcnt_for_gfx1250(lines):
+    result = []
+    for line in lines:
+        match = re.fullmatch(
+            r'([ \t]*)s_waitcnt[ \t]+'
+            r'(?:lgkmcnt\(0\)(?:[ \t]+|[ \t]*&[ \t]*)vmcnt\(0\)'
+            r'|vmcnt\(0\)(?:[ \t]+|[ \t]*&[ \t]*)lgkmcnt\(0\))'
+            r'([ \t]*(?://[^\r\n]*)?)(?:\r?\n)?', line)
+        if match:
+            indent, comment = match.groups()
+            result.extend([
+                f'{indent}s_wait_loadcnt 0x0{comment}\n',
+                f'{indent}s_wait_storecnt 0x0\n',
+                f'{indent}s_wait_kmcnt 0x0\n',
+                f'{indent}s_wait_dscnt 0x0\n',
+            ])
+        else:
+            result.append(line)
+    return result
+
+
 def patch_dispatcher(asm_lines, max_res):
     """Patch dispatcher assembly with aggregated resource values.
     Returns patched lines."""
@@ -506,6 +527,8 @@ def do_compile(args, forwarded_flags):
             print(f"ERROR: extraction failed for {source}: {e}", file=sys.stderr)
             sys.exit(1)
 
+        if arch == 'gfx1250':
+            extracted_lines = _lower_waitcnt_for_gfx1250(extracted_lines)
         extracted_lines = _normalize_file_directives(extracted_lines)
 
         with open(ext_file, 'w') as f:
@@ -607,6 +630,8 @@ def do_link(args, forwarded_flags):
         with open(disp_asm) as f:
             disp_lines = f.readlines()
         patched_lines = patch_dispatcher(disp_lines, max_res)
+        if arch == 'gfx1250':
+            patched_lines = _lower_waitcnt_for_gfx1250(patched_lines)
         with open(disp_patched, 'w') as f:
             f.writelines(patched_lines)
 

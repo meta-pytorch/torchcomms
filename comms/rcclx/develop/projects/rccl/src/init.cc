@@ -133,7 +133,8 @@ NCCL_PARAM(CommBlocking, "COMM_BLOCKING", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(RuntimeConnect, "RUNTIME_CONNECT", 0);
 // When enabled (default), defer PAT QP creation until PAT is first selected by an AG/RS; NCCL_PAT_LAZY_INIT=0 restores eager connect at init.
 NCCL_PARAM(PatLazyInit, "PAT_LAZY_INIT", 1);
-NCCL_PARAM(WinEnable, "WIN_ENABLE", 1);
+// Symmetric VA reservation regresses inference decode (D102486033); windows are opt-in.
+NCCL_PARAM(WinEnable, "WIN_ENABLE", 0);
 NCCL_PARAM(CollnetEnable, "COLLNET_ENABLE", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(CtaPolicy, "CTA_POLICY", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(NvlsChannels, "NVLS_NCHANNELS", NCCL_CONFIG_UNDEF_INT);

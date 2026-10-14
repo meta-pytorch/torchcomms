@@ -50,7 +50,9 @@ Whether a communicator can use symmetric memory is decided once at
   GPUs this means they are on the same host over PCIe or XGMI,
   or are reachable through a Multi-Node Infinity Fabric clique).
 - Virtual Memory Management is enabled (``NCCL_CUMEM_ENABLE=1``).
-- Symmetric windows are enabled (``NCCL_WIN_ENABLE=1``, the default).
+- Symmetric windows are enabled (``NCCL_WIN_ENABLE=1``). RCCLX defaults to
+  ``NCCL_WIN_ENABLE=0`` to avoid the symmetric VA reservation decode regression
+  described in D102486033.
 - Either GPU-Initiated Networking (GIN) is available, or the communicator is a
   single locality (one-LSA) team.
 
