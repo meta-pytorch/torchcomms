@@ -191,7 +191,7 @@ TEST_F(MultiTransportFactoryTest, ConstructorRegistersTcpWhenRoutable) {
   EXPECT_TRUE(hasTcp);
 }
 
-TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndOptionalRdma) {
+TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesEnabledTransports) {
   if (topo_->gpuCount() == 0) {
     GTEST_SKIP() << "No GPUs available";
   }
@@ -224,11 +224,9 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndOptionalRdma) {
     EXPECT_EQ(factoryTransportType(factory, idx++), TransportType::RDMA);
   }
 #else
-  if (factoryCount(factory) > 1) {
-    EXPECT_EQ(factoryTransportType(factory, 0), TransportType::NVLink);
-  }
-  if (factoryCount(factory) > 2) {
-    EXPECT_EQ(factoryTransportType(factory, 1), TransportType::RDMA);
+  if (isPlatformSupported("").hasValue()) {
+    EXPECT_EQ(factoryCount(factory), 2u);
+    EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
   }
 #endif
 }
@@ -323,6 +321,23 @@ TEST_F(MultiTransportFactoryTest, ConstructorNeverRegistersTcp) {
   for (size_t i = 0; i < factoryCount(factory); ++i) {
     EXPECT_NE(factoryTransportType(factory, i), TransportType::TCP);
   }
+}
+
+TEST_F(MultiTransportFactoryTest, ConstructorGpuRegistersOnlyRdma) {
+  if (topo_->gpuCount() == 0) {
+    GTEST_SKIP() << "No GPUs available";
+  }
+  const auto status = isPlatformSupported("");
+  if (!status) {
+    GTEST_SKIP() << status.error().message();
+  }
+  MultiTransportFactory factory(0);
+
+  ASSERT_EQ(factoryCount(factory), 1u);
+  EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
+  const auto nvlink = MultiTransportFactory::supported(TransportType::NVLink);
+  ASSERT_TRUE(nvlink.hasError());
+  EXPECT_EQ(nvlink.error().code(), ErrCode::NotImplemented);
 }
 #endif
 

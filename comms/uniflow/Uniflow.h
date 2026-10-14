@@ -31,8 +31,9 @@ struct UniflowAgentConfig {
   std::string tcpBindHost{};
   std::optional<TransportType> preferredTransport;
   // Per-topology transport selection (see MultiTransport::selectTransport):
-  // intra-node defaults to NVLink/P2P, inter-node to RDMA. Set these to switch
-  // a case's first choice (intra-node -> RDMA/TCP; inter-node -> TCP).
+  // Intra-node VRAM transfers default to AMD P2P/XGMI when linked, otherwise
+  // RDMA; inter-node transfers default to RDMA. Set these to change a case's
+  // first choice (intra-node -> RDMA/TCP; inter-node -> TCP).
   std::optional<TransportType> intraNodeTransport;
   std::optional<TransportType> interNodeTransport;
   // Forwarded to MultiTransportFactoryOptions::tcpTransportConfig -- socket

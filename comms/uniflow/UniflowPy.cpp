@@ -166,7 +166,7 @@ PYBIND11_MODULE(_core, m) {
       .value("NVME", MemoryType::NVME, "NVMe storage");
 
   py::enum_<TransportType>(m, "TransportType", "Transport backend type.")
-      .value("NVLink", TransportType::NVLink, "NVLink for intra-node or MNNVL")
+      .value("NVLink", TransportType::NVLink, "AMD P2P/XGMI when linked")
       .value("RDMA", TransportType::RDMA, "InfiniBand or RoCE RDMA")
       .value("TCP", TransportType::TCP, "TCP/IP fallback");
 
