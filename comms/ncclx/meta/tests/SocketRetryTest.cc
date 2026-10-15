@@ -246,6 +246,145 @@ TEST_P(SocketRetryTest, FailedTrafficClassReadLeavesOriginalDescriptorIntact) {
   ASSERT_NO_FATAL_FAILURE(expectSameFile(originalFd, originalStat));
 }
 
+// Binds an ephemeral loopback listener carrying the proxy handshake identity.
+void initAcceptListener(ncclSocket* listener, const ncclSocket* templateSock) {
+  listener->socketDescriptor = NCCL_INVALID_SOCKET;
+  listener->acceptSocketDescriptor = NCCL_INVALID_SOCKET;
+  ASSERT_EQ(
+      ncclSocketInit(
+          listener,
+          &templateSock->addr,
+          ncclSocketDefaultMagic(),
+          ncclSocketTypeProxy,
+          /*abortFlag=*/nullptr,
+          /*asyncFlag=*/0,
+          /*customRetry=*/0),
+      ncclSuccess);
+  ASSERT_EQ(ncclSocketListen(listener), ncclSuccess);
+  ASSERT_EQ(listener->state, ncclSocketStateReady);
+}
+
+void initAcceptSlot(ncclSocket* slot) {
+  slot->socketDescriptor = NCCL_INVALID_SOCKET;
+  slot->acceptSocketDescriptor = NCCL_INVALID_SOCKET;
+}
+
+int connectRawClient(const ncclSocket& listener) {
+  const int fd = ::socket(listener.addr.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+  EXPECT_NE(fd, -1);
+  if (fd == -1) {
+    return -1;
+  }
+  if (connect(fd, &listener.addr.sa, listener.salen) != 0) {
+    ADD_FAILURE() << "raw client connect failed";
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+void sendHandshake(int fd, uint64_t magic, ncclSocketType type) {
+  ASSERT_EQ(send(fd, &magic, sizeof(magic), MSG_NOSIGNAL), sizeof(magic));
+  ASSERT_EQ(send(fd, &type, sizeof(type), MSG_NOSIGNAL), sizeof(type));
+}
+
+// A stray client that connects and closes without handshaking is discarded:
+// retry=false returns success with no fd, ready to accept the next peer.
+TEST_P(SocketRetryTest, StrayCloseDiscardedWithoutRetry) {
+  ncclSocket listener{};
+  ASSERT_NO_FATAL_FAILURE(initAcceptListener(&listener, &socket_));
+  const int stray = connectRawClient(listener);
+  ASSERT_NE(stray, -1);
+  ASSERT_EQ(close(stray), 0);
+
+  ncclSocket accepted{};
+  initAcceptSlot(&accepted);
+  EXPECT_EQ(
+      ncclSocketAccept(&accepted, &listener, /*retry=*/false), ncclSuccess);
+  EXPECT_EQ(accepted.socketDescriptor, NCCL_INVALID_SOCKET);
+  EXPECT_EQ(accepted.state, ncclSocketStateAccepting);
+  // accepted.acceptSocketDescriptor aliases the listen fd; close it once.
+  ASSERT_EQ(close(listener.socketDescriptor), 0);
+}
+
+// With retry=true, a wrong-magic peer is skipped and the valid peer behind
+// it in the backlog is accepted.
+TEST_P(SocketRetryTest, WrongMagicRetriedThenValidAccepted) {
+  ncclSocket listener{};
+  ASSERT_NO_FATAL_FAILURE(initAcceptListener(&listener, &socket_));
+  const uint64_t magic = ncclSocketDefaultMagic();
+  const int bad = connectRawClient(listener);
+  ASSERT_NE(bad, -1);
+  ASSERT_NO_FATAL_FAILURE(
+      sendHandshake(bad, magic ^ 0xff, ncclSocketTypeProxy));
+  const int good = connectRawClient(listener);
+  ASSERT_NE(good, -1);
+  ASSERT_NO_FATAL_FAILURE(sendHandshake(good, magic, ncclSocketTypeProxy));
+
+  ncclSocket accepted{};
+  initAcceptSlot(&accepted);
+  ASSERT_EQ(
+      ncclSocketAccept(&accepted, &listener, /*retry=*/true), ncclSuccess);
+  EXPECT_EQ(accepted.state, ncclSocketStateReady);
+  EXPECT_NE(accepted.socketDescriptor, NCCL_INVALID_SOCKET);
+  ASSERT_EQ(close(accepted.socketDescriptor), 0);
+  ASSERT_EQ(close(listener.socketDescriptor), 0);
+  ASSERT_EQ(close(bad), 0);
+  ASSERT_EQ(close(good), 0);
+}
+
+// With retry=false, a wrong-magic peer is discarded without an error, and
+// the listener still serves the next peer (the accept slot was freed).
+TEST_P(SocketRetryTest, WrongMagicDiscardedWithoutRetryAndSlotFreed) {
+  ncclSocket listener{};
+  ASSERT_NO_FATAL_FAILURE(initAcceptListener(&listener, &socket_));
+  const uint64_t magic = ncclSocketDefaultMagic();
+  const int bad = connectRawClient(listener);
+  ASSERT_NE(bad, -1);
+  ASSERT_NO_FATAL_FAILURE(
+      sendHandshake(bad, magic ^ 0xff, ncclSocketTypeProxy));
+
+  ncclSocket discarded{};
+  initAcceptSlot(&discarded);
+  EXPECT_EQ(
+      ncclSocketAccept(&discarded, &listener, /*retry=*/false), ncclSuccess);
+  EXPECT_EQ(discarded.socketDescriptor, NCCL_INVALID_SOCKET);
+  EXPECT_EQ(discarded.state, ncclSocketStateAccepting);
+
+  const int good = connectRawClient(listener);
+  ASSERT_NE(good, -1);
+  ASSERT_NO_FATAL_FAILURE(sendHandshake(good, magic, ncclSocketTypeProxy));
+  ncclSocket accepted{};
+  initAcceptSlot(&accepted);
+  ASSERT_EQ(
+      ncclSocketAccept(&accepted, &listener, /*retry=*/true), ncclSuccess);
+  EXPECT_EQ(accepted.state, ncclSocketStateReady);
+  EXPECT_NE(accepted.socketDescriptor, NCCL_INVALID_SOCKET);
+  ASSERT_EQ(close(accepted.socketDescriptor), 0);
+  ASSERT_EQ(close(listener.socketDescriptor), 0);
+  ASSERT_EQ(close(bad), 0);
+  ASSERT_EQ(close(good), 0);
+}
+
+// Right magic but wrong socket type is discarded, not failed.
+TEST_P(SocketRetryTest, WrongTypeDiscardedWithoutRetry) {
+  ncclSocket listener{};
+  ASSERT_NO_FATAL_FAILURE(initAcceptListener(&listener, &socket_));
+  const int peer = connectRawClient(listener);
+  ASSERT_NE(peer, -1);
+  ASSERT_NO_FATAL_FAILURE(
+      sendHandshake(peer, ncclSocketDefaultMagic(), ncclSocketTypeBootstrap));
+
+  ncclSocket accepted{};
+  initAcceptSlot(&accepted);
+  EXPECT_EQ(
+      ncclSocketAccept(&accepted, &listener, /*retry=*/false), ncclSuccess);
+  EXPECT_EQ(accepted.socketDescriptor, NCCL_INVALID_SOCKET);
+  EXPECT_EQ(accepted.state, ncclSocketStateAccepting);
+  ASSERT_EQ(close(listener.socketDescriptor), 0);
+  ASSERT_EQ(close(peer), 0);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Loopback,
     SocketRetryTest,

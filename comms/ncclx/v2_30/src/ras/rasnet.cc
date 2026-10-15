@@ -20,10 +20,6 @@ struct rasConnection* rasConnsTail;
 struct rasSocket *rasSocketsHead;
 struct rasSocket *rasSocketsTail;
 
-// Magic file descriptor number when we want poll() to ignore an entry.  Anything negative would do, but
-// I didn't want to use -1 because it has a special meaning for us.
-#define POLL_FD_IGNORE -2
-
 static void freeConnEntry(struct rasConnection* conn);
 static void rasConnOpen(struct rasConnection* conn);
 static ncclResult_t rasConnPrepare(struct rasConnection* conn);
@@ -128,7 +124,7 @@ static void rasConnOpen(struct rasConnection* conn) {
   int ready;
 
   NCCLCHECKGOTO(getNewSockEntry(&sock), ret, fail);
-  NCCLCHECKGOTO(ncclSocketInit(&sock->sock, &conn->addr, NCCL_SOCKET_MAGIC, ncclSocketTypeRasNetwork, nullptr,
+  NCCLCHECKGOTO(ncclSocketInit(&sock->sock, &conn->addr, ncclSocketDefaultMagic(), ncclSocketTypeRasNetwork, nullptr,
                                /*asyncFlag*/1, /*customRetry*/1), ret, fail);
   closeSocketOnFail = true;
   NCCLCHECKGOTO(ncclSocketConnect(&sock->sock), ret, fail);
@@ -406,7 +402,7 @@ ncclResult_t rasNetAcceptNewSocket() {
   bool socketInitialized = false;
   NCCLCHECKGOTO(getNewSockEntry(&sock), ret, fail);
 
-  NCCLCHECKGOTO(ncclSocketInit(&sock->sock, nullptr, NCCL_SOCKET_MAGIC, ncclSocketTypeRasNetwork, nullptr,
+  NCCLCHECKGOTO(ncclSocketInit(&sock->sock, nullptr, ncclSocketDefaultMagic(), ncclSocketTypeRasNetwork, nullptr,
                                /*asyncFlag*/1), ret, fail);
   socketInitialized = true;
   NCCLCHECKGOTO(ncclSocketAccept(&sock->sock, &rasNetListeningSocket), ret, fail);
@@ -664,8 +660,12 @@ void rasSockEventLoop(struct rasSocket* sock, int pollIdx) {
           }
         } // if (connectSide)
       } else { // !ready
-        if (sock->sock.state == ncclSocketStateConnecting)
+        if (sock->sock.state == ncclSocketStateConnecting) {
           rasPfds[sock->pfd].fd = POLL_FD_IGNORE; // Don't poll on this socket before connect().
+        } else if (sock->sock.socketDescriptor == NCCL_INVALID_SOCKET) {
+          // Most likely an incoming connection that failed the magic test.
+          rasSocketTerminate(sock);
+        }
       }
     } // if (ncclSocketReady)
   } else { // RAS_SOCK_HANDSHAKE || RAS_SOCK_READY || RAS_SOCK_TERMINATING.

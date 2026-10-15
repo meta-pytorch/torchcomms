@@ -3032,6 +3032,15 @@ cvars:
    description : |-
      If true, ncclCommInitRank will fatal if it detects a race condition
 
+ - name        : NCCL_SOCKET_MAGIC_CVAR
+   envstr      : NCCL_SOCKET_MAGIC
+   type        : string
+   default     : ""
+   description : |-
+     Overrides the 64-bit handshake magic used by RAS sockets and advertised
+     by the Socket/IB net listen handles. Bootstrap and proxy sockets keep
+     the per-communicator magic.
+
  - name        : NCCL_SOCKET_RCVBUF
    type        : int
    default     : -1
