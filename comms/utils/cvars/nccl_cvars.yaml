@@ -2037,19 +2037,37 @@ cvars:
      shared IMEX domain fails communicator init outright. Set true on fleets
      known to share an IMEX domain.
 
+ - name        : MCCL_CUDAGRAPH_AUTO_REGISTER
+   type        : enum
+   default     : disabled
+   choices     : disabled, enabled
+   description : |-
+     Zero-copy for MCCL-native collectives captured into a CUDA graph. Must be
+     the same on every rank.
+     disabled - Every collective uses its copy path.
+     enabled - A captured collective whose algorithm supports it registers its
+               user buffers for the graph's lifetime and moves data straight
+               between them; eager calls use the copy path.
+               AllReduce: runs zero-copy only where every rank's zero-copy
+               and copy kernels agree on the wire (MCCL Ring or Tree, no LL,
+               no warp proxy, IBGDA inter-node peers); otherwise it keeps its
+               copy path. A captured AllReduce that cannot run zero-copy
+               throws instead of falling back.
+               Batched send/recv, AllToAll, AllToAllv, Gather and Scatter: IB
+               peers must be IBGDA; a captured operation that reaches an NVL or
+               IBRC peer fails with commInvalidUsage.
+
  - name        : MCCL_ALLREDUCE_ZERO_COPY_MODE
    type        : enum
    default     : "off"
    choices     : off, force
    description : |-
-     Select zero-copy for MCCL-native AllReduce.
-     off - Always use the copy path. An empty value also selects off.
-     force - Send CUDA-graph-captured AllReduces from the registered user
-             buffer; eager calls use the copy path. Each rank decides on its
-             own, so communicator init rejects configurations whose zero-copy
-             and copy kernels would disagree on the wire (LL, warp proxy,
-             pipes trace, non-Ring/Tree selection), and a captured operation
-             that cannot run zero-copy throws instead of falling back.
+     Deprecated; use MCCL_CUDAGRAPH_AUTO_REGISTER. force behaves as
+     MCCL_CUDAGRAPH_AUTO_REGISTER=enabled, except that communicator init fails
+     where AllReduce cannot run zero-copy (LL, warp proxy, pipes trace,
+     non-Ring/Tree selection). With MCCL_CUDAGRAPH_AUTO_REGISTER=enabled also
+     set, the unified cvar wins and init does not fail. off leaves
+     MCCL_CUDAGRAPH_AUTO_REGISTER in charge.
 
  - name        : MCCL_ALLREDUCE_ROUTE_EVIDENCE_ENABLE
    type        : bool
