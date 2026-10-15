@@ -91,7 +91,7 @@ target_link_libraries(torchcomms_transport PRIVATE
     ${TORCH_PYTHON_LIB}
     ctran
     fault_tolerance
-    utils
+    commsutils
 )
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_transport PRIVATE
@@ -129,6 +129,35 @@ target_link_libraries(torchcomms_transport PRIVATE
     ${ABSL_LDFLAGS}
     "-Wl,--end-group"
 )
+
+# commsutils above is the prebuilt libcommsutils.so of the commsutils package
+# (one copy per process, shared with the NCCLX and MCCL extensions), so this
+# module carries a DT_NEEDED on it and needs a run path, exactly as
+# comms/torchcomms/ncclx/CMakeLists.txt arranges for the NCCLX extension. On
+# the USE_SYSTEM_LIBS path the environment supplies the file.
+if(NOT USE_SYSTEM_LIBS)
+    # COMMSUTILS_LIBRARY is the find_library() result cached by
+    # comms/utils/CMakeLists.txt above.
+    get_filename_component(TRANSPORT_COMMSUTILS_LIB_DIR
+        "${COMMSUTILS_LIBRARY}" DIRECTORY)
+    if(TORCHCOMMS_BUNDLE_COMMSUTILS)
+        # Beside the extension, inside the package. The NCCLX extension
+        # installs the same files; installing them twice is a no-op, and this
+        # keeps a transport-only build (USE_NCCLX=OFF) importable.
+        set(TRANSPORT_COMMSUTILS_RPATH "$ORIGIN")
+        file(GLOB TRANSPORT_COMMSUTILS_FILES
+            "${TRANSPORT_COMMSUTILS_LIB_DIR}/libcommsutils.so*"
+            "${TRANSPORT_COMMSUTILS_LIB_DIR}/libobservatory.so*")
+        install(FILES ${TRANSPORT_COMMSUTILS_FILES} DESTINATION .)
+    else()
+        # `site-packages/torchcomms` up to the environment's lib dir.
+        set(TRANSPORT_COMMSUTILS_RPATH "$ORIGIN/../../..")
+    endif()
+    set_target_properties(torchcomms_transport PROPERTIES
+        BUILD_RPATH "${TRANSPORT_COMMSUTILS_LIB_DIR}"
+        INSTALL_RPATH "${TRANSPORT_COMMSUTILS_RPATH}"
+    )
+endif()
 
 install(TARGETS torchcomms_transport
     LIBRARY DESTINATION .
