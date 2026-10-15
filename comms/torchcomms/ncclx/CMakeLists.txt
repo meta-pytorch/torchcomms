@@ -24,10 +24,22 @@ else()
     set(NCCLX_INCLUDE "${NCCLX_BUILD_DIR}/include")
     set(NCCLX_STATIC_LIB "${NCCLX_BUILD_DIR}/lib/libnccl_static.a")
     set(NCCLX_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
-    set(NCCLX_OBSERVATORY_LIB "${NCCLX_BUILD_DIR}/lib/libobservatory.so")
     # build_ncclx.sh is invoked by build_ncclx.cmake (included before other
     # third-party deps) so NCCLX_BUILD_DIR should already exist at this point.
 endif()
+
+# libcommsutils.so and libobservatory.so: the commsutils package (comms/utils
+# and comms/observatory, one copy per process), in the environment's lib dir
+# either from the package itself or from build_ncclx.sh when the environment
+# has none (COMMSUTILS_LIB_DIR names another location). The extension links
+# libcommsutils on both paths: it uses the CUDA RAII wrappers and the graph
+# capture side stream from comms/utils, which libnccl.so does not export.
+set(NCCLX_COMMSUTILS_LIB_DIR "$ENV{COMMSUTILS_LIB_DIR}")
+if(NOT NCCLX_COMMSUTILS_LIB_DIR)
+    set(NCCLX_COMMSUTILS_LIB_DIR "${CONDA_LIB}")
+endif()
+set(NCCLX_COMMSUTILS_LIB "${NCCLX_COMMSUTILS_LIB_DIR}/libcommsutils.so")
+set(NCCLX_OBSERVATORY_LIB "${NCCLX_COMMSUTILS_LIB_DIR}/libobservatory.so")
 
 # Get folly LDFLAGS using pkg-config
 set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
@@ -83,34 +95,10 @@ else()
     set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
 endif()
 
-set(TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES "")
-if(USE_SYSTEM_LIBS)
-    # CudaRAII.cc calls out-of-line logger and GPU-memory-accounting helpers.
-    # libnccl.so cannot supply them: it is built
-    # -fvisibility=hidden behind version.script, which exports only the nccl*
-    # ABI, so on the USE_SYSTEM_LIBS path the references survive to dlopen and
-    # importing the extension fails. The static path gets the definitions from
-    # the libnccl_static.a archive instead.
-    #
-    # These sources are the whole out-of-line closure: SpdlogLogger.cc needs
-    # formatCommsLogMessage() from CommsLogFormatter.cc. McclCudaMemory.cc
-    # delegates accounting to GpuMemoryTracker.cc. RateLimit.h is header-only.
-    find_package(spdlog CONFIG REQUIRED)
-    list(APPEND TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES
-        comms/utils/logger/SpdlogLogger.cc
-        comms/utils/logger/CommsLogFormatter.cc
-        comms/utils/memtrace/McclCudaMemory.cc
-        comms/utils/memtrace/GpuMemoryTracker.cc
-    )
-endif()
-
 add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
-    comms/utils/CudaRAII.cc
-    comms/utils/GraphCaptureSideStream.cc
-    ${TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES}
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
@@ -128,12 +116,6 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
 )
 torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
-# CudaRAII.cc includes SpdlogLogger.h directly, so this target must carry
-# the logger's compile-time configuration instead of relying on CTRAN.
-target_compile_definitions(torchcomms_comms_ncclx PRIVATE
-    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
-    SPDLOG_FMT_EXTERNAL
-)
 
 # Add device API compile definition if headers are available
 if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
@@ -155,21 +137,22 @@ if(USE_SYSTEM_LIBS)
     # references.
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_SHARED_LIB}
+        ${NCCLX_COMMSUTILS_LIB}
         ${FOLLY_LDFLAGS}
         "-lboost_program_options"
         "-lboost_filesystem"
         "-lfmt"
-        spdlog::spdlog_header_only
     )
 else()
-    # libobservatory.so after the archive, not before: it is the archive's
-    # CollTraceWrapper member that names the lifecycle-registry symbols, and
-    # under --as-needed a shared library listed ahead of its first reference
-    # is dropped. `ar` runs no link step, so the archive carries the
-    # references with nothing to satisfy them; a MODULE tolerates that and the
-    # failure lands at import instead of at link.
+    # libcommsutils.so / libobservatory.so after the archive, not before: it is
+    # the archive's members that name their symbols (the cvars table, the
+    # loggers, the lifecycle registry), and under --as-needed a shared library
+    # listed ahead of its first reference is dropped. `ar` runs no link step,
+    # so the archive carries the references with nothing to satisfy them; a
+    # MODULE tolerates that and the failure lands at import instead of at link.
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
+        ${NCCLX_COMMSUTILS_LIB}
         ${NCCLX_OBSERVATORY_LIB}
         "-l:libfolly.a"
         "-l:libcrypto.a"
@@ -181,16 +164,21 @@ else()
     )
     # Rename NCCL symbols to avoid conflicting with OSS nccl* that is bundled
     # with PyTorch.
+    # The rename keeps the names libcommsutils.so defines (ncclCvarInit, ...)
+    # as they are: those are resolved from the shared library at load, so a
+    # renamed reference would have nothing to bind to.
     add_custom_command(
         TARGET torchcomms_comms_ncclx
         PRE_LINK
         COMMAND "${ROOT}/rename_symbols.sh"
                 '$<TARGET_OBJECTS:torchcomms_comms_ncclx>'
+                "${NCCLX_COMMSUTILS_LIB}"
     )
     add_custom_command(
         TARGET torchcomms_comms_ncclx
         PRE_LINK
         COMMAND "${ROOT}/rename_symbols.sh" "${NCCLX_STATIC_LIB}"
+                "${NCCLX_COMMSUTILS_LIB}"
     )
 
     # Keep static NCCLX and Folly symbols local to this extension. Other
@@ -225,30 +213,33 @@ target_link_libraries(torchcomms_comms_ncclx PRIVATE
     "-Wl,--end-group"
 )
 
-# On the USE_SYSTEM_LIBS path libnccl.so carries the DT_NEEDED and its own
-# $ORIGIN rpath, and the environment supplies the file, so neither arm below
-# applies there.
+# On the USE_SYSTEM_LIBS path the commsutils libraries sit beside libnccl.so in
+# the environment's lib dir and are found the same way it is (the conda
+# relocation, the wheel build's rpath edit), so neither arm below applies there.
 if(NOT USE_SYSTEM_LIBS)
-    if(TORCHCOMMS_BUNDLE_OBSERVATORY)
+    if(TORCHCOMMS_BUNDLE_COMMSUTILS)
         # Beside the extension, inside the package.
-        set(NCCLX_OBSERVATORY_RPATH "$ORIGIN")
-        # DIRECTORY rather than the versioned filename: this ships the symlink
-        # too and survives a SOVERSION bump. Nothing is silently skipped if the
-        # library is missing, because the link above already named it.
-        install(DIRECTORY "${NCCLX_BUILD_DIR}/lib/"
-            DESTINATION .
-            FILES_MATCHING PATTERN "libobservatory.so*")
+        set(NCCLX_COMMSUTILS_RPATH "$ORIGIN")
+        # The versioned files and their symlinks, named explicitly rather than
+        # as a directory walk: the lib dir may be the whole environment's.
+        # Nothing is silently skipped if a library is missing, because the link
+        # above already named it.
+        file(GLOB NCCLX_COMMSUTILS_FILES
+            "${NCCLX_COMMSUTILS_LIB_DIR}/libcommsutils.so*"
+            "${NCCLX_COMMSUTILS_LIB_DIR}/libobservatory.so*")
+        install(FILES ${NCCLX_COMMSUTILS_FILES} DESTINATION .)
     else()
         # `site-packages/torchcomms` up to the environment's lib dir, which is
         # where whoever supplies the process's one copy has put it.
-        set(NCCLX_OBSERVATORY_RPATH "$ORIGIN/../../..")
+        set(NCCLX_COMMSUTILS_RPATH "$ORIGIN/../../..")
     endif()
-    # The build tree puts the module under comms/torchcomms/ and leaves
-    # libobservatory in the ncclx build dir, so the build and install rpaths
-    # differ and CMake's install-time relink is what swaps one for the other.
+    # The build tree puts the module under comms/torchcomms/ and leaves the
+    # commsutils libraries where they were installed, so the build and install
+    # rpaths differ and CMake's install-time relink is what swaps one for the
+    # other.
     set_target_properties(torchcomms_comms_ncclx PROPERTIES
-        BUILD_RPATH "${NCCLX_BUILD_DIR}/lib"
-        INSTALL_RPATH "${NCCLX_OBSERVATORY_RPATH}"
+        BUILD_RPATH "${NCCLX_COMMSUTILS_LIB_DIR}"
+        INSTALL_RPATH "${NCCLX_COMMSUTILS_RPATH}"
     )
 endif()
 
