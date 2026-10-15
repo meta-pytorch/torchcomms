@@ -8,7 +8,9 @@
 #include <mpi.h>
 #include <chrono>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -90,9 +92,28 @@ static std::vector<uint8_t> mpiExchange(
   return remoteData;
 }
 
-/// Returns true if any rank wants to skip (synchronized across all ranks).
-static bool anyRankWantsToSkip(bool localSkip) {
-  int localVal = localSkip ? 1 : 0;
+/// Returns the (request, byte) of the first byte that differs from the
+/// per-request pattern patternBase + r, or nullopt if none does.
+static std::optional<std::pair<size_t, size_t>> firstMismatch(
+    const std::vector<char>& data,
+    size_t bufSize,
+    size_t numRequests,
+    uint8_t patternBase) {
+  for (size_t r = 0; r < numRequests; ++r) {
+    const auto expected = static_cast<uint8_t>(patternBase + r);
+    for (size_t i = 0; i < bufSize; ++i) {
+      if (static_cast<uint8_t>(data[r * bufSize + i]) != expected) {
+        return std::make_pair(r, i);
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+/// Returns true if `local` is true on any rank. Every rank must call it, so
+/// ranks that use the result to return early stay in step.
+static bool anyRank(bool local) {
+  int localVal = local ? 1 : 0;
   int globalVal = 0;
   MPI_Allreduce(&localVal, &globalVal, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   return globalVal != 0;
@@ -121,7 +142,9 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
   };
 
   /// Create a connected MultiTransport pair across hosts using MPI to
-  /// exchange topology and connection info.
+  /// exchange topology and connection info. A step that fails on any rank
+  /// leaves every rank's pair without a transport, so callers on both ranks
+  /// fail together instead of one rank waiting in MPI for the other.
   ConnectedPair connectCrossHost(
       int deviceId,
       MultiTransportFactoryOptions options = {}) {
@@ -136,22 +159,38 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     auto transportResult = pair.factory->createTransport(remoteTopo);
     EXPECT_TRUE(transportResult.hasValue())
         << "createTransport failed: " << transportResult.error().message();
-    pair.transport = std::move(transportResult.value());
+    if (anyRank(transportResult.hasError())) {
+      return pair;
+    }
+    auto transport = std::move(transportResult.value());
 
-    // Exchange TransportInfo via MPI.
-    auto bindResult = pair.transport->bind();
+    // Exchange TransportInfo via MPI. Both ranks join the exchange even if
+    // bind() failed locally.
+    auto bindResult = transport->bind();
     EXPECT_TRUE(bindResult.hasValue())
         << "bind failed: " << bindResult.error().message();
-    auto remoteInfo = mpiExchange(bindResult.value(), globalRank);
-    auto connectStatus = pair.transport->connect(remoteInfo);
+    TransportInfo localInfo;
+    if (bindResult.hasValue()) {
+      localInfo = std::move(bindResult.value());
+    }
+    auto remoteInfo = mpiExchange(localInfo, globalRank);
+    if (anyRank(bindResult.hasError())) {
+      return pair;
+    }
+    auto connectStatus = transport->connect(remoteInfo);
     EXPECT_FALSE(connectStatus.hasError())
         << "connect failed: " << connectStatus.error().message();
+    if (anyRank(connectStatus.hasError())) {
+      return pair;
+    }
 
+    pair.transport = std::move(transport);
     return pair;
   }
 
   /// Register a local segment, exchange registration payloads via MPI,
-  /// import the remote segment, and return both registered segments.
+  /// import the remote segment, and return both registered segments. Returns
+  /// nullopt on every rank if registration or import failed on any rank.
   std::optional<SegmentRegistration> registerAndExchangeSegments(
       MultiTransportFactory& factory,
       void* buf,
@@ -161,16 +200,20 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     Segment seg(buf, totalSize, memType, deviceId);
     auto regResult = factory.registerSegment(seg);
     EXPECT_TRUE(regResult.hasValue()) << regResult.error().message();
-    if (regResult.hasError()) {
+
+    // Both ranks join the exchange even if registration failed locally.
+    std::vector<uint8_t> localPayload;
+    if (regResult.hasValue()) {
+      localPayload = regResult.value().exportId().value();
+    }
+    auto remotePayload = mpiExchange(localPayload, globalRank);
+    if (anyRank(regResult.hasError())) {
       return std::nullopt;
     }
 
-    auto localPayload = regResult.value().exportId().value();
-    auto remotePayload = mpiExchange(localPayload, globalRank);
-
     auto importResult = factory.importSegment(remotePayload);
     EXPECT_TRUE(importResult.hasValue()) << importResult.error().message();
-    if (importResult.hasError()) {
+    if (anyRank(importResult.hasError())) {
       return std::nullopt;
     }
 
@@ -212,6 +255,7 @@ TEST_F(MultiTransportCrossHostTest, RdmaRequestTimeoutReachesRdmaTransport) {
           .preferredTransport = TransportType::RDMA,
           .rdmaRequestTimeout = kRequestTimeout,
       });
+  ASSERT_NE(pair.transport, nullptr);
   std::vector<char> buffer(kTransferSize, 0);
   auto segments = registerAndExchangeSegments(
       *pair.factory, buffer.data(), buffer.size(), MemoryType::DRAM);
@@ -262,6 +306,7 @@ TEST_F(MultiTransportCrossHostTest, PutLongerThanRequestTimeoutTimesOut) {
           .preferredTransport = TransportType::RDMA,
           .rdmaRequestTimeout = kRequestTimeout,
       });
+  ASSERT_NE(pair.transport, nullptr);
   std::vector<char> buffer(
       kTransferSize, globalRank == 0 ? static_cast<char>(0x5A) : 0);
   auto segments = registerAndExchangeSegments(
@@ -342,7 +387,7 @@ struct CudaBuffer {
   size_t size{0};
 
   explicit CudaBuffer(size_t n, int device = 0) : size(n) {
-    cudaSetDevice(device);
+    (void)cudaSetDevice(device);
     if (cudaMalloc(&ptr, n) != cudaSuccess) {
       ptr = nullptr;
     }
@@ -350,7 +395,7 @@ struct CudaBuffer {
 
   ~CudaBuffer() {
     if (ptr) {
-      cudaFree(ptr);
+      (void)cudaFree(ptr);
     }
   }
 
@@ -512,8 +557,11 @@ class SameDeviceTransferTest
             static_cast<int>(patternBase + r),
             bufSize);
       }
-      cudaSetDevice(cudaDev);
-      cudaMemcpy(ptr, staging.data(), totalSize, cudaMemcpyHostToDevice);
+      (void)cudaSetDevice(cudaDev);
+      (void)cudaMemcpy(ptr, staging.data(), totalSize, cudaMemcpyHostToDevice);
+      // A copy from pageable memory can return before the data lands; the RDMA
+      // transfer must not start until it has.
+      (void)cudaDeviceSynchronize();
     } else {
       for (size_t r = 0; r < numRequests; ++r) {
         std::memset(
@@ -527,8 +575,11 @@ class SameDeviceTransferTest
   // Zero the buffer.
   void zeroBuffer(void* ptr, MemType memType, int cudaDev, size_t totalSize) {
     if (isGpu(memType)) {
-      cudaSetDevice(cudaDev);
-      cudaMemset(ptr, 0, totalSize);
+      (void)cudaSetDevice(cudaDev);
+      (void)cudaMemset(ptr, 0, totalSize);
+      // cudaMemset is asynchronous; a late clear would overwrite data the NIC
+      // already wrote.
+      (void)cudaDeviceSynchronize();
     } else {
       std::memset(ptr, 0, totalSize);
     }
@@ -539,8 +590,8 @@ class SameDeviceTransferTest
   readBuffer(void* ptr, MemType memType, int cudaDev, size_t totalSize) {
     std::vector<char> out(totalSize);
     if (isGpu(memType)) {
-      cudaSetDevice(cudaDev);
-      cudaMemcpy(out.data(), ptr, totalSize, cudaMemcpyDeviceToHost);
+      (void)cudaSetDevice(cudaDev);
+      (void)cudaMemcpy(out.data(), ptr, totalSize, cudaMemcpyDeviceToHost);
     } else {
       std::memcpy(out.data(), ptr, totalSize);
     }
@@ -566,7 +617,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
     int deviceCount = 0;
     bool noCuda =
         cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount < 1;
-    if (anyRankWantsToSkip(noCuda)) {
+    if (anyRank(noCuda)) {
       GTEST_SKIP() << "Some rank lacks CUDA devices (local: " << deviceCount
                    << ")";
     }
@@ -578,7 +629,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
       VmmAllocation probe;
       canFabric = probe.alloc(*driverApi_, 0, 4096).hasValue();
     }
-    if (anyRankWantsToSkip(!canFabric)) {
+    if (anyRank(!canFabric)) {
       GTEST_SKIP() << "Fabric (MNNVL) not supported on some rank";
     }
   }
@@ -592,6 +643,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
   const int cudaDev = 0;
   const int factoryDevice = needsCuda ? cudaDev : -1;
   auto pair = connectCrossHost(factoryDevice);
+  ASSERT_NE(pair.transport, nullptr);
 
   // Determine which MemType this rank uses.
   MemType myMemType =
@@ -608,8 +660,9 @@ TEST_P(SameDeviceTransferTest, Transfer) {
   } else {
     myPtr = allocGpuBuffer(myMemType, cudaDev, totalSize, cudaBuf, vmmBuf);
   }
-  ASSERT_NE(myPtr, nullptr)
+  EXPECT_NE(myPtr, nullptr)
       << "Buffer allocation failed on rank " << globalRank;
+  ASSERT_FALSE(anyRank(myPtr == nullptr));
 
   const int fillRank = isPut ? 0 : 1;
   const int verifyRank = isPut ? 1 : 0;
@@ -637,7 +690,9 @@ TEST_P(SameDeviceTransferTest, Transfer) {
         segments->local, segments->remote, bufSize, numRequests);
     auto status = isPut ? pair.transport->put(reqs).get()
                         : pair.transport->get(reqs).get();
-    ASSERT_FALSE(status.hasError())
+    // EXPECT, not ASSERT, on rank-specific checks: an early return would skip
+    // the barrier below and deadlock the other rank.
+    EXPECT_FALSE(status.hasError())
         << (isPut ? "put" : "get") << " failed: " << status.error().message();
 
     // VRAM→VRAM with Fabric → NVLink; everything else → RDMA.
@@ -652,13 +707,11 @@ TEST_P(SameDeviceTransferTest, Transfer) {
 
   if (globalRank == verifyRank) {
     auto verify = readBuffer(myPtr, myMemType, cudaDev, totalSize);
-    for (size_t r = 0; r < numRequests; ++r) {
-      uint8_t expected = static_cast<uint8_t>(patternBase + r);
-      for (size_t i = 0; i < bufSize; ++i) {
-        ASSERT_EQ(static_cast<uint8_t>(verify[r * bufSize + i]), expected)
-            << "Data mismatch at request " << r << " byte " << i;
-      }
-    }
+    const auto mismatch =
+        firstMismatch(verify, bufSize, numRequests, patternBase);
+    EXPECT_FALSE(mismatch.has_value())
+        << "Data mismatch at request " << mismatch->first << " byte "
+        << mismatch->second;
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -725,7 +778,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
   int deviceCount = 0;
   bool noCuda =
       cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount < 2;
-  if (anyRankWantsToSkip(noCuda)) {
+  if (anyRank(noCuda)) {
     GTEST_SKIP() << "Need at least 2 CUDA devices per rank (local: "
                  << deviceCount << ")";
   }
@@ -740,7 +793,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
       VmmAllocation probe;
       canFabric = probe.alloc(*driverApi_, globalRank, 4096).hasValue();
     }
-    if (anyRankWantsToSkip(!canFabric)) {
+    if (anyRank(!canFabric)) {
       GTEST_SKIP() << "Fabric (MNNVL) not supported on some rank";
     }
   }
@@ -752,26 +805,28 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
 
   const int cudaDev = globalRank;
   auto pair = connectCrossHost(cudaDev);
+  ASSERT_NE(pair.transport, nullptr);
 
   CudaBuffer cudaBuf(useFabric ? 0 : totalSize, cudaDev);
   VmmAllocation vmmBuf;
   void* gpuPtr = nullptr;
   if (useFabric) {
     auto allocStatus = vmmBuf.alloc(*driverApi_, cudaDev, totalSize);
-    ASSERT_TRUE(allocStatus.hasValue())
+    EXPECT_TRUE(allocStatus.hasValue())
         << "Fabric VMM alloc failed: " << allocStatus.error().message();
-    gpuPtr = vmmBuf.ptr();
+    gpuPtr = allocStatus.hasValue() ? vmmBuf.ptr() : nullptr;
   } else {
-    ASSERT_NE(cudaBuf.ptr, nullptr)
+    EXPECT_NE(cudaBuf.ptr, nullptr)
         << "cudaMalloc failed on device " << cudaDev;
     gpuPtr = cudaBuf.ptr;
   }
+  ASSERT_FALSE(anyRank(gpuPtr == nullptr));
 
   const int fillRank = isPut ? 0 : 1;
   const int verifyRank = isPut ? 1 : 0;
   const uint8_t patternBase = 0xD0;
 
-  cudaSetDevice(cudaDev);
+  (void)cudaSetDevice(cudaDev);
   if (globalRank == fillRank) {
     std::vector<char> staging(totalSize);
     for (size_t r = 0; r < numRequests; ++r) {
@@ -780,10 +835,12 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
           static_cast<int>(patternBase + r),
           bufSize);
     }
-    cudaMemcpy(gpuPtr, staging.data(), totalSize, cudaMemcpyHostToDevice);
+    (void)cudaMemcpy(gpuPtr, staging.data(), totalSize, cudaMemcpyHostToDevice);
   } else {
-    cudaMemset(gpuPtr, 0, totalSize);
+    (void)cudaMemset(gpuPtr, 0, totalSize);
   }
+  // As in fillBuffer() and zeroBuffer(): finish the setup before any transfer.
+  (void)cudaDeviceSynchronize();
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -796,7 +853,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
         segments->local, segments->remote, bufSize, numRequests);
     auto status = isPut ? pair.transport->put(reqs).get()
                         : pair.transport->get(reqs).get();
-    ASSERT_FALSE(status.hasError())
+    EXPECT_FALSE(status.hasError())
         << "Cross-device " << (isPut ? "put" : "get")
         << " failed: " << status.error().message();
 
@@ -809,15 +866,13 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
 
   if (globalRank == verifyRank) {
     std::vector<char> verify(totalSize, 0);
-    cudaSetDevice(cudaDev);
-    cudaMemcpy(verify.data(), gpuPtr, totalSize, cudaMemcpyDeviceToHost);
-    for (size_t r = 0; r < numRequests; ++r) {
-      uint8_t expected = static_cast<uint8_t>(patternBase + r);
-      for (size_t i = 0; i < bufSize; ++i) {
-        ASSERT_EQ(static_cast<uint8_t>(verify[r * bufSize + i]), expected)
-            << "Cross-device data mismatch at request " << r << " byte " << i;
-      }
-    }
+    (void)cudaSetDevice(cudaDev);
+    (void)cudaMemcpy(verify.data(), gpuPtr, totalSize, cudaMemcpyDeviceToHost);
+    const auto mismatch =
+        firstMismatch(verify, bufSize, numRequests, patternBase);
+    EXPECT_FALSE(mismatch.has_value())
+        << "Cross-device data mismatch at request " << mismatch->first
+        << " byte " << mismatch->second;
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
