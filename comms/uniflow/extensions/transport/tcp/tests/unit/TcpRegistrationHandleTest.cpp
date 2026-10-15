@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/transport/tcp/TcpRegistrationHandle.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpRegistrationHandle.h"
 
 #include <gtest/gtest.h>
 

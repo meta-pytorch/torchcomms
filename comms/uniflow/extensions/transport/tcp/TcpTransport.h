@@ -24,8 +24,8 @@
 
 #include "comms/uniflow/controller/TcpController.h"
 #include "comms/uniflow/executor/EventBase.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpPinnedSlabPool.h"
 #include "comms/uniflow/transport/Transport.h"
-#include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
 
 namespace uniflow {
 

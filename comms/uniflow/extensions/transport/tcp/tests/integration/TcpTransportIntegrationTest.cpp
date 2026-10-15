@@ -4,8 +4,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <random>
 #include <string>
 #include <thread>
@@ -13,9 +15,9 @@
 
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/tcp/TcpRegistrationHandle.h"
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
-#include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpRegistrationHandle.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpWireProtocol.h"
 
 namespace uniflow {
 
@@ -423,6 +425,20 @@ uint8_t patternAt(uint64_t offset, uint64_t round) {
   return static_cast<uint8_t>(x);
 }
 
+size_t firstMismatch(
+    const std::vector<uint8_t>& got,
+    const std::vector<uint8_t>& want,
+    size_t offset,
+    size_t len) {
+  if (len == 0 ||
+      std::memcmp(got.data() + offset, want.data() + offset, len) == 0) {
+    return len;
+  }
+  const uint8_t* begin = got.data() + offset;
+  return static_cast<size_t>(
+      std::mismatch(begin, begin + len, want.data() + offset).first - begin);
+}
+
 // Transfer sizes for the correctness sweep. Random sizes alone are weak here:
 // every failure this transport can have lives on a boundary, and a uniform draw
 // almost never lands on one. So the boundaries are enumerated explicitly and
@@ -546,20 +562,16 @@ TEST(TcpTransportIntegration, DramSizeAndOffsetSweepPutGet) {
           remoteBOnA.value().span(offset, len)}};
       auto putStatus = mtA->put(putReqs).get();
       ASSERT_FALSE(putStatus.hasError()) << putStatus.error().message();
-      for (size_t i = 0; i < len; ++i) {
-        ASSERT_EQ(dst[offset + i], patternAt(offset + i, round))
-            << "put mismatch at byte " << i;
-      }
+      const size_t putBad = firstMismatch(dst, src, offset, len);
+      ASSERT_EQ(putBad, len) << "put mismatch at byte " << putBad;
 
       std::vector<TransferRequest> getReqs{TransferRequest{
           regABack.value().span(offset, len),
           remoteBOnA.value().span(offset, len)}};
       auto getStatus = mtA->get(getReqs).get();
       ASSERT_FALSE(getStatus.hasError()) << getStatus.error().message();
-      for (size_t i = 0; i < len; ++i) {
-        ASSERT_EQ(back[offset + i], patternAt(offset + i, round))
-            << "get mismatch at byte " << i;
-      }
+      const size_t getBad = firstMismatch(back, src, offset, len);
+      ASSERT_EQ(getBad, len) << "get mismatch at byte " << getBad;
     }
   }
 

@@ -11,12 +11,25 @@ file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}"
   "${UNIFLOW_EXTENSIONS_BUILD_INCLUDE_DIR}/comms/uniflow/extensions" SYMBOLIC)
 target_include_directories(uniflow_build_config BEFORE INTERFACE
   $<BUILD_INTERFACE:${UNIFLOW_EXTENSIONS_BUILD_INCLUDE_DIR}>)
+target_include_directories(uniflow PUBLIC
+  $<BUILD_INTERFACE:${UNIFLOW_EXTENSIONS_BUILD_INCLUDE_DIR}>)
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   add_subdirectory(transport/p2p)
   target_sources(uniflow_implementation INTERFACE
     $<TARGET_OBJECTS:uniflow_p2p_transport>)
   target_link_libraries(uniflow_implementation INTERFACE uniflow_p2p_transport)
+endif()
+
+if(UNIFLOW_ENABLE_TCP)
+  add_subdirectory(transport/tcp)
+  target_sources(uniflow_implementation INTERFACE
+    $<TARGET_OBJECTS:uniflow_tcp_transport>)
+  target_link_libraries(uniflow_implementation INTERFACE uniflow_tcp_transport)
+  list(APPEND UNIFLOW_PUBLIC_HEADERS
+    "${CMAKE_CURRENT_SOURCE_DIR}/transport/tcp/TcpPinnedSlabPool.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/transport/tcp/TcpTransport.h")
+  set(UNIFLOW_PUBLIC_HEADERS "${UNIFLOW_PUBLIC_HEADERS}" PARENT_SCOPE)
 endif()
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP OR UNIFLOW_ENABLE_TCP)
