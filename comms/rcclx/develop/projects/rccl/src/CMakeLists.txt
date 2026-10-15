@@ -674,6 +674,7 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/relay/registered_allreduce_kernels.h
   comms/rcclx/develop/meta/relay/registered_allreduce_relay.cc
   comms/rcclx/develop/meta/relay/registered_allreduce_relay.h
+  comms/rcclx/develop/meta/relay/registered_allreduce_relay_args.h
   comms/rcclx/develop/meta/relay/registered_allreduce_relay_kernels.cu
   comms/rcclx/develop/meta/relay/registered_allreduce_relay_kernels.h
   comms/rcclx/develop/meta/relay/registered_alltoall.cc
