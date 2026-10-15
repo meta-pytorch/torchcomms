@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "comm.h"
+#include "comms/rcclx/develop/meta/relay/tests/RegisteredDeviceCheck.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
 #include "meta/relay/registered_allreduce.h"
@@ -86,17 +87,6 @@ std::vector<uint16_t> expected(size_t count, uint32_t salt) {
   return out;
 }
 
-size_t firstMismatch(
-    const std::vector<uint16_t>& got,
-    const std::vector<uint16_t>& want) {
-  for (size_t i = 0; i < got.size(); ++i) {
-    if (got[i] != want[i]) {
-      return i;
-    }
-  }
-  return got.size();
-}
-
 } // namespace
 
 class RegisteredAllReduceRelayTest : public ::testing::Test {
@@ -159,6 +149,7 @@ class RegisteredAllReduceRelayTest : public ::testing::Test {
 
   void TearDown() override {
     HIPCHECK_TEST(hipStreamSynchronize(stream));
+    readback_.Shutdown();
     HIPCHECK_TEST(hipStreamDestroy(stream));
   }
 
@@ -187,12 +178,8 @@ class RegisteredAllReduceRelayTest : public ::testing::Test {
         in, out, count, ncclBfloat16, ncclSum, nullptr, stream, req));
   }
 
-  std::vector<uint16_t> download(const void* dev, size_t count) {
-    std::vector<uint16_t> host(count);
-    EXPECT_EQ(
-        hipMemcpy(host.data(), dev, count * 2, hipMemcpyDeviceToHost),
-        hipSuccess);
-    return host;
+  size_t check(const void* dev, const std::vector<uint16_t>& want) {
+    return readback_.CompareHost(dev, want, stream).first;
   }
 
   // One execution of `count` elements on the suite request, checked bitwise
@@ -203,8 +190,7 @@ class RegisteredAllReduceRelayTest : public ::testing::Test {
         hipMemcpyAsync(input, src, count * 2, hipMemcpyDeviceToDevice, stream));
     exec(request, input, output, count);
     HIPCHECK_TEST(hipStreamSynchronize(stream));
-    EXPECT_EQ(
-        firstMismatch(download(output, count), expected(count, salt)), count)
+    EXPECT_EQ(check(output, expected(count, salt)), count)
         << "count=" << count << ": first mismatching element";
     HIPCHECK_TEST(hipFree(src));
   }
@@ -242,7 +228,74 @@ class RegisteredAllReduceRelayTest : public ::testing::Test {
   static inline void* request{nullptr};
   static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
   hipStream_t stream{nullptr};
+  rcclx::relay::test::RegisteredDeviceCheck readback_{kCapacity};
 };
+
+TEST_F(RegisteredAllReduceRelayTest, DeviceChecksReuseOnlySmallStatus) {
+  const size_t smallCount = 72 * kMiB / sizeof(uint16_t);
+  const size_t largeCount = kCapacity / sizeof(uint16_t);
+  HIPCHECK_TEST(hipMemsetD16Async(
+      static_cast<hipDeviceptr_t>(input), 0x3f80, largeCount, stream));
+  EXPECT_EQ(
+      readback_.CompareConstant<uint16_t>(input, 0x3f80, smallCount, stream)
+          .count,
+      0u);
+  const void* staging = readback_.data();
+  EXPECT_NE(staging, nullptr);
+  EXPECT_EQ(readback_.capacityBytes(), 4096u);
+  HIPCHECK_TEST(hipMemsetD16Async(
+      static_cast<hipDeviceptr_t>(input), 0x4000, largeCount, stream));
+  const auto wrong =
+      readback_.CompareConstant<uint16_t>(input, 0x3f80, smallCount, stream);
+  EXPECT_EQ(wrong.count, smallCount);
+  EXPECT_EQ(wrong.first, 0u);
+  EXPECT_EQ(
+      readback_.CompareConstant<uint16_t>(input, 0x4000, largeCount, stream)
+          .count,
+      0u);
+  EXPECT_EQ(staging, readback_.data());
+  EXPECT_EQ(wrong.count, smallCount);
+}
+
+TEST_F(RegisteredAllReduceRelayTest, DeviceChecksPreserveRawZeroAndNaNBits) {
+  constexpr size_t count = 32;
+  HIPCHECK_TEST(hipMemsetD16Async(
+      static_cast<hipDeviceptr_t>(input), 0x8000, count, stream));
+  EXPECT_EQ(
+      readback_.CompareConstant<uint16_t>(input, 0x0000, count, stream).count,
+      count);
+  HIPCHECK_TEST(hipMemsetD16Async(
+      static_cast<hipDeviceptr_t>(input), 0x7fc1, count, stream));
+  EXPECT_EQ(
+      readback_.CompareConstant<uint16_t>(input, 0x7fc1, count, stream).count,
+      0u);
+  EXPECT_EQ(
+      readback_.CompareConstant<uint16_t>(input, 0x7fc2, count, stream).count,
+      count);
+}
+
+TEST_F(
+    RegisteredAllReduceRelayTest,
+    DeviceStatusRejectsIncompleteAndStalePackets) {
+  using rcclx::relay::test::DeviceCheckStatus;
+  using rcclx::relay::test::RegisteredDeviceCheck;
+  DeviceCheckStatus valid{0, ~0ull, 8, ~8ull, 42, ~42ull};
+  EXPECT_TRUE(RegisteredDeviceCheck::Valid(valid, 8, 42));
+  EXPECT_FALSE(RegisteredDeviceCheck::Valid(valid, 8, 43));
+  DeviceCheckStatus missing;
+  std::memset(&missing, 0xCD, sizeof(missing));
+  EXPECT_FALSE(RegisteredDeviceCheck::Valid(missing, 8, 42));
+  auto partial = valid;
+  std::memset(reinterpret_cast<char*>(&partial) + 3, 0xCD, sizeof(partial) - 3);
+  EXPECT_FALSE(RegisteredDeviceCheck::Valid(partial, 8, 42));
+  auto malformed = valid;
+  malformed.inverseCount ^= 1;
+  EXPECT_FALSE(RegisteredDeviceCheck::Valid(malformed, 8, 42));
+  auto outOfRange = valid;
+  outOfRange.count = 9;
+  outOfRange.inverseCount = ~9ull;
+  EXPECT_FALSE(RegisteredDeviceCheck::Valid(outOfRange, 8, 42));
+}
 
 TEST_F(RegisteredAllReduceRelayTest, RelayUsesEveryOtherGpu) {
   const int want = std::min(visibleDevices() - 2, 7);
@@ -286,8 +339,8 @@ TEST_F(RegisteredAllReduceRelayTest, MatchesNcclAllReduceBitwise) {
   NCCLCHECK_TEST(
       ncclAllReduce(src, ref, count, ncclBfloat16, ncclSum, pair, stream));
   HIPCHECK_TEST(hipStreamSynchronize(stream));
-  EXPECT_EQ(
-      firstMismatch(download(output, count), download(ref, count)), count);
+  // Compare both device buffers directly; only the validated status is copied.
+  EXPECT_EQ(readback_.CompareDevice(output, ref, count, stream).first, count);
   HIPCHECK_TEST(hipFree(src));
   HIPCHECK_TEST(hipFree(ref));
 }
@@ -318,10 +371,7 @@ TEST_F(RegisteredAllReduceRelayTest, DecodeAndPrefillSizesBackToBack) {
   HIPCHECK_TEST(hipStreamSynchronize(stream));
   for (int i = 0; i < kCalls; ++i) {
     const size_t count = counts[i % counts.size()];
-    EXPECT_EQ(
-        firstMismatch(download(outs[i], count), expected(count, 400 + i)),
-        count)
-        << "call " << i;
+    EXPECT_EQ(check(outs[i], expected(count, 400 + i)), count) << "call " << i;
     HIPCHECK_TEST(hipFree(srcs[i]));
     HIPCHECK_TEST(hipFree(outs[i]));
   }
@@ -347,8 +397,7 @@ TEST_F(RegisteredAllReduceRelayTest, GraphReplayInterleavedWithEagerCalls) {
     HIPCHECK_TEST(hipMemcpy(staged, src, count * 2, hipMemcpyDeviceToDevice));
     HIPCHECK_TEST(hipGraphLaunch(graphExec, stream));
     HIPCHECK_TEST(hipStreamSynchronize(stream));
-    EXPECT_EQ(
-        firstMismatch(download(output, count), expected(count, salt)), count)
+    EXPECT_EQ(check(output, expected(count, salt)), count)
         << "replay " << round;
     HIPCHECK_TEST(hipFree(src));
     runAndCheck(round % 2 == 0 ? 294912 : 9 * kMiB / 2, 600 + round);
@@ -419,7 +468,7 @@ TEST_F(RegisteredAllReduceRelayTest, HelperSelectionCapacityAndMemory) {
     HIPCHECK_TEST(hipMemcpy(in, src, cap, hipMemcpyDeviceToDevice));
     exec(*req, in, out, n);
     HIPCHECK_TEST(hipStreamSynchronize(stream));
-    EXPECT_EQ(firstMismatch(download(out, n), expected(n, salt)), n);
+    EXPECT_EQ(check(out, expected(n, salt)), n);
     HIPCHECK_TEST(hipFree(src));
   };
 
@@ -485,8 +534,7 @@ TEST_F(RegisteredAllReduceRelayTest, ReRegistrationOnFreshBuffers) {
       HIPCHECK_TEST(hipMemcpy(in, src, capacity, hipMemcpyDeviceToDevice));
       exec(req, in, out, n);
       HIPCHECK_TEST(hipStreamSynchronize(stream));
-      EXPECT_EQ(
-          firstMismatch(download(out, n), expected(n, 800 + iteration)), n)
+      EXPECT_EQ(check(out, expected(n, 800 + iteration)), n)
           << "iteration " << iteration;
       NCCLCHECK_TEST(ncclRegisteredAllReduceFinalize(req, stream));
       HIPCHECK_TEST(hipFree(src));
@@ -498,12 +546,12 @@ TEST_F(RegisteredAllReduceRelayTest, ReRegistrationOnFreshBuffers) {
       HIPCHECK_TEST(hipMemsetD32(
           static_cast<hipDeviceptr_t>(canary), kCanary, kCanaryBytes / 4));
       HIPCHECK_TEST(hipDeviceSynchronize());
-      std::vector<uint32_t> words(kCanaryBytes / 4);
-      HIPCHECK_TEST(
-          hipMemcpy(words.data(), canary, kCanaryBytes, hipMemcpyDeviceToHost));
       EXPECT_EQ(
-          std::count(words.begin(), words.end(), kCanary),
-          static_cast<std::ptrdiff_t>(words.size()))
+          readback_
+              .CompareConstant<uint32_t>(
+                  canary, kCanary, kCanaryBytes / 4, stream)
+              .count,
+          0u)
           << "iteration " << iteration << ": fresh buffer lost writes";
       HIPCHECK_TEST(hipFree(canary));
       HIPCHECK_TEST(hipFree(out));
