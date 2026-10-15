@@ -31,16 +31,28 @@ bool isCpu(int deviceId) {
 
 } // namespace
 
+namespace detail {
+decltype(&addExtensionTransportFactories) extensionTransportFactories = nullptr;
+decltype(&extensionTransportSupported) extensionTransportSupport = nullptr;
+} // namespace detail
+
 #if !defined(UNIFLOW_CMAKE_BUILD) ||           \
     (!defined(UNIFLOW_ENABLE_P2P_TRANSPORT) && \
      !defined(UNIFLOW_ENABLE_TCP_TRANSPORT))
 void __attribute__((weak)) addExtensionTransportFactories(
-    int,
-    EventBase*,
-    const MultiTransportFactoryOptions&,
-    std::vector<std::shared_ptr<TransportFactory>>&) {}
+    int deviceId,
+    EventBase* evb,
+    const MultiTransportFactoryOptions& options,
+    std::vector<std::shared_ptr<TransportFactory>>& factories) {
+  if (detail::extensionTransportFactories) {
+    detail::extensionTransportFactories(deviceId, evb, options, factories);
+  }
+}
 
-Status __attribute__((weak)) extensionTransportSupported(TransportType) {
+Status __attribute__((weak)) extensionTransportSupported(TransportType type) {
+  if (detail::extensionTransportSupport) {
+    return detail::extensionTransportSupport(type);
+  }
   return Err(
       ErrCode::NotImplemented,
       "transport not linked; add uniflow_extensions:default_transports");

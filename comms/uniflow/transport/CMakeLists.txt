@@ -21,9 +21,6 @@ target_compile_options(uniflow_transport PRIVATE -fPIC)
 
 target_link_libraries(uniflow_transport PRIVATE uniflow_build_config)
 
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  add_subdirectory(p2p)
-endif()
 if(UNIFLOW_ENABLE_RDMA)
   add_subdirectory(rdma)
 endif()

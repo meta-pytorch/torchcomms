@@ -85,6 +85,11 @@ void addExtensionTransportFactories(
 
 Status extensionTransportSupported(TransportType type);
 
+namespace detail {
+extern decltype(&addExtensionTransportFactories) extensionTransportFactories;
+extern decltype(&extensionTransportSupported) extensionTransportSupport;
+} // namespace detail
+
 class MultiTransport {
  public:
   explicit MultiTransport(

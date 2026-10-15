@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/uniflow/transport/p2p/P2pTransport.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pTransport.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -15,7 +15,7 @@
 
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pRegistrationHandle.h"
 
 namespace uniflow {
 

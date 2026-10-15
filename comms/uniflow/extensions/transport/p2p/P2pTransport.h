@@ -13,8 +13,8 @@
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/executor/EventBase.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pRegistrationHandle.h"
 #include "comms/uniflow/transport/Transport.h"
-#include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
 
 namespace uniflow {
 

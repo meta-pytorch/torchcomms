@@ -102,6 +102,9 @@ _uniflow_resolve_feature_option(
   UNIFLOW_ENABLE_TCP "Build the TCP transport"
   ${_UNIFLOW_ENABLE_TCP_DEFAULT})
 unset(_UNIFLOW_ENABLE_TCP_DEFAULT)
+if(UNIFLOW_ENABLE_TCP AND NOT UNIFLOW_BUILD_EXTENSIONS)
+  message(FATAL_ERROR "TCP data requires UNIFLOW_BUILD_EXTENSIONS=ON.")
+endif()
 option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
 if(UNIFLOW_STANDALONE AND
    NOT UNIFLOW_BUILD_PYTHON AND
@@ -496,10 +499,6 @@ set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.cpp
 )
 
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP OR UNIFLOW_ENABLE_TCP)
-  list(APPEND UNIFLOW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/TransportHooks.cpp)
-endif()
-
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
 add_library(uniflow_objects OBJECT
@@ -530,12 +529,7 @@ target_link_libraries(uniflow_implementation INTERFACE
     uniflow_transport
 )
 
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  target_sources(uniflow_implementation INTERFACE
-    $<TARGET_OBJECTS:uniflow_p2p_transport>)
-  target_link_libraries(uniflow_implementation INTERFACE
-    uniflow_p2p_transport)
-endif()
+
 if(UNIFLOW_ENABLE_RDMA)
   target_sources(uniflow_implementation INTERFACE
     $<TARGET_OBJECTS:uniflow_rdma_transport>)
