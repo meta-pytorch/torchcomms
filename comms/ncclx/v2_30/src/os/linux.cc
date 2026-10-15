@@ -229,13 +229,10 @@ fail:
 }
 
 void ncclOsSocketResetAccept(struct ncclSocket* sock) {
-  char line[SOCKET_NAME_MAXLEN+1];
-  INFO(NCCL_NET|NCCL_INIT, "socketFinalizeAccept: didn't receive a valid magic from %s",
-       ncclSocketToString(&sock->addr, line));
-  // Ignore spurious connection and accept again
+  // Close the accepted peer and return to listening for another connection (see socketFinalizeAccept logging).
   (void)close(sock->socketDescriptor);
   sock->socketDescriptor = NCCL_INVALID_SOCKET;
-  sock->state = ncclSocketStateAccepting;
+  sock->state = ncclSocketStateBadHandshake;
   sock->finalizeCounter = 0;
 }
 

@@ -95,7 +95,7 @@ ncclResult_t ncclRasCommInit(struct ncclComm* comm, struct rasRankInit* myRank) 
 
       memcpy(&addr, &myRank->addr, sizeof(addr));
       (addr.sa.sa_family == AF_INET ? addr.sin.sin_port : addr.sin6.sin6_port) = htons(0);
-      NCCLCHECKGOTO(ncclSocketInit(&rasNetListeningSocket, &addr, NCCL_SOCKET_MAGIC, ncclSocketTypeRasNetwork,
+      NCCLCHECKGOTO(ncclSocketInit(&rasNetListeningSocket, &addr, ncclSocketDefaultMagic(), ncclSocketTypeRasNetwork,
                                    /*abortFlag*/nullptr, /*asyncFlag*/1), ret, fail);
       NCCLCHECKGOTO(ncclSocketListen(&rasNetListeningSocket), ret, fail);
       INFO(NCCL_RAS, "RAS network listening socket at %s",
@@ -644,6 +644,13 @@ static void* rasThreadMain(void*) {
     for (int pollIdx = 0; pollIdx < nRasPfds && nEvents > 0; pollIdx++) {
       if (rasPfds[pollIdx].revents) {
         nEvents--;
+        if (rasPfds[pollIdx].revents & POLLNVAL) {
+          // We passed an invalid file descriptor.  For now mark it to be ignored at the next iteration.  Hopefully
+          // in the meantime one of the event handlers will terminate it.
+          INFO(NCCL_RAS, "RAS poll returned POLLNVAL on pollIdx %d (fd %d) -- internal error?",
+               pollIdx, rasPfds[pollIdx].fd);
+          rasPfds[pollIdx].fd = POLL_FD_IGNORE;
+        }
         if (rasPfds[pollIdx].fd == rasNotificationPipe[0]) {
           bool terminate = false;
           NCCLCHECKGOTO(rasLocalHandle(&terminate), ret, exit);
