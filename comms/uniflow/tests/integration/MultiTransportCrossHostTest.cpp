@@ -6,6 +6,7 @@
 /// connection info via MPI, then tests DRAM and GPU put/get transfers.
 
 #include <mpi.h>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -121,9 +122,12 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
 
   /// Create a connected MultiTransport pair across hosts using MPI to
   /// exchange topology and connection info.
-  ConnectedPair connectCrossHost(int deviceId) {
+  ConnectedPair connectCrossHost(
+      int deviceId,
+      MultiTransportFactoryOptions options = {}) {
     ConnectedPair pair;
-    pair.factory = std::make_unique<MultiTransportFactory>(deviceId);
+    pair.factory =
+        std::make_unique<MultiTransportFactory>(deviceId, std::move(options));
 
     // Exchange topology via MPI.
     auto localTopo = pair.factory->getTopology();
@@ -194,6 +198,106 @@ class MultiTransportCrossHostTest : public MpiBaseTestFixture {
     return reqs;
   }
 };
+
+// Verifies that MultiTransportFactoryOptions::rdmaRequestTimeout reaches the
+// RDMA transport unchanged: a request timeout that differs from it is rejected
+// with InvalidArgument before dispatch, while a request that inherits it or
+// names exactly it succeeds.
+TEST_F(MultiTransportCrossHostTest, RdmaRequestTimeoutReachesRdmaTransport) {
+  constexpr size_t kTransferSize = 4096;
+  constexpr std::chrono::milliseconds kRequestTimeout{1000};
+  auto pair = connectCrossHost(
+      -1,
+      MultiTransportFactoryOptions{
+          .preferredTransport = TransportType::RDMA,
+          .rdmaRequestTimeout = kRequestTimeout,
+      });
+  std::vector<char> buffer(kTransferSize, 0);
+  auto segments = registerAndExchangeSegments(
+      *pair.factory, buffer.data(), buffer.size(), MemoryType::DRAM);
+  ASSERT_TRUE(segments.has_value());
+
+  if (globalRank == 0) {
+    const std::vector<TransferRequest> requests = {{
+        .local = segments->local.span(size_t{0}, kTransferSize),
+        .remote = segments->remote.span(size_t{0}, kTransferSize),
+    }};
+    const auto mismatched =
+        pair.transport
+            ->put(requests, RequestOptions{.timeout = 2 * kRequestTimeout})
+            .get();
+    // EXPECT, not ASSERT: an early return would leave rank 1 at the barrier.
+    EXPECT_TRUE(mismatched.hasError());
+    if (mismatched.hasError()) {
+      EXPECT_EQ(mismatched.error().code(), ErrCode::InvalidArgument);
+    }
+
+    // Bounded by kRequestTimeout, which this request inherits.
+    const auto inherited = pair.transport->put(requests).get();
+    EXPECT_FALSE(inherited.hasError()) << inherited.error().message();
+
+    // Accepted only if the RDMA transport got exactly kRequestTimeout.
+    const auto exact =
+        pair.transport
+            ->put(requests, RequestOptions{.timeout = kRequestTimeout})
+            .get();
+    EXPECT_FALSE(exact.hasError()) << exact.error().message();
+    EXPECT_EQ(pair.transport->transferCount(TransportType::RDMA), 3u);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// Verifies on real NICs, with no fault injection, that a PUT too large to
+// finish within requestTimeout times out through MultiTransport while the NIC
+// is still transferring: the PUT gets Timeout, a later PUT gets Aborted, and
+// both ranks still shut down.
+TEST_F(MultiTransportCrossHostTest, PutLongerThanRequestTimeoutTimesOut) {
+  // Over 5 ms even across four 400 Gb/s NICs, far longer than the 1 ms timeout.
+  constexpr size_t kTransferSize = size_t{1} << 30;
+  constexpr std::chrono::milliseconds kRequestTimeout{1};
+  auto pair = connectCrossHost(
+      -1,
+      MultiTransportFactoryOptions{
+          .preferredTransport = TransportType::RDMA,
+          .rdmaRequestTimeout = kRequestTimeout,
+      });
+  std::vector<char> buffer(
+      kTransferSize, globalRank == 0 ? static_cast<char>(0x5A) : 0);
+  auto segments = registerAndExchangeSegments(
+      *pair.factory, buffer.data(), buffer.size(), MemoryType::DRAM);
+  ASSERT_TRUE(segments.has_value());
+
+  if (globalRank == 0) {
+    const std::vector<TransferRequest> requests = {{
+        .local = segments->local.span(size_t{0}, kTransferSize),
+        .remote = segments->remote.span(size_t{0}, kTransferSize),
+    }};
+    const auto start = std::chrono::steady_clock::now();
+    const auto timedOut = pair.transport->put(requests).get();
+    const auto elapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count();
+    // EXPECT, not ASSERT: an early return would leave rank 1 at the barrier.
+    EXPECT_TRUE(timedOut.hasError())
+        << "1 GB PUT finished in " << elapsedMs << " ms without timing out";
+    if (timedOut.hasError()) {
+      EXPECT_EQ(timedOut.error().code(), ErrCode::Timeout)
+          << timedOut.error().message();
+    }
+
+    const auto later = pair.transport->put(requests).get();
+    EXPECT_TRUE(later.hasError());
+    if (later.hasError()) {
+      EXPECT_EQ(later.error().code(), ErrCode::Aborted);
+    }
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  pair.transport->shutdown();
+  MPI_Barrier(MPI_COMM_WORLD);
+}
 
 // --- Transfer test parameterization ---
 
