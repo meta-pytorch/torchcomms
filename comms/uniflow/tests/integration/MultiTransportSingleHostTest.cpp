@@ -9,6 +9,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -94,6 +95,7 @@ class MultiTransportFactoryTest : public ::testing::Test {
 
 // --- selectNics tests ---
 
+#ifndef UNIFLOW_TEST_MTIA
 TEST_F(MultiTransportFactoryTest, SelectNicsGpuH100) {
   NicFilter filter(
       "mlx5_0:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_9:1,mlx5_10:1,mlx5_11:1");
@@ -145,6 +147,8 @@ TEST_F(MultiTransportFactoryTest, SelectNicsGpuGB200) {
     EXPECT_EQ(nics, expectedNics[i]);
   }
 }
+
+#endif
 
 // --- Constructor integration tests ---
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
@@ -223,6 +227,7 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesEnabledTransports) {
     ASSERT_GT(factoryCount(factory), idx);
     EXPECT_EQ(factoryTransportType(factory, idx++), TransportType::RDMA);
   }
+  EXPECT_EQ(factoryCount(factory), idx + 1);
 #else
   if (isPlatformSupported("").hasValue()) {
     EXPECT_EQ(factoryCount(factory), 2u);
@@ -323,6 +328,35 @@ TEST_F(MultiTransportFactoryTest, ConstructorNeverRegistersTcp) {
   }
 }
 
+#ifndef UNIFLOW_TEST_MTIA
+#if defined(__HIP_PLATFORM_AMD__)
+TEST_F(
+    MultiTransportFactoryTest,
+    ConstructorGpuRegistersEnabledTransportsWithoutTcp) {
+  if (topo_->gpuCount() == 0) {
+    GTEST_SKIP() << "No GPUs available";
+  }
+
+  const MultiTransportFactoryOptions options;
+  std::vector<TransportType> expectedTypes;
+  if (MultiTransportFactory::supported(TransportType::NVLink).hasValue()) {
+    expectedTypes.push_back(TransportType::NVLink);
+  }
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
+  if (!topo_->selectGpuNics(0, options.nicFilter, options.netdevPrefix)
+           .empty()) {
+    expectedTypes.push_back(TransportType::RDMA);
+  }
+#endif
+
+  MultiTransportFactory factory(0, options);
+  std::vector<TransportType> actualTypes;
+  for (size_t i = 0; i < factoryCount(factory); ++i) {
+    actualTypes.push_back(factoryTransportType(factory, i));
+  }
+  EXPECT_EQ(actualTypes, expectedTypes);
+}
+#else
 TEST_F(MultiTransportFactoryTest, ConstructorGpuRegistersOnlyRdma) {
   if (topo_->gpuCount() == 0) {
     GTEST_SKIP() << "No GPUs available";
@@ -339,6 +373,8 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuRegistersOnlyRdma) {
   ASSERT_TRUE(nvlink.hasError());
   EXPECT_EQ(nvlink.error().code(), ErrCode::NotImplemented);
 }
+#endif
+#endif
 #endif
 
 } // namespace uniflow

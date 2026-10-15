@@ -4,6 +4,7 @@
 # Launch uniflow benchmarks using torchrun (local, single-node).
 #
 # Usage:
+#   Add --bench-target fbcode//neteng/network_ai/uniflow_extensions/benchmarks:uniflow_bench for extensions.
 #   bash run_benchmark.sh [--nproc N] [-- BENCH_ARGS...]
 #
 # Examples:
@@ -13,12 +14,15 @@
 
 set -euo pipefail
 
+BENCH_TARGET="fbcode//comms/uniflow/benchmarks:uniflow_bench"
+
 NPROC=2
 BENCH_ARGS=()
 
 # Parse wrapper args (before --), pass the rest to the benchmark binary.
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --bench-target) BENCH_TARGET="$2"; shift 2 ;;
     --nproc)
       NPROC="$2"
       shift 2
@@ -42,7 +46,7 @@ echo ""
 
 # Build the benchmark binary.
 echo "Building uniflow_bench..."
-BENCH_BIN=$(buck build fbcode//comms/uniflow/benchmarks:uniflow_bench --show-full-output 2>/dev/null | awk '{print $2}')
+BENCH_BIN=$(buck2 build @fbcode//mode/opt -c hpc_comms.use_ncclx=stable "${BENCH_TARGET}" --show-full-output 2>/dev/null | awk '{print $2}')
 
 if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
   echo "ERROR: Failed to build uniflow_bench or binary not found at: ${BENCH_BIN:-<empty>}"

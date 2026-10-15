@@ -8,6 +8,7 @@
 #   bash rdma_benchmark.sh --host0 <host> --host1 <host> [OPTIONS]
 #
 # Options:
+#   --bench-target <t>  Core or extensions benchmark target
 #   --host0 <host>       Rank 0 host (required)
 #   --host1 <host>       Rank 1 host (required)
 #   --output-dir <dir>   Results directory (default: ~/me/benchmarks/rdma/<gpu>/<mode>)
@@ -35,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPARE_SCRIPT="${SCRIPT_DIR}/compare_rdma_bandwidth.py"
 COMPARISON_SCRIPT="${SCRIPT_DIR}/generate_comparison.py"
 
+BENCH_TARGET="fbcode//comms/uniflow/benchmarks:uniflow_bench"
 HOST0=""
 HOST1=""
 OUTPUT_DIR=""
@@ -53,6 +55,7 @@ SKIP_UNIFLOW=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --bench-target) BENCH_TARGET="$2"; shift 2 ;;
     --host0)        HOST0="$2"; shift 2 ;;
     --host1)        HOST1="$2"; shift 2 ;;
     --output-dir)   OUTPUT_DIR="$2"; shift 2 ;;
@@ -119,6 +122,7 @@ echo "============================================================"
 echo
 
 COMMON_ARGS=(
+  --bench-target "${BENCH_TARGET}"
   --hosts "${HOST0},${HOST1}"
   --iterations "${ITERATIONS}"
   --warmup "${WARMUP}"

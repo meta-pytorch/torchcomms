@@ -9,7 +9,7 @@ NVIDIA (default): host_type=grandteton_80g_roce (H100), package
 AMD (MI350X / gfx950) -- DRAFT: use the ROCm fbpkg + an AMD MAST host/cluster:
 
     run_mast_benchmarks.py \\
-        --target fbcode//comms/uniflow/benchmarks:uniflow_disagg_bench_mast_mi350 \\
+        --target fbcode//neteng/network_ai/uniflow_extensions/benchmarks:uniflow_disagg_bench_mast_mi350 \\
         --host-type t20_gtt_mi350x_8 \\
         --hpc-cluster-uuid MastProdCluster \\
         --rm-attribution ai_infra_training_rnd_amd \\

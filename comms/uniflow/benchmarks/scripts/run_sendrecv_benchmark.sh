@@ -6,6 +6,7 @@
 # comparison table.
 #
 # Usage:
+#   Add --bench-target fbcode//neteng/network_ai/uniflow_extensions/benchmarks:uniflow_bench for extensions.
 #   bash run_sendrecv_benchmark.sh [OPTIONS]
 #
 # Options:
@@ -40,6 +41,8 @@
 
 set -euo pipefail
 
+BENCH_TARGET="fbcode//comms/uniflow/benchmarks:uniflow_bench"
+
 # Defaults
 NPROC=2
 GPU0=0
@@ -64,6 +67,7 @@ PORT=29500
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --bench-target) BENCH_TARGET="$2"; shift 2 ;;
     --nproc)        NPROC="$2"; shift 2 ;;
     --gpu0)         GPU0="$2"; shift 2 ;;
     --gpu1)         GPU1="$2"; shift 2 ;;
@@ -94,7 +98,7 @@ done
 
 # Build
 echo "=== Building uniflow_bench (opt mode) ==="
-BENCH_BIN=$(buck build @fbcode//mode/opt fbcode//comms/uniflow/benchmarks:uniflow_bench \
+BENCH_BIN=$(buck2 build @fbcode//mode/opt -c hpc_comms.use_ncclx=stable "${BENCH_TARGET}" \
   --show-full-output 2>/dev/null | awk '{print $2}')
 
 if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
