@@ -23,6 +23,9 @@
 #define NCCL_SUFFIX "${nccl:Suffix}"
 
 #define NCCL_VERSION_CODE ${nccl:Version}
+
+#define IS_NCCLX
+
 #define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
 
 /* [META] Default the platform macro when the build has not supplied one.
@@ -46,6 +49,7 @@
 // [NCCLX] Needed by ncclx::Hints below, which is declared inside the extern "C"
 // region so that C++ entry points can take it by reference.
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <unordered_map>
 extern "C" {
@@ -58,6 +62,8 @@ extern "C" {
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 #define NCCL_COMM_DUMP
 #define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
+// [NCCLX] Implemented by ncclAllToAllv in src/collectives.cc.
+#define NCCL_ALLTOALLV_SUPPORTED
 
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
@@ -112,11 +118,13 @@ typedef enum { ncclSuccess                 =  0,
 #define NCCL_WIN_CFT_COUNTED 0x08
 /* [NCCLX] Local-only registration for source buffers. Skips the rkey allGather.
    The resulting window can only be used as a source for put operations.
-   A high bit rather than v2_30's 0x08: upstream 2.32 assigned 0x04
+   High bits rather than v2_30's 0x08/0x04: upstream 2.32 assigned 0x04
    (NCCL_WIN_GIN_ONLY) and 0x08 (NCCL_WIN_CFT_COUNTED), and allocates new
-   flags upward from the low bits. v2_30's NCCL_WIN_DEVICE_API (0x04) needs a
-   new value for the same reason when it is ported. */
+   flags upward from the low bits. */
 #define NCCL_WIN_LOCAL_ONLY 0x40000000
+/* [NCCLX] Bypass CTRAN and force the orig path for device API (GIN support).
+   Any nonzero flag already selects the orig path in ncclCommWindowRegister. */
+#define NCCL_WIN_DEVICE_API 0x20000000
 
 #define NCCL_WIN_REQUIRED_ALIGNMENT 4096
 
@@ -790,6 +798,31 @@ ncclResult_t pncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcou
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
 
 /*
+ * [NCCLX] All-To-Allv
+ * Device (i) sends sendcounts[j] of data from offset sdispls[j] to device (j).
+ * At the same time, device (i) receives recvcounts[j] of data from device (j)
+ * to be placed at rdispls[j]. sendcounts, sdispls, recvcounts and rdispls are
+ * all measured in the units of datatype, not bytes. Only out-of-place operation
+ * is allowed (i.e., sendbuff != recvbuff).
+ * Arguments:
+ *    IN  sendbuff    - Data array to send (contains blocks for each other rank)
+ *    IN  sendcounts  - Length of each block in sendbuff
+ *    IN  sdispls     - Offsets into sendbuff for each participating rank
+ *    OUT recvbuff    - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  recvcounts  - Length of each block in recvbuff
+ *    IN  rdispls     - Offsets into recvbuff for each participating rank
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ */
+ncclResult_t  ncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
+    const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
+    const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
+    const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
+    const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
  * All-to-All
  *
  * Each device sends count values to all other devices and receives count values
@@ -1446,6 +1479,181 @@ ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
  * corresponding to the local rank id.
  */
 ncclResult_t ncclSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+
+/*
+ * All-To-Allv Dynamic
+ * Device (i) sends scounts[j] of data from sbuf[j] to device (j).
+ * At the same time, device (i) receives rcounts[j] of data from device (j)
+ * to be placed at rbuf[j]. scounts and rcounts are
+ * measured in the units of datatype, not bytes. Only out-of-place operation
+ * is allowed (i.e., sbufs and rbufs cannot overlap).
+ * Arguments:
+ *    IN  sbufs       - Data array to send (contains blocks for each other rank)
+ *    IN  scounts     - Length of each block in sbuf
+ *    OUT rbufs       - Data array to receive (contains blocks for each other rank)
+ *    IN  max_rcounts - Max length of each block in rbuf
+ *    OUT actual_rcounts - Actual length of each block in rbuf
+ *    IN  hints       - Hints for performance
+ *    IN  datatype    - Type of each data element
+ *    IN  comm
+ *    IN  stream
+ *
+ * Accepted hints:
+ *   ncclx_alltoallv_dynamic_sendbuffs_contig: {true, false} (default: false)
+ *   --- indicating whether all sendbuffs are part of a single contiguous memory allocation.
+ *   ncclx_alltoallv_dynamic_recvbuffs_contig: {true, false} (default: false)
+ *   --- indicating whether all recvbuffs are part of a single contiguous memory allocation.
+ *   ncclx_alltoallv_dynamic_sendbuffs_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of the pointers of sendbuffs (not the location of each sendbuff).
+ *   ncclx_alltoallv_dynamic_sendcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of sendcounts.
+ *   ncclx_alltoallv_dynamic_recvbuffs_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of the pointers of recvbuffs (not the location of each recvbuff).
+ *   ncclx_alltoallv_dynamic_max_sendcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of maxSendcounts.
+ *   ncclx_alltoallv_dynamic_max_recvcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of maxRecvcounts.
+ *   ncclx_alltoallv_dynamic_actual_recvcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of actualRecvcounts.
+ *
+ * Retained for source and symbol compatibility with the retired dynamic
+ * AllToAllv surface. This and the other alltoallvDynamic* entry points return
+ * ncclInvalidUsage without entering a collective.
+ */
+ncclResult_t alltoallvDynamic(const void * const* sendbuffs, const size_t* sendcounts, void * const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts,
+    const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicSplit(const void* sendbuff, const size_t* sendSplitLengths, void* const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts, const ncclx::Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicSplitNonContig( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
+    size_t* recvAllSplitLengths, size_t* recvIndices, size_t* recvIndicesBlockLengths, size_t maxSendcount,
+    size_t maxRecvcount, const ncclx::Hints& hints, ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicDispatch( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
+    size_t* recvAllSplitLengths, size_t maxSendcount, size_t maxRecvcount, const ncclx::Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicCombine( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* recvbuff,
+    size_t maxSendcount, size_t maxRecvcount, const ncclx::Hints& hints, ncclDataType_t datatype,
+    ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Retained for source and symbol compatibility with the retired device-count
+ * AllToAllv surface. Returns ncclInvalidUsage without entering a collective.
+ */
+ncclResult_t deviceAllToAllv(const void* sendbuff, void* recvbuff,
+    const int64_t* sendcounts_d, const int64_t* recvcounts_d,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,
+    int64_t sendcountsMultiplier = 1, int64_t recvcountsMultiplier = 1,
+    const std::unordered_map<std::string, std::string>& hints = {});
+
+/*
+ * Persistent All-Gather similar to ncclAllgather, the key difference is that
+ * the execution will be deferred until allGatherExec is called
+ * Arguments:
+ *    OUT recvbuff     - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  maxRecvCount - Count of elements of recvbuff
+ *    IN  hints        - Hints for skipping control msg
+ *    IN  datatype     - NCCL data type
+ *    IN  comm         - NCCL communicator
+ *    IN  stream       - CUDA stream
+ *    OUT request      - Request to be used in ncclCommExec to trigger the execution
+ */
+ncclResult_t allGatherInit(void* recvbuff, const size_t maxRecvCount, const Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream, void** request);
+
+
+/* Execute the persistent collective operation created by ncclAllGatherInit.
+ * Arguments:
+ *    IN  sendbuff    - Pointer to sendbuf
+ *    IN  count       - count of elements to send to (receive from) each rank
+ *    IN  datatype    - NCCL data type used for the allgather execution. It may be different
+ *                      from the datatype used in ncclAllGatherInit.
+ *    IN  stream      - CUDA stream
+ *    IN  request     - Request created by ncclAllGatherInit
+ */
+ncclResult_t allGatherExec(
+    const void* sendbuff,
+    const size_t count,
+    const ncclDataType_t datatype,
+    void* request);
+
+ncclResult_t allToAllvDedupInit(
+    const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
+    const size_t blockCount, // number of elements per block (token)
+    const size_t blockNumRecvBuckets, // number of receiving buckets for each
+                                      // block (experts per token, topK)
+    const int numRecvBuckets, // number of receiving buckets per rank (expert
+                              // per rank)
+    const ncclx::Hints& hints,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request);
+
+ncclResult_t allToAllvDedupExec(
+    const void* sendBuff,
+    const int* sendIdx,
+    const int* fwdIdx,
+    const int* recvIdx,
+    void* recvBuff,
+    int recvBlockIds[],
+    void* request);
+
+/*
+ * Trigger the execution of a request of persistent collective operation
+ * created by ncclAllGatherInit
+ */
+ncclResult_t pExec(void* request);
+
+/*
+ * Persistent AllToAll similar to ncclAlltoAll, the key difference is that
+ * AllToAllP requires user to stick with the same recvbuff so that NCCL can exchange
+ * recvbuff and hdl once and skip control msg in the future.
+ * Arguments:
+ *    IN  recvbuff       - Pointer to recvbuf that will receive blocks from all ranks
+ *    IN  maxRecvCount   - Max count of elements recved from all ranks
+ *    IN  hints          - Hints for skipping control msg
+ *    IN  datatype       - NCCL data type
+ *    IN  comm           - NCCL communicator
+ *    IN  stream         - CUDA stream
+ *    OUT request        - Request to be used in ncclCommExec to trigger the execution
+ */
+ncclResult_t AllToAllInit(
+    void* recvbuff,
+    const size_t maxRecvCount,
+    const Hints& hints,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void*& request);
+
+/*
+ * Trigger the execution of a request of persistent collective operation
+ * created by AllToAllInit.
+ */
+ncclResult_t AllToAllExec(
+    const void* sendbuff,
+    const size_t count,
+    void* request);
+
+/*
+ * Free the Persistent collective request
+ */
+ncclResult_t  pFree(void* request);
+
+std::shared_ptr<const std::unordered_map<std::string, std::string>> getNcclxInfo();
+
+// Set up hints that are supposed to be global to all NCCL communicators. How
+// exactly the hints are used and what will happen if the hints are set after
+// initialization depends on the receiver of the hints.
+ncclResult_t setGlobalHint(std::string key, std::string val);
 
 } // namespace ncclx
 

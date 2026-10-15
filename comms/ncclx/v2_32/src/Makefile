@@ -87,6 +87,7 @@ LIBSRCFILES += \
 	${SHAREDDIR}/meta/DeviceRackSerial.cc \
 	${SHAREDDIR}/meta/MnnvlCliqueId.cc \
 	${SHAREDDIR}/meta/collectives/AllReduceSparseBlock.cc \
+	${SHAREDDIR}/meta/collectives/pCollectives.cc \
 	${SHAREDDIR}/meta/colltrace/CollTraceWrapper.cc \
 	${SHAREDDIR}/meta/colltrace/ProxyMock.cc \
 	${SHAREDDIR}/meta/colltrace/ProxyTrace.cc \
@@ -97,6 +98,7 @@ LIBSRCFILES += \
 	${SHAREDDIR}/meta/ctran-integration/BaselineBootstrap.cc \
 	${SHAREDDIR}/meta/hints/GlobalHints.cc \
 	${SHAREDDIR}/meta/hints/Hints.cc \
+	${SHAREDDIR}/meta/hints/NcclxInfo.cc \
 	${SHAREDDIR}/meta/logger/DebugExt.cc \
 	${SHAREDDIR}/meta/NcclxConfig.cc \
 	${SHAREDDIR}/meta/tcpstore/Backoff.cc \
