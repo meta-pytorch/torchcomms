@@ -309,6 +309,101 @@ k_ep_plan_notify(EpConfig cfg,
   notify_reduce_wave(cfg, self, nro);
 }
 
+// The bf16 push of dispatch_impl for destination `dst`, as CTA `by` of the `gy` CTAs per
+// destination. seq != 0 (the streamed dispatch) walks the rows in chunks of chunk_rounds rows per
+// wave and publishes its progress after each (stream_publish).
+__device__ __forceinline__ void dispatch_push_bf16(const EpConfig& cfg,
+                                                   const bf16_t* __restrict__ x,
+                                                   const int32_t* __restrict__ topk_idx,
+                                                   const float* __restrict__ topk_w,
+                                                   int num_tokens, const int32_t* __restrict__ send_list,
+                                                   const int32_t* __restrict__ send_counts,
+                                                   WindowView* __restrict__ peer_views, int with_meta,
+                                                   const int32_t* __restrict__ rank, int dst, int by, int gy,
+                                                   uint32_t seq = 0, int chunk_rounds = 0) {
+  const WindowView w = peer_views[dst];
+  const int lo = cfg.expert_begin(dst), hi = cfg.expert_end(dst);
+  const int warp = get_warp_idx();
+  const int nwarps = get_num_warps();
+  const int lane = get_lane_idx();
+
+  // One wave per token, over the DENSE list of tokens bound for this peer;
+  // see the note in k_ep_plan for why the list is prebuilt.
+  const int n = send_counts[dst];
+  const int stride = nwarps * gy;
+  const int start = by * nwarps + warp;
+  const int K = cfg.num_topk;
+  const int32_t* list = send_list + (size_t)dst * num_tokens;
+
+  // Row i of the list is token t: payload, then the metadata masked to the destination's experts.
+  auto push_row = [&](int i, int t, int e, float tw, int rk) {
+    const size_t slot = EpWindowLayout::slot(cfg, cfg.rank, i);
+    wave_copy_bf16(w.x() + slot * cfg.hidden, x + (size_t)t * cfg.hidden, cfg.hidden);
+    if (with_meta && lane < K) {
+      const bool mine = e >= lo && e < hi;
+      w.topk_idx()[slot * K + lane] = !mine ? -1 : (with_meta == 2 ? (rk << 8) | (e - lo) : e);
+      w.topk_w()[slot * K + lane] = tw;
+    }
+    if (with_meta && lane == 0) w.src_idx()[slot] = cfg.rank * cfg.num_max_tokens_per_rank + t;
+  };
+
+  if (seq == 0) {
+    // Prefetch the next token's index and this token's metadata (lane k holds slot k;
+    // num_topk <= kMaxTopk < kWarpSize) so neither load sits between two copies.
+    int t = start < n ? list[start] : 0;
+    for (int i = start; i < n; i += stride) {
+      const int t_next = i + stride < n ? list[i + stride] : 0;
+      int e = -1, rk = 0;
+      float tw = 0.f;
+      if (with_meta && lane < K) {
+        e = topk_idx[(size_t)t * K + lane];
+        tw = topk_w[(size_t)t * K + lane];
+        if (with_meta == 2) rk = rank[(size_t)t * K + lane];
+      }
+      push_row(i, t, e, tw, rk);
+      t = t_next;
+    }
+  } else {
+    // The count goes first, so CTA 0's first word releases it and the receiver needs no barrier
+    // before reading it.
+    if (by == 0 && threadIdx.x == 0) w.counts()[cfg.rank] = n;
+    // Chunk c is rounds [c * chunk_rounds, (c + 1) * chunk_rounds) of this CTA, one row per wave
+    // per round, so the rows of chunk c over all gy CTAs are [c * chunk_rounds * stride, ...).
+    const int rounds = (n + stride - 1) / stride;
+    const int nchunks = (rounds + chunk_rounds - 1) / chunk_rounds;
+    for (int c = 0; c < nchunks; ++c) {
+      const int r1 = min(rounds, (c + 1) * chunk_rounds);
+      for (int r = c * chunk_rounds; r < r1; ++r) {
+        const int i = r * stride + start;
+        if (i >= n) break;
+        const int t = list[i];
+        int e = -1;
+        float tw = 0.f;
+        if (with_meta && lane < K) {
+          e = topk_idx[(size_t)t * K + lane];
+          tw = topk_w[(size_t)t * K + lane];
+        }
+        push_row(i, t, e, tw, 0);
+      }
+      stream_publish(&w.prog()[cfg.rank * kStreamMaxPushCta + by], seq, c + 1);
+    }
+    // A destination this rank sends nothing still learns it, with the zero count, from CTA 0's word.
+    if (nchunks == 0 && by == 0 && threadIdx.x == 0) {
+      __threadfence_system();
+      __hip_atomic_store(&w.prog()[cfg.rank * kStreamMaxPushCta + by], stream_prog(seq, 0), __ATOMIC_RELAXED,
+                         __HIP_MEMORY_SCOPE_SYSTEM);
+    }
+    return;
+  }
+
+  // one wave per destination publishes the count, release-ordered so the
+  // payload above is visible before the count that advertises it
+  __syncthreads();
+  if (warp == 0 && lane == 0) {
+    st_release_sys<int32_t>(&w.counts()[cfg.rank], send_counts[dst]);
+  }
+}
+
 // Phase 2: push payload and metadata into each destination's window. Grid is
 // (num_ranks, ctas_per_rank), one wave per token. Only gridDim.y follows the
 // caller's budget, so the block must be wide; see kEpWaves. with_meta: 0 pushes
@@ -323,51 +418,81 @@ __global__ void dispatch_impl(EpConfig cfg,
                               WindowView* __restrict__ peer_views,   // [num_ranks]
                               int with_meta,
                               const int32_t* __restrict__ rank) {    // [ntok, num_topk], mode 2
-  const int dst = blockIdx.x;
-  if (dst >= cfg.num_ranks) return;
+  if ((int)blockIdx.x >= cfg.num_ranks) return;
+  dispatch_push_bf16(cfg, x, topk_idx, topk_w, num_tokens, send_list, send_counts, peer_views, with_meta, rank,
+                     blockIdx.x, blockIdx.y, gridDim.y);
+}
 
+// The fp8 push of dispatch_impl for destination `dst`, as CTA `by` of `gy`; seq and chunk_rounds
+// as in dispatch_push_bf16.
+__device__ __forceinline__ void dispatch_push_fp8(const EpConfig& cfg, const fp8_t* __restrict__ x,
+                                                  const float* __restrict__ sf, const int32_t* __restrict__ topk_idx,
+                                                  const float* __restrict__ topk_w, int num_tokens,
+                                                  const int32_t* __restrict__ send_list,
+                                                  const int32_t* __restrict__ send_counts,
+                                                  WindowView* __restrict__ peer_views, int dst, int by, int gy,
+                                                  uint32_t seq = 0, int chunk_rounds = 0) {
   const WindowView w = peer_views[dst];
   const int lo = cfg.expert_begin(dst), hi = cfg.expert_end(dst);
-  const int warp = get_warp_idx();
-  const int nwarps = get_num_warps();
-  const int lane = get_lane_idx();
-
-  // One wave per token, over the DENSE list of tokens bound for this peer;
-  // see the note in k_ep_plan for why the list is prebuilt.
+  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
+  const int nsf = cfg.hidden_sf();
   const int n = send_counts[dst];
-  const int stride = nwarps * gridDim.y;
-  const int start = blockIdx.y * nwarps + warp;
+  const int K = cfg.num_topk, stride = nwarps * gy, start = by * nwarps + warp;
+  const int32_t* list = send_list + (size_t)dst * num_tokens;
 
-  // Prefetch the next token's index and this token's metadata (lane k holds slot k;
-  // num_topk <= kMaxTopk < kWarpSize) so neither load sits between two copies.
-  const int K = cfg.num_topk;
-  int t = start < n ? send_list[(size_t)dst * num_tokens + start] : 0;
-  for (int i = start; i < n; i += stride) {
-    const int t_next = i + stride < n ? send_list[(size_t)dst * num_tokens + i + stride] : 0;
+  auto push_row = [&](int i, int t, int e, float tw) {
     const size_t slot = EpWindowLayout::slot(cfg, cfg.rank, i);
-    int e = -1, rk = 0;
-    float tw = 0.f;
-    if (with_meta && lane < K) {
-      e = topk_idx[(size_t)t * K + lane];
-      tw = topk_w[(size_t)t * K + lane];
-      if (with_meta == 2) rk = rank[(size_t)t * K + lane];
-    }
-
-    // payload
-    wave_copy_bf16(w.x() + slot * cfg.hidden, x + (size_t)t * cfg.hidden, cfg.hidden);
-
-    // metadata: mask topk_idx to the destination's expert range before sending
-    if (with_meta && lane < K) {
-      const bool mine = e >= lo && e < hi;
-      w.topk_idx()[slot * K + lane] = !mine ? -1 : (with_meta == 2 ? (rk << 8) | (e - lo) : e);
+    wave_copy_bytes((uint8_t*)(w.x_fp8() + slot * cfg.hidden), (const uint8_t*)(x + (size_t)t * cfg.hidden),
+                    cfg.hidden);
+    for (int j = lane; j < nsf; j += kWarpSize) w.sf()[slot * nsf + j] = sf[(size_t)t * nsf + j];
+    if (lane < K) {
+      w.topk_idx()[slot * K + lane] = (e >= lo && e < hi) ? e : -1;
       w.topk_w()[slot * K + lane] = tw;
     }
-    if (with_meta && lane == 0) w.src_idx()[slot] = cfg.rank * cfg.num_max_tokens_per_rank + t;
-    t = t_next;
-  }
+    if (lane == 0) w.src_idx()[slot] = cfg.rank * cfg.num_max_tokens_per_rank + t;
+  };
 
-  // one wave per destination publishes the count, release-ordered so the
-  // payload above is visible before the count that advertises it
+  if (seq == 0) {
+    // As in the bf16 push: the next index and this token's metadata load ahead of the copy.
+    int t = start < n ? list[start] : 0;
+    for (int i = start; i < n; i += stride) {
+      const int t_next = i + stride < n ? list[i + stride] : 0;
+      int e = -1;
+      float tw = 0.f;
+      if (lane < K) {
+        e = topk_idx[(size_t)t * K + lane];
+        tw = topk_w[(size_t)t * K + lane];
+      }
+      push_row(i, t, e, tw);
+      t = t_next;
+    }
+  } else {
+    if (by == 0 && threadIdx.x == 0) w.counts()[cfg.rank] = n;  // as in dispatch_push_bf16
+    const int rounds = (n + stride - 1) / stride;
+    const int nchunks = (rounds + chunk_rounds - 1) / chunk_rounds;
+    for (int c = 0; c < nchunks; ++c) {
+      const int r1 = min(rounds, (c + 1) * chunk_rounds);
+      for (int r = c * chunk_rounds; r < r1; ++r) {
+        const int i = r * stride + start;
+        if (i >= n) break;
+        const int t = list[i];
+        int e = -1;
+        float tw = 0.f;
+        if (lane < K) {
+          e = topk_idx[(size_t)t * K + lane];
+          tw = topk_w[(size_t)t * K + lane];
+        }
+        push_row(i, t, e, tw);
+      }
+      stream_publish(&w.prog()[cfg.rank * kStreamMaxPushCta + by], seq, c + 1);
+    }
+    if (nchunks == 0 && by == 0 && threadIdx.x == 0) {  // as in dispatch_push_bf16
+      __threadfence_system();
+      __hip_atomic_store(&w.prog()[cfg.rank * kStreamMaxPushCta + by], stream_prog(seq, 0), __ATOMIC_RELAXED,
+                         __HIP_MEMORY_SCOPE_SYSTEM);
+    }
+    return;
+  }
   __syncthreads();
   if (warp == 0 && lane == 0) {
     st_release_sys<int32_t>(&w.counts()[cfg.rank], send_counts[dst]);
@@ -379,41 +504,9 @@ __global__ void dispatch_impl(EpConfig cfg, const fp8_t* __restrict__ x,
                               const int32_t* __restrict__ topk_idx, const float* __restrict__ topk_w, int num_tokens,
                               const int32_t* __restrict__ send_list, const int32_t* __restrict__ send_counts,
                               WindowView* __restrict__ peer_views) {
-  const int dst = blockIdx.x;
-  if (dst >= cfg.num_ranks) return;
-  const WindowView w = peer_views[dst];
-  const int lo = cfg.expert_begin(dst), hi = cfg.expert_end(dst);
-  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
-  const int nsf = cfg.hidden_sf();
-  const int n = send_counts[dst];
-
-  // As in the bf16 kernel: the next index and this token's metadata load ahead of the copy.
-  const int K = cfg.num_topk, stride = nwarps * gridDim.y, start = blockIdx.y * nwarps + warp;
-  int t = start < n ? send_list[(size_t)dst * num_tokens + start] : 0;
-  for (int i = start; i < n; i += stride) {
-    const int t_next = i + stride < n ? send_list[(size_t)dst * num_tokens + i + stride] : 0;
-    const size_t slot = EpWindowLayout::slot(cfg, cfg.rank, i);
-    int e = -1;
-    float tw = 0.f;
-    if (lane < K) {
-      e = topk_idx[(size_t)t * K + lane];
-      tw = topk_w[(size_t)t * K + lane];
-    }
-
-    wave_copy_bytes((uint8_t*)(w.x_fp8() + slot * cfg.hidden), (const uint8_t*)(x + (size_t)t * cfg.hidden),
-                    cfg.hidden);
-    for (int j = lane; j < nsf; j += kWarpSize) w.sf()[slot * nsf + j] = sf[(size_t)t * nsf + j];
-    if (lane < K) {
-      w.topk_idx()[slot * K + lane] = (e >= lo && e < hi) ? e : -1;
-      w.topk_w()[slot * K + lane] = tw;
-    }
-    if (lane == 0) w.src_idx()[slot] = cfg.rank * cfg.num_max_tokens_per_rank + t;
-    t = t_next;
-  }
-  __syncthreads();
-  if (warp == 0 && lane == 0) {
-    st_release_sys<int32_t>(&w.counts()[cfg.rank], send_counts[dst]);
-  }
+  if ((int)blockIdx.x >= cfg.num_ranks) return;
+  dispatch_push_fp8(cfg, x, sf, topk_idx, topk_w, num_tokens, send_list, send_counts, peer_views,
+                    blockIdx.x, blockIdx.y, gridDim.y);
 }
 
 // Phase 3: compact the staged regions into the contiguous output. Source-rank
@@ -450,28 +543,21 @@ struct EpilogueCounts {
   }
 };
 
-__global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self,
-                                            const int32_t* __restrict__ recv_offsets,  // [num_ranks] prefix
-                                            bf16_t* __restrict__ out_x, int32_t* __restrict__ out_topk_idx,
-                                            float* __restrict__ out_topk_w, int32_t* __restrict__ out_src_idx,
-                                            int32_t* __restrict__ expert_counts,       // [epr] or nullptr
-                                            int offsets_inclusive) {  // 1: a handle's inclusive prefix
-  const int src = blockIdx.x;
-  if (src >= cfg.num_ranks) return;  // block-uniform, so the barriers in `cnt` are safe
-
-  const int n = self.counts()[src];
-  const int dst_base = offsets_inclusive ? (src ? recv_offsets[src - 1] : 0) : recv_offsets[src];
+// The bf16 copy epilogue's row loop for source `src`: its rows [r0, r1) go to out_x rows
+// dst_base + r0.., as CTA `cy` of the `gcy` CTAs per source.
+__device__ __forceinline__ void dispatch_copy_rows_bf16(const EpConfig& cfg, const WindowView& self, int src, int r0,
+                                                        int r1,
+                                                        int dst_base, bf16_t* __restrict__ out_x,
+                                                        int32_t* __restrict__ out_topk_idx,
+                                                        float* __restrict__ out_topk_w,
+                                                        int32_t* __restrict__ out_src_idx, const EpilogueCounts& cnt,
+                                                        int* hist, int cy, int gcy) {
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int my_lo = cfg.expert_begin(cfg.rank);
-  __shared__ int hist[kEpiMaxExperts];
-  EpilogueCounts cnt;
-  cnt.begin(expert_counts, cfg.experts_per_rank(), hist);
-
-  for (int i = blockIdx.y * nwarps + warp; i < n; i += nwarps * gridDim.y) {
+  for (int i = r0 + cy * nwarps + warp; i < r1; i += nwarps * gcy) {
     const size_t s = EpWindowLayout::slot(cfg, src, i);
     const size_t d = dst_base + i;
-
-    wave_copy_local_bf16<true, 1>(out_x + d * cfg.hidden, self.x() + s * cfg.hidden, cfg.hidden);
+    wave_copy_local_bf16<true, 4>(out_x + d * cfg.hidden, self.x() + s * cfg.hidden, cfg.hidden);
     if (out_topk_idx == nullptr) continue;  // payload-only: grid-uniform
 
     for (int k = lane; k < cfg.num_topk; k += kWarpSize) {
@@ -484,6 +570,24 @@ __global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self,
     }
     if (lane == 0) out_src_idx[d] = self.src_idx()[s];
   }
+}
+
+__global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self,
+                                            const int32_t* __restrict__ recv_offsets,  // [num_ranks] prefix
+                                            bf16_t* __restrict__ out_x, int32_t* __restrict__ out_topk_idx,
+                                            float* __restrict__ out_topk_w, int32_t* __restrict__ out_src_idx,
+                                            int32_t* __restrict__ expert_counts,       // [epr] or nullptr
+                                            int offsets_inclusive) {  // 1: a handle's inclusive prefix
+  const int src = blockIdx.x;
+  if (src >= cfg.num_ranks) return;  // block-uniform, so the barriers in `cnt` are safe
+
+  const int n = self.counts()[src];
+  const int dst_base = offsets_inclusive ? (src ? recv_offsets[src - 1] : 0) : recv_offsets[src];
+  __shared__ int hist[kEpiMaxExperts];
+  EpilogueCounts cnt;
+  cnt.begin(expert_counts, cfg.experts_per_rank(), hist);
+  dispatch_copy_rows_bf16(cfg, self, src, 0, n, dst_base, out_x, out_topk_idx, out_topk_w, out_src_idx, cnt, hist,
+                          blockIdx.y, gridDim.y);
   cnt.end(hist);
 }
 
@@ -564,7 +668,7 @@ __global__ void dispatch_permute_epilogue_impl(EpConfig cfg, WindowView self,
       const int row_l = g < groups ? (int)token_ids[(size_t)g * n + d] : -1;
       for (unsigned long long m = __ballot(row_l >= 0); m; m &= m - 1) {  // wave-uniform
         const int row = __shfl(row_l, __builtin_ctzll(m), kWarpSize);
-        wave_copy_local_bytes<true, 1>(out_x + (size_t)row * x_stride, payload, payload_bytes);
+        wave_copy_local_bytes<true, 4>(out_x + (size_t)row * x_stride, payload, payload_bytes);
         if (lane < K) {
           reinterpret_cast<float*>(out_w + (size_t)row * w_stride)[lane] = w;
           uint8_t* oi = out_ids + (size_t)row * ids_stride;
@@ -578,25 +682,20 @@ __global__ void dispatch_permute_epilogue_impl(EpConfig cfg, WindowView self,
   }
 }
 
-__global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self, const int32_t* __restrict__ recv_offsets,
-                                            fp8_t* __restrict__ out_x, float* __restrict__ out_sf,
-                                            int32_t* __restrict__ out_topk_idx, float* __restrict__ out_topk_w,
-                                            int32_t* __restrict__ out_src_idx,
-                                            int32_t* __restrict__ expert_counts) {     // [epr] or nullptr
-  const int src = blockIdx.x;
-  if (src >= cfg.num_ranks) return;
-  const int n = self.counts()[src];
-  const int dst_base = recv_offsets[src];
+// The fp8 copy epilogue's row loop for source `src`; arguments as in dispatch_copy_rows_bf16.
+__device__ __forceinline__ void dispatch_copy_rows_fp8(const EpConfig& cfg, const WindowView& self, int src, int r0,
+                                                       int r1,
+                                                       int dst_base, fp8_t* __restrict__ out_x,
+                                                       float* __restrict__ out_sf, int32_t* __restrict__ out_topk_idx,
+                                                       float* __restrict__ out_topk_w,
+                                                       int32_t* __restrict__ out_src_idx, const EpilogueCounts& cnt,
+                                                       int* hist, int cy, int gcy) {
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int my_lo = cfg.expert_begin(cfg.rank), nsf = cfg.hidden_sf();
-  __shared__ int hist[kEpiMaxExperts];
-  EpilogueCounts cnt;
-  cnt.begin(expert_counts, cfg.experts_per_rank(), hist);
-
-  for (int i = blockIdx.y * nwarps + warp; i < n; i += nwarps * gridDim.y) {
+  for (int i = r0 + cy * nwarps + warp; i < r1; i += nwarps * gcy) {
     const size_t s = EpWindowLayout::slot(cfg, src, i);
     const size_t d = dst_base + i;
-    wave_copy_local_bytes<true, 1>((uint8_t*)(out_x + d * cfg.hidden), (const uint8_t*)(self.x_fp8() + s * cfg.hidden), cfg.hidden);
+    wave_copy_local_bytes<true, 4>((uint8_t*)(out_x + d * cfg.hidden), (const uint8_t*)(self.x_fp8() + s * cfg.hidden), cfg.hidden);
     for (int j = lane; j < nsf; j += kWarpSize) out_sf[d * nsf + j] = self.sf()[s * nsf + j];
     for (int k = lane; k < cfg.num_topk; k += kWarpSize) {
       const int e = self.topk_idx()[s * cfg.num_topk + k];
@@ -607,7 +706,121 @@ __global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self, const
     }
     if (lane == 0) out_src_idx[d] = self.src_idx()[s];
   }
+}
+
+__global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self, const int32_t* __restrict__ recv_offsets,
+                                            fp8_t* __restrict__ out_x, float* __restrict__ out_sf,
+                                            int32_t* __restrict__ out_topk_idx, float* __restrict__ out_topk_w,
+                                            int32_t* __restrict__ out_src_idx,
+                                            int32_t* __restrict__ expert_counts) {     // [epr] or nullptr
+  const int src = blockIdx.x;
+  if (src >= cfg.num_ranks) return;
+  const int n = self.counts()[src];
+  const int dst_base = recv_offsets[src];
+  __shared__ int hist[kEpiMaxExperts];
+  EpilogueCounts cnt;
+  cnt.begin(expert_counts, cfg.experts_per_rank(), hist);
+  dispatch_copy_rows_fp8(cfg, self, src, 0, n, dst_base, out_x, out_sf, out_topk_idx, out_topk_w, out_src_idx, cnt,
+                         hist, blockIdx.y, gridDim.y);
   cnt.end(hist);
+}
+
+// Streamed dispatch: source `src`'s receive offset and row count, known before the push, from a
+// cached handle's inclusive per-source prefix or the count handshake's exclusive offsets and total.
+__device__ __forceinline__ void stream_rows_of(const EpConfig& cfg, int src, const int32_t* __restrict__ off,
+                                               int inclusive, const int32_t* __restrict__ total, int* base,
+                                               int* n) {
+  if (inclusive) {
+    const int lo = src ? off[src - 1] : 0;
+    *base = lo;
+    *n = off[src] - lo;
+  } else {
+    *base = off[src];
+    *n = (src + 1 < cfg.num_ranks ? off[src + 1] : *total) - off[src];
+  }
+}
+
+// Streamed dispatch (RCCL_EP_STREAM_DISPATCH): the push and the copy out of this rank's window in
+// one grid, overlapped, in place of dispatch_impl and the copy epilogue. Grid (num_ranks, push_cta +
+// copy CTAs). Rows y < push_cta push to destination blockIdx.x as dispatch_impl does, in chunks,
+// publishing each chunk (stream_publish); the others copy source blockIdx.x's rows out of this
+// rank's window a chunk at a time as source blockIdx.x publishes them (stream_wait). The push is
+// bound by the links, not by its CTA count, so part of the budget pushes about as fast as all of
+// it and the copy hides under the push. Blocks start in index order, so every push CTA is running
+// before a copy CTA spins, and push CTAs never wait.
+//
+// Source src's chunk c is the same row range on both sides: rows [c * chunk_rows, ...) with
+// chunk_rows = chunk_rounds * waves * push_cta, the push's row stride times its rounds per chunk.
+template <typename CopyRows>
+__device__ __forceinline__ void stream_copy(const EpConfig& cfg, const WindowView& self, int src,
+                                            const int32_t* __restrict__ off, int inclusive,
+                                            const int32_t* __restrict__ total, int push_cta, int chunk_rounds,
+                                            uint32_t seq, CopyRows&& copy_rows) {
+  int base, n;
+  stream_rows_of(cfg, src, off, inclusive, total, &base, &n);
+  const uint32_t* words = &self.prog()[src * kStreamMaxPushCta];
+  // No rows: CTA 0's word still carries the source's count, which a later combine reads.
+  if (n == 0) stream_wait(words, 1, seq, 0);
+  const int chunk_rows = chunk_rounds * get_num_warps() * push_cta;
+  for (int r0 = 0, c = 1; r0 < n; r0 += chunk_rows, ++c) {
+    stream_wait(words, push_cta, seq, c);
+    copy_rows(base, r0, min(n, r0 + chunk_rows));
+  }
+  stream_done(self.prog(), self.sdone(), cfg.num_ranks, push_cta, cfg.num_ranks * ((int)gridDim.y - push_cta));
+}
+
+__global__ void dispatch_stream_impl(EpConfig cfg, const bf16_t* __restrict__ x,
+                                     const int32_t* __restrict__ topk_idx, const float* __restrict__ topk_w,
+                                     int num_tokens, const int32_t* __restrict__ send_list,
+                                     const int32_t* __restrict__ send_counts, WindowView* __restrict__ peer_views,
+                                     int with_meta, WindowView self, const int32_t* __restrict__ recv_offsets,
+                                     int offsets_inclusive, const int32_t* __restrict__ total_recv,
+                                     bf16_t* __restrict__ out_x, int32_t* __restrict__ out_topk_idx,
+                                     float* __restrict__ out_topk_w, int32_t* __restrict__ out_src_idx,
+                                     int push_cta, int chunk_rounds, uint32_t seq) {
+  const int src = blockIdx.x;
+  if (src >= cfg.num_ranks) return;
+  if ((int)blockIdx.y < push_cta) {
+    dispatch_push_bf16(cfg, x, topk_idx, topk_w, num_tokens, send_list, send_counts, peer_views, with_meta,
+                       nullptr, src, blockIdx.y, push_cta, seq, chunk_rounds);
+    return;
+  }
+  __shared__ int hist[1];
+  EpilogueCounts cnt;
+  cnt.begin(nullptr, 0, hist);
+  stream_copy(cfg, self, src, recv_offsets, offsets_inclusive, total_recv, push_cta, chunk_rounds, seq,
+              [&](int base, int r0, int r1) {
+                dispatch_copy_rows_bf16(cfg, self, src, r0, r1, base, out_x, with_meta ? out_topk_idx : nullptr,
+                                        out_topk_w, out_src_idx, cnt, hist, blockIdx.y - push_cta,
+                                        gridDim.y - push_cta);
+              });
+}
+
+__global__ void dispatch_stream_impl(EpConfig cfg, const fp8_t* __restrict__ x, const float* __restrict__ sf,
+                                     const int32_t* __restrict__ topk_idx, const float* __restrict__ topk_w,
+                                     int num_tokens, const int32_t* __restrict__ send_list,
+                                     const int32_t* __restrict__ send_counts, WindowView* __restrict__ peer_views,
+                                     WindowView self, const int32_t* __restrict__ recv_offsets,
+                                     int offsets_inclusive, const int32_t* __restrict__ total_recv,
+                                     fp8_t* __restrict__ out_x, float* __restrict__ out_sf,
+                                     int32_t* __restrict__ out_topk_idx, float* __restrict__ out_topk_w,
+                                     int32_t* __restrict__ out_src_idx, int push_cta, int chunk_rounds,
+                                     uint32_t seq) {
+  const int src = blockIdx.x;
+  if (src >= cfg.num_ranks) return;
+  if ((int)blockIdx.y < push_cta) {
+    dispatch_push_fp8(cfg, x, sf, topk_idx, topk_w, num_tokens, send_list, send_counts, peer_views, src,
+                      blockIdx.y, push_cta, seq, chunk_rounds);
+    return;
+  }
+  __shared__ int hist[1];
+  EpilogueCounts cnt;
+  cnt.begin(nullptr, 0, hist);
+  stream_copy(cfg, self, src, recv_offsets, offsets_inclusive, total_recv, push_cta, chunk_rounds, seq,
+              [&](int base, int r0, int r1) {
+                dispatch_copy_rows_fp8(cfg, self, src, r0, r1, base, out_x, out_sf, out_topk_idx, out_topk_w,
+                                       out_src_idx, cnt, hist, blockIdx.y - push_cta, gridDim.y - push_cta);
+              });
 }
 
 // Phase 3, grouped: compact the staged regions straight into a grouped-by-expert

@@ -61,6 +61,11 @@ struct EpHandle {
   // Sequence number of the last uncached handshake. The window memset in ep_configure
   // leaves every flag at 0, so the first handshake uses 1.
   uint32_t notify_seq{0};
+  // Sequence number of the last streamed dispatch (RCCL_EP_STREAM_DISPATCH), the high half of the
+  // progress words its push publishes. Zeroed with the window like notify_seq; the first is 1.
+  uint32_t stream_seq{0};
+  // The same for the streamed combine (RCCL_EP_STREAM_COMBINE), whose words have their own region.
+  uint32_t cstream_seq{0};
   // k_ep_plan_notify's per-chunk totals, [num_ranks, chunks, kPlanAggStride] ints. Sized
   // and zeroed with the window, whose epr it depends on; flags are notify_seq values.
   int32_t* d_plan_agg{};
@@ -169,7 +174,7 @@ struct EpHandle {
   struct {
     bool on{false};
     int payload_later{0};
-    int use_fp8{0}, with_meta{1}, cta{0}, hcta{0}, run_epilogue{1}, notified{0};
+    int use_fp8{0}, with_meta{1}, cta{0}, hcta{0}, run_epilogue{1}, notified{0}, streamed{0};
     uintptr_t psum_incl{}, expert_counts{}, out_x{}, out_sf{}, out_topk{}, out_tw{}, out_src{};
   } pend_d;
 };
@@ -224,6 +229,37 @@ inline int env_int(const char* name) {
 inline int copy_epilogue_cta(int push_cta, int num_ranks) {
   static const int sms = env_int("RCCL_EP_COPY_EPILOGUE_SMS");
   return sms > 0 ? ctas_per_rank(sms, 128, num_ranks) : push_cta;
+}
+
+// RCCL_EP_STREAM_DISPATCH=1: an intranode dispatch whose receive offsets are known before the push
+// (a notified or cached dispatch) runs the push and the copy out of the window in one grid,
+// overlapped, within the same CTA budget (dispatch_stream_impl).
+inline bool stream_dispatch_on() {
+  static const bool on = env_int("RCCL_EP_STREAM_DISPATCH") == 1;
+  return on;
+}
+
+// RCCL_EP_STREAM_COMBINE=1: an intranode combine given the plan's positions runs the push and the
+// reduce in one grid, overlapped, within the same CTA budget (combine_stream_impl).
+inline bool stream_combine_on() {
+  static const bool on = env_int("RCCL_EP_STREAM_COMBINE") == 1;
+  return on;
+}
+
+// A streamed call's push CTAs per peer out of its `cta`: RCCL_EP_STREAM_PUSH_CTA, or half of them,
+// at least 3 and at most 6. The rest copy or reduce. Measured on 8x MI350X: the push saturates the
+// links at about 6 CTAs per peer and starves below 3. 0 when either side would be empty or the push
+// is past kStreamMaxPushCta.
+inline int stream_push_cta(int cta) {
+  static const int env = env_int("RCCL_EP_STREAM_PUSH_CTA");
+  const int p = env > 0 ? env : std::max(3, std::min(cta / 2, 6));
+  return p >= 1 && p < cta && p <= kStreamMaxPushCta ? p : 0;
+}
+
+// Rows per push wave between two progress words of a streamed call: RCCL_EP_STREAM_CHUNK, or 8.
+inline int stream_chunk_rounds() {
+  static const int env = env_int("RCCL_EP_STREAM_CHUNK");
+  return env > 0 ? env : 8;
 }
 
 // Release the device communicator and the symmetric window. ep_configure's
@@ -345,6 +381,9 @@ EpWindowLayout remote_layout(const EpWindowLayout& l, const EpConfig& c, int q, 
   r.off_topk_idx = sh(l.off_topk_idx, T * K * (int64_t)sizeof(int32_t));
   r.off_topk_w = sh(l.off_topk_w, T * K * (int64_t)sizeof(float));
   r.off_src_idx = sh(l.off_src_idx, T * (int64_t)sizeof(int32_t));
+  r.off_prog = sh(l.off_prog, kStreamMaxPushCta * (int64_t)sizeof(uint32_t));
+  r.off_cprog = sh(l.off_cprog, kStreamMaxPushCta * (int64_t)sizeof(uint32_t));
+  r.off_sdone = sh(l.off_sdone, 0);  // local only
   r.off_y = sh(l.off_y, T * H * 2 * (kind == kViewCombFlat ? K : 1));
   r.off_cw = sh(l.off_cw, T * K * (int64_t)sizeof(float));
   r.off_arch = sh(l.off_arch, kArchLen);
@@ -1033,6 +1072,8 @@ int ep_configure_v2(void* handle, int num_experts, int num_topk, int grouped_onl
   }
   hipMemset(h->win_buf, 0, h->win_bytes);
   h->notify_seq = 0;  // the memset just zeroed every flag
+  h->stream_seq = 0;  // and every progress word
+  h->cstream_seq = 0;
   {
     const char* e = getenv("RCCL_EP_ELIDE_A");
     // The rendezvous argument (see EpHandle) holds for hybrid too: only local ranks, the
@@ -1191,6 +1232,13 @@ static int dispatch_tail(EpHandle* h, hipStream_t s) {
   } else if (h->inter && inter_dispatch(h, t.use_fp8, t.use_fp8 ? 1 : t.with_meta, s) != 0) {
     return -1;
   }
+  // A streamed dispatch's grid has already copied every row out of the window, and every source's
+  // count is in place (the copy waited for each source's words), so it needs no barrier B. Its copy
+  // read the dispatch region since the last rendezvous, so the next dispatch keeps barrier A.
+  if (t.streamed) {
+    h->rdv_x = false;
+    return 0;
+  }
   hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
   note_rdv(h);
   // The grouped path runs its own epilogue later, from the handle's offsets.
@@ -1307,6 +1355,12 @@ static int dispatch_enqueue(EpHandle* h,
   // written d_recvoff and d_total. The counts memset is redundant, since dispatch_impl
   // rewrites every counts[src] (zero included); zero_counts=0 skips it.
   note_stream(h, s);
+  // Streamed: every source's count and receive offset must be known before the push (the count
+  // handshake's d_recvoff and d_total, or a cached handle's inclusive prefix), and the copy must be
+  // the plain one into this call's outputs.
+  const int push_cta = stream_dispatch_on() ? stream_push_cta(cta) : 0;
+  const bool streamed = push_cta > 0 && !h->inter && !h->hybrid && run_epilogue && !payload_later &&
+                        with_meta != 2 && expert_counts == 0 && (notified || psum_incl);
   // Hybrid: pack and the rail transfer touch only this rank's so_send / so_recv, not the window,
   // so they can start before barrier A and move while the node's ranks catch up.
   // RCCL_EP_HYB_EARLY_RAIL=0 starts them after barrier A instead.
@@ -1328,7 +1382,8 @@ static int dispatch_enqueue(EpHandle* h,
                             hyb_ctas(h, num_sms), s) != 0)
     return -1;
   if (!notified) {
-    if (zero_counts)
+    // A streamed push writes every count itself, zero included.
+    if (zero_counts && !streamed)
       HC(hipMemsetAsync((uint8_t*)h->win_buf + h->lay.off_counts, 0, c.num_ranks * sizeof(int32_t), s));
     // Barrier A keeps this push out of each peer's dispatch region until the peer has read
     // it. A rendezvous since this rank's own last reader of that region already guarantees
@@ -1351,7 +1406,28 @@ static int dispatch_enqueue(EpHandle* h,
                        h->node_base, h->node_size, (const int32_t*)sendc, h->d_local_sendc);
     push_sendc = h->d_local_sendc;
   }
-  if (use_fp8) {
+  // The fp8 copy epilogue takes exclusive offsets only, so an fp8 dispatch that does not stream scans.
+  if (use_fp8 && !streamed) psum_incl = 0;
+  if (streamed) {
+    // Only the low 16 bits reach the progress words; 0 is the window's initial value.
+    if ((++h->stream_seq & 0xffffu) == 0) ++h->stream_seq;
+    const int chunk = stream_chunk_rounds();
+    const int32_t* offs = psum_incl ? (const int32_t*)psum_incl : h->d_recvoff;
+    const int incl = psum_incl ? 1 : 0;
+    if (use_fp8) {
+      hipLaunchKernelGGL(dispatch_stream_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                         c, (const fp8_t*)x, (const float*)x_sf, (const int32_t*)topk_idx,
+                         (const float*)topk_w, num_tokens, (const int32_t*)send_list, push_sendc, views,
+                         h->self_view, offs, incl, h->d_total, (fp8_t*)out_x, (float*)out_sf,
+                         (int32_t*)out_topk, (float*)out_tw, (int32_t*)out_src, push_cta, chunk, h->stream_seq);
+    } else {
+      hipLaunchKernelGGL(dispatch_stream_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                         c, (const bf16_t*)x, (const int32_t*)topk_idx, (const float*)topk_w,
+                         num_tokens, (const int32_t*)send_list, push_sendc, views, with_meta,
+                         h->self_view, offs, incl, h->d_total, (bf16_t*)out_x, (int32_t*)out_topk,
+                         (float*)out_tw, (int32_t*)out_src, push_cta, chunk, h->stream_seq);
+    }
+  } else if (use_fp8) {
     hipLaunchKernelGGL(dispatch_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, (const fp8_t*)x, (const float*)x_sf, (const int32_t*)topk_idx,
                        (const float*)topk_w, num_tokens, (const int32_t*)send_list,
@@ -1370,6 +1446,7 @@ static int dispatch_enqueue(EpHandle* h,
   t.hcta = h->hybrid ? hyb_ctas(h, num_sms) : 0;  // hyb_ctas divides by the node count
   t.run_epilogue = run_epilogue;
   t.notified = notified;
+  t.streamed = streamed ? 1 : 0;
   t.psum_incl = psum_incl;
   t.expert_counts = expert_counts;
   t.out_x = out_x;
@@ -1433,6 +1510,28 @@ int ep_dispatch_v2(void* handle,
                       hipMemcpyDeviceToHost, s));
   }
   return 0;
+}
+
+// ep_dispatch_v2 for a cached replay, with its handle's inclusive per-source receive prefix
+// (psum_rank): the offsets need no scan after the push, so the copy can stream with it
+// (RCCL_EP_STREAM_DISPATCH).
+int ep_dispatch_v4(void* handle,
+                   uintptr_t x, uintptr_t x_sf,
+                   uintptr_t topk_idx, uintptr_t topk_w, int num_tokens,
+                   uintptr_t send_list, uintptr_t sendc, int use_fp8, int num_sms,
+                   uintptr_t out_x, uintptr_t out_sf,
+                   uintptr_t out_topk, uintptr_t out_tw, uintptr_t out_src,
+                   uintptr_t psum_rank, uintptr_t stream) {
+  auto* h = static_cast<EpHandle*>(handle);
+  REQUIRE_CONFIGURED(h, "ep_dispatch_v4");
+  if (psum_rank == 0) {
+    fprintf(stderr, "[rccl_ep] ep_dispatch_v4 needs the handle's psum_rank\n");
+    return -1;
+  }
+  return dispatch_enqueue(h, x, x_sf, topk_idx, topk_w, num_tokens, send_list, sendc,
+                          use_fp8, num_sms, out_x, out_sf, out_topk, out_tw, out_src,
+                          0, 0, (hipStream_t)stream, /*with_meta=*/1, /*rank=*/0,
+                          /*run_epilogue=*/1, psum_rank);
 }
 
 // Payload-only cached replay: moves and compacts the rows without the per-token
@@ -1815,6 +1914,15 @@ int ep_permute_epilogue(void* handle, uintptr_t token_ids, int groups, int n, ui
   return 0;
 }
 
+int ep_combine_v5(void* handle,
+                  uintptr_t y, uintptr_t in_w, uintptr_t row_map, uintptr_t expert_rows,
+                  uintptr_t scales, int fma_mode,
+                  uintptr_t recv_topk, uintptr_t recv_src, int num_recv,
+                  uintptr_t topk_idx, int num_tokens,
+                  uintptr_t bias0, uintptr_t bias1, int grouped,
+                  uintptr_t out, uintptr_t out_w, int num_sms, int defer, uintptr_t slot_of,
+                  uintptr_t stream);
+
 // `grouped` selects what each rank writes into the window: 1 for one reduced
 // row per received token, with this rank's owned rows summed here in ascending
 // k; 0 for one row per (slot, k). In either mode a non-null `row_map` means the
@@ -1839,6 +1947,23 @@ int ep_combine_v4(void* handle,
                   uintptr_t topk_idx, int num_tokens,
                   uintptr_t bias0, uintptr_t bias1, int grouped,
                   uintptr_t out, uintptr_t out_w, int num_sms, int defer, uintptr_t stream) {
+  return ep_combine_v5(handle, y, in_w, row_map, expert_rows, scales, fma_mode, recv_topk, recv_src,
+                       num_recv, topk_idx, num_tokens, bias0, bias1, grouped, out, out_w, num_sms, defer, 0,
+                       stream);
+}
+
+// ep_combine_v4 plus slot_of, the dispatch plan's [num_ranks, num_tokens] position of each token in
+// its send order to each rank (-1 = not sent), which lets the reduce run while the rows are still
+// arriving (RCCL_EP_STREAM_COMBINE). 0 keeps the push, barrier and reduce apart. Every rank must
+// pass a non-null slot_of or none does: a rank with no tokens passes any non-null pointer.
+int ep_combine_v5(void* handle,
+                  uintptr_t y, uintptr_t in_w, uintptr_t row_map, uintptr_t expert_rows,
+                  uintptr_t scales, int fma_mode,
+                  uintptr_t recv_topk, uintptr_t recv_src, int num_recv,
+                  uintptr_t topk_idx, int num_tokens,
+                  uintptr_t bias0, uintptr_t bias1, int grouped,
+                  uintptr_t out, uintptr_t out_w, int num_sms, int defer, uintptr_t slot_of,
+                  uintptr_t stream) {
   auto* h = static_cast<EpHandle*>(handle);
   const EpConfig& c = h->cfg;
   hipStream_t s = (hipStream_t)stream;
@@ -1903,6 +2028,25 @@ int ep_combine_v4(void* handle,
                        (const int32_t*)recv_src, num_recv, c.num_max_tokens_per_rank, h->bound,
                        h->d_src_inter);
     src = h->d_src_inter;
+  }
+  // Streamed: the reduce follows the rows as they land, in the same grid, and needs no barrier
+  // after it. The next combine's barrier A is not elided (rdv_y below), so no rank pushes into a
+  // combine region its owner is still reducing.
+  // The reduce needs at least as many CTAs as the push: at 4 CTAs per peer it would get one, and the
+  // streamed combine measured 15% slower than the plain one.
+  int cpush = slot_of && !h->inter && stream_combine_on() ? stream_push_cta(cta) : 0;
+  if (cta - cpush < cpush) cpush = 0;
+  if (cpush) {
+    if ((++h->cstream_seq & 0xffffu) == 0) ++h->cstream_seq;
+    hipLaunchKernelGGL(combine_stream_impl, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
+                       (const int64_t*)expert_rows, (const float*)scales, fma_mode,
+                       (const int32_t*)recv_topk, src, num_recv, grouped, h->self_view, views,
+                       (const int32_t*)topk_idx, num_tokens, (const int32_t*)slot_of,
+                       (const bf16_t*)bias0, (const bf16_t*)bias1, (bf16_t*)out, (float*)out_w, cpush,
+                       stream_chunk_rounds(), h->cstream_seq);
+    h->rdv_y = false;
+    return 0;
   }
   hipLaunchKernelGGL(combine_impl<0>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
                      c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,

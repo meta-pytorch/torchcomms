@@ -60,6 +60,9 @@ struct EpConfig {
   }
 };
 
+// Push CTAs per peer a streamed dispatch or combine can publish progress for; see `prog` below.
+constexpr int kStreamMaxPushCta = 64;
+
 // Byte offsets of each region within a rank's symmetric window.
 //
 //   [ counts    ] num_ranks int32          how many tokens source s sent me
@@ -70,6 +73,9 @@ struct EpConfig {
 //   [ topk_idx  ] R * T * num_topk int32
 //   [ topk_w    ] R * T * num_topk float
 //   [ src_idx   ] R * T int32              src_token_global_idx
+//   [ prog      ] R * kStreamMaxPushCta    streamed dispatch progress, per (source, push CTA)
+//   [ cprog     ] R * kStreamMaxPushCta    streamed combine progress, per (owner, push CTA)
+//   [ sdone     ] 2 int32                  streamed dispatch / combine: receiving CTAs done
 //   [ y         ] R * T * num_topk * hidden  combine payload, staged by owner
 //   [ cw        ] R * T * num_topk float   combine top-k weights, by owner
 //
@@ -80,7 +86,8 @@ struct EpConfig {
 // `y` is per (slot, topk), not per slot, because combine sums in strict topk
 // order; pre-reducing per rank reorders it and fails the bit-exact bar.
 struct EpWindowLayout {
-  size_t off_counts, off_flags, off_notify, off_x, off_sf, off_topk_idx, off_topk_w, off_src_idx, off_y, off_cw, off_arch;
+  size_t off_counts, off_flags, off_notify, off_x, off_sf, off_topk_idx, off_topk_w, off_src_idx, off_prog,
+      off_cprog, off_sdone, off_y, off_cw, off_arch;
   size_t total_bytes;
 
   // y_rows_per_slot: rows of `y` per slot; 0 means num_topk, one per (slot, k) as a
@@ -119,6 +126,12 @@ struct EpWindowLayout {
     o = align_up(o + slots * c.num_topk * sizeof(float));
     l.off_src_idx = o;
     o = align_up(o + slots * sizeof(int32_t));
+    l.off_prog = o;
+    o = align_up(o + R * kStreamMaxPushCta * sizeof(uint32_t));
+    l.off_cprog = o;
+    o = align_up(o + R * kStreamMaxPushCta * sizeof(uint32_t));
+    l.off_sdone = o;
+    o = align_up(o + 2 * sizeof(int32_t));
     // `y` is always bf16: combine payload is bf16 even when dispatch is fp8.
     l.off_y = o - y_shift * y_row;
     o = align_up(o + y_slots * y_row);

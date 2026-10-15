@@ -118,6 +118,15 @@ int ep_combine_v4(void* handle, uintptr_t y, uintptr_t in_w, uintptr_t row_map,
                   uintptr_t recv_src, int num_recv, uintptr_t topk_idx, int num_tokens,
                   uintptr_t bias0, uintptr_t bias1, int grouped, uintptr_t out, uintptr_t out_w,
                   int num_sms, int defer, uintptr_t stream);
+int ep_dispatch_v4(void* handle, uintptr_t x, uintptr_t x_sf, uintptr_t topk_idx, uintptr_t topk_w,
+                   int num_tokens, uintptr_t send_list, uintptr_t sendc, int use_fp8, int num_sms,
+                   uintptr_t out_x, uintptr_t out_sf, uintptr_t out_topk, uintptr_t out_tw,
+                   uintptr_t out_src, uintptr_t psum_rank, uintptr_t stream);
+int ep_combine_v5(void* handle, uintptr_t y, uintptr_t in_w, uintptr_t row_map,
+                  uintptr_t expert_rows, uintptr_t scales, int fma_mode, uintptr_t recv_topk,
+                  uintptr_t recv_src, int num_recv, uintptr_t topk_idx, int num_tokens,
+                  uintptr_t bias0, uintptr_t bias1, int grouped, uintptr_t out, uintptr_t out_w,
+                  int num_sms, int defer, uintptr_t slot_of, uintptr_t stream);
 int ep_combine_finish(void* handle, uintptr_t stream);
 int ep_dispatch_defer_next(void* handle);
 int ep_dispatch_finish(void* handle, uintptr_t stream);
@@ -149,6 +158,9 @@ constexpr int kHidden        = 7168;  // multiple of 8: ep_create rejects odd hi
 constexpr int kTopk          = 6;
 constexpr int kExpertsPerRank = 32;   // 256 experts across eight ranks
 constexpr int kNumSms        = 32;    // past saturation; 64 measures slower, not faster
+// The streamed tests: a streamed combine needs as many reduce CTAs as push CTAs, so at least
+// 8 CTAs per peer; at kNumSms it falls back to the plain path.
+constexpr int kStreamSms     = 64;
 constexpr int kWarmup        = 10;
 constexpr int kIters         = 20;   // each timed separately; the minimum is reported
 
@@ -1371,13 +1383,91 @@ TEST_F(RcclEpDispatchCombineTest, RanksThatSendNothing)
             DevBuf out;
             ASSERT_MPI_TRUE(out.Alloc(bytes));
             ASSERT_MPI_EQ(hipSuccess, hipMemsetAsync(out.p, 0xFF, bytes, stream));
-            ASSERT_MPI_EQ(0, ep_combine_v4(handle_, d.outX.u(), 0, 0, 0, 0, 1, d.outTopk.u(),
+            // slot_of is non-null on every rank, as ep_combine_v5 requires; idle ranks read none of
+            // it. With RCCL_EP_STREAM_COMBINE=1 (and kStreamSms) this is the streamed combine with idle ranks.
+            ASSERT_MPI_EQ(0, ep_combine_v5(handle_, d.outX.u(), 0, 0, 0, 0, 1, d.outTopk.u(),
                                            d.outSrc.u(), d.nRecv, tokenBuf(d.topkIdx), nTok, 0, 0,
-                                           /*grouped=*/1, tokenBuf(out), 0, kNumSms, 0,
+                                           /*grouped=*/1, tokenBuf(out), 0, kStreamSms, 0, d.slot.u(),
                                            (uintptr_t)stream));
             ASSERT_EP_STEP(CheckScaledByDestinations(d, out, stream, nTok));
         }
     }
+}
+
+// The streamed dispatch and combine against the plain kernels, in one process. Run with
+// RCCL_EP_STREAM_DISPATCH=1 and RCCL_EP_STREAM_COMBINE=1: cached replays through ep_dispatch_v4
+// stream, those through ep_dispatch_v2 never do, and the same holds for ep_combine_v5 and
+// ep_combine_v4. Rounds of bf16 and fp8 replays and combines with alternating payloads run back to
+// back with no host sync between them, and every output must be bit-identical between the two.
+// Without the variables both sides run the plain kernels, which checks only the new entry points.
+TEST_F(RcclEpDispatchCombineTest, StreamedPathsMatchPlainKernels)
+{
+    if (!EnvReady()) {
+        GTEST_SKIP() << "rccl_ep needs NCCL_CUMEM_ENABLE=1 and 8 ranks on a single node";
+    }
+    ASSERT_EP_STEP(CreateEp(nRanks_ * kExpertsPerRank, kTopk));
+    hipStream_t stream = nullptr;
+    ASSERT_MPI_EQ(hipSuccess, hipStreamCreate(&stream));
+    SCOPE_EXIT(if (stream != nullptr) (void)hipStreamDestroy(stream));
+
+    Dispatch d;
+    ASSERT_EP_STEP(MakeInputs(d, ExpertFor));
+    ASSERT_EP_STEP(DispatchNotify(d, stream));
+    const size_t hiddenSf = (kHidden + 127) / 128;
+    const size_t rowBytes = kHidden * sizeof(__hip_bfloat16);
+    DevBuf xSf;
+    ASSERT_MPI_TRUE(xSf.Alloc(static_cast<size_t>(kTokens) * hiddenSf * sizeof(float)));
+    // The fp8 rounds reuse the bf16 payload's bytes; nothing decodes them.
+    ASSERT_MPI_EQ(hipSuccess, hipMemset(xSf.p, 0, static_cast<size_t>(kTokens) * hiddenSf * sizeof(float)));
+
+    constexpr int kRounds = 4;  // bf16, bf16, fp8, fp8
+    Dispatch s[kRounds], p[kRounds];
+    DevBuf   sSf[kRounds], pSf[kRounds], cs[kRounds], cp[kRounds];
+    for (int r = 0; r < kRounds; ++r) {
+        ASSERT_EP_STEP(AllocOutputs(s[r], d.cap));
+        ASSERT_EP_STEP(AllocOutputs(p[r], d.cap));
+        ASSERT_MPI_TRUE(sSf[r].Alloc(static_cast<size_t>(d.cap) * hiddenSf * sizeof(float)) &&
+                        pSf[r].Alloc(static_cast<size_t>(d.cap) * hiddenSf * sizeof(float)) &&
+                        cs[r].Alloc(kTokens * rowBytes) && cp[r].Alloc(kTokens * rowBytes));
+    }
+    for (int r = 0; r < kRounds; ++r) {
+        const int     fp8 = r >= 2 ? 1 : 0;
+        const DevBuf& x   = (r % 2) ? d.x2 : d.x;
+        ASSERT_MPI_EQ(0, ep_dispatch_v4(handle_, x.u(), fp8 ? xSf.u() : 0, d.topkIdx.u(), d.topkW.u(), kTokens,
+                                        d.sendList.u(), d.sendc.u(), fp8, kStreamSms, s[r].outX.u(),
+                                        fp8 ? sSf[r].u() : 0, s[r].outTopk.u(), s[r].outTw.u(), s[r].outSrc.u(),
+                                        d.psum.u(), (uintptr_t)stream));
+        ASSERT_MPI_EQ(0, ep_combine_v5(handle_, d.outX.u(), 0, 0, 0, 0, 1, d.outTopk.u(), d.outSrc.u(),
+                                       d.nRecv, d.topkIdx.u(), kTokens, 0, 0, /*grouped=*/1, cs[r].u(), 0,
+                                       kStreamSms, 0, d.slot.u(), (uintptr_t)stream));
+        ASSERT_MPI_EQ(0, ep_dispatch_v2(handle_, x.u(), fp8 ? xSf.u() : 0, d.topkIdx.u(), d.topkW.u(), kTokens,
+                                        d.sendList.u(), d.sendc.u(), fp8, kStreamSms, p[r].outX.u(),
+                                        fp8 ? pSf[r].u() : 0, p[r].outTopk.u(), p[r].outTw.u(), p[r].outSrc.u(),
+                                        0, 0, (uintptr_t)stream));
+        ASSERT_MPI_EQ(0, ep_combine_v4(handle_, d.outX.u(), 0, 0, 0, 0, 1, d.outTopk.u(), d.outSrc.u(),
+                                       d.nRecv, d.topkIdx.u(), kTokens, 0, 0, /*grouped=*/1, cp[r].u(), 0,
+                                       kStreamSms, 0, (uintptr_t)stream));
+    }
+    ASSERT_MPI_EQ(hipSuccess, hipStreamSynchronize(stream));
+
+    auto same = [](const DevBuf& a, const DevBuf& b, size_t bytes) {
+        std::vector<uint8_t> ha, hb;
+        return Download(a, bytes, ha) && Download(b, bytes, hb) && ha == hb;
+    };
+    const size_t n = static_cast<size_t>(d.nRecv);
+    for (int r = 0; r < kRounds; ++r) {
+        const bool fp8 = r >= 2;
+        const size_t xBytes = n * (fp8 ? kHidden : rowBytes);
+        const bool ok = same(s[r].outX, p[r].outX, xBytes) &&
+                        (!fp8 || same(sSf[r], pSf[r], n * hiddenSf * sizeof(float))) &&
+                        same(s[r].outTopk, p[r].outTopk, n * topk_ * sizeof(int32_t)) &&
+                        same(s[r].outTw, p[r].outTw, n * topk_ * sizeof(float)) &&
+                        same(s[r].outSrc, p[r].outSrc, n * sizeof(int32_t)) &&
+                        same(cs[r], cp[r], kTokens * rowBytes);
+        if (!ok) ADD_FAILURE() << "rank " << rank_ << " round " << r << ": streamed and plain outputs differ";
+    }
+    // And the combine is right, not only consistent.
+    ASSERT_EP_STEP(CheckScaledByDestinations(d, cs[0], stream));
 }
 
 // Internode, direct mode: one flat domain; peers on the other node get their rows through

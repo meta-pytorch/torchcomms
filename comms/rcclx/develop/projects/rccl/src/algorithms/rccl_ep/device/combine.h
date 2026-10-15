@@ -285,23 +285,24 @@ __device__ __noinline__ void reduce_token_rows_any(const bf16_t* __restrict__ in
 // kSel picks which source ranks' tokens a launch covers, block-uniformly: 0 all of them;
 // 1 those outside [sel_lo, sel_hi), 2 those inside it. The hybrid combine uses 1 and 2 to push
 // the partials bound for other nodes first (RCCL_EP_HYB_COMB_SPLIT).
+//
+// combine_push is the body for source `src_rank` as CTA `by` of `gy`. seq != 0 (the streamed
+// combine) walks the rows in chunks of chunk_rounds rows per wave and publishes its progress into
+// the origin's window after each (stream_publish).
 template <int kSel>
-__global__ void combine_impl(EpConfig cfg,
-                             const bf16_t* __restrict__ in_y,        // [nrecv, hidden] or [rows, hidden]
-                             const float* __restrict__ in_w,         // weights or nullptr
-                             const int32_t* __restrict__ row_map,    // [nrecv, num_topk] or nullptr
-                             const int64_t* __restrict__ expert_rows, // [experts_per_rank, nrecv] or nullptr
-                             const float* __restrict__ scales,       // [nrecv, num_topk] or nullptr
-                             int fma_mode,
-                             const int32_t* __restrict__ recv_topk,  // [nrecv, num_topk] local ids, -1 outside
-                             const int32_t* __restrict__ src_idx,    // [nrecv]
-                             int num_recv, int grouped, WindowView self, WindowView* __restrict__ peer_views,
-                             int sel_lo, int sel_hi) {
-  // Grid mirrors dispatch: block x owns one SOURCE rank, so the peer view is
-  // loaded once per CTA and every write goes to a single peer. Parallelism is
-  // gridDim.y * nwarps and only gridDim.y follows the budget; see kEpWaves.
-  const int src_rank = blockIdx.x;
-  if (src_rank >= cfg.num_ranks) return;   // block-uniform, so the barrier below is safe
+__device__ __forceinline__ void combine_push(const EpConfig& cfg,
+                                             const bf16_t* __restrict__ in_y,  // [nrecv, hidden] or [rows, hidden]
+                                             const float* __restrict__ in_w,   // weights or nullptr
+                                             const int32_t* __restrict__ row_map,  // [nrecv, num_topk] or nullptr
+                                             const int64_t* __restrict__ expert_rows,  // [epr, nrecv] or nullptr
+                                             const float* __restrict__ scales,  // [nrecv, num_topk] or nullptr
+                                             int fma_mode,
+                                             const int32_t* __restrict__ recv_topk,  // [nrecv, num_topk] local ids
+                                             const int32_t* __restrict__ src_idx,    // [nrecv]
+                                             int num_recv, int grouped, const WindowView& self,
+                                             WindowView* __restrict__ peer_views, int sel_lo, int sel_hi,
+                                             int src_rank, int by, int gy, uint32_t seq = 0,
+                                             int chunk_rounds = 0) {
   if constexpr (kSel != 0) {
     const bool in = src_rank >= sel_lo && src_rank < sel_hi;
     if ((kSel == 2) != in) return;  // block-uniform too
@@ -324,9 +325,9 @@ __global__ void combine_impl(EpConfig cfg,
   const int begin = s_begin, end = s_end;
 
   const WindowView w = peer_views[src_rank];
-  const int stride = nwarps * gridDim.y;
+  const int stride = nwarps * gy;
 
-  for (int i = begin + blockIdx.y * nwarps + warp; i < end && i < num_recv; i += stride) {
+  auto push_row = [&](int i) {
     const int g = src_idx[i];
     const int src_tok = g % cfg.num_max_tokens_per_rank;
     const size_t slot = EpWindowLayout::slot(cfg, cfg.rank, src_tok);
@@ -408,10 +409,51 @@ __global__ void combine_impl(EpConfig cfg,
         if (in_w && lane == 0) w.cw()[slot * K + k] = in_w[row];
       }
     }
+  };
+
+  if (seq == 0) {
+    for (int i = begin + by * nwarps + warp; i < end && i < num_recv; i += stride) push_row(i);
+    // No completion flag: the caller barriers between send and receive, and every
+    // slot the receiver reads is one some rank is guaranteed to have written --
+    // a token only reaches a rank that owns one of its experts.
+    return;
   }
-  // No completion flag: the caller barriers between send and receive, and every
-  // slot the receiver reads is one some rank is guaranteed to have written --
-  // a token only reaches a rank that owns one of its experts.
+  // Chunks as in dispatch_push_bf16, over every row received from src_rank (the origin derives
+  // the chunk of a row from its position alone, so a short num_recv must not shorten the count).
+  uint32_t* word = &w.cprog()[cfg.rank * kStreamMaxPushCta + by];
+  const int rounds = (end - begin + stride - 1) / stride;
+  const int nchunks = (rounds + chunk_rounds - 1) / chunk_rounds;
+  for (int c = 0; c < nchunks; ++c) {
+    const int r1 = min(rounds, (c + 1) * chunk_rounds);
+    for (int r = c * chunk_rounds; r < r1; ++r) {
+      const int i = begin + r * stride + by * nwarps + warp;
+      if (i >= end) break;
+      if (i < num_recv) push_row(i);
+    }
+    stream_publish(word, seq, c + 1);
+  }
+  // An origin this rank holds nothing for waits for no word of it, so there is nothing to publish:
+  // every word an origin reads is one a push CTA writes in this call.
+}
+
+template <int kSel>
+__global__ void combine_impl(EpConfig cfg,
+                             const bf16_t* __restrict__ in_y,        // [nrecv, hidden] or [rows, hidden]
+                             const float* __restrict__ in_w,         // weights or nullptr
+                             const int32_t* __restrict__ row_map,    // [nrecv, num_topk] or nullptr
+                             const int64_t* __restrict__ expert_rows, // [experts_per_rank, nrecv] or nullptr
+                             const float* __restrict__ scales,       // [nrecv, num_topk] or nullptr
+                             int fma_mode,
+                             const int32_t* __restrict__ recv_topk,  // [nrecv, num_topk] local ids, -1 outside
+                             const int32_t* __restrict__ src_idx,    // [nrecv]
+                             int num_recv, int grouped, WindowView self, WindowView* __restrict__ peer_views,
+                             int sel_lo, int sel_hi) {
+  // Grid mirrors dispatch: block x owns one SOURCE rank, so the peer view is
+  // loaded once per CTA and every write goes to a single peer. Parallelism is
+  // gridDim.y * nwarps and only gridDim.y follows the budget; see kEpWaves.
+  if ((int)blockIdx.x >= cfg.num_ranks) return;  // block-uniform, so the barrier inside is safe
+  combine_push<kSel>(cfg, in_y, in_w, row_map, expert_rows, scales, fma_mode, recv_topk, src_idx, num_recv,
+                     grouped, self, peer_views, sel_lo, sel_hi, blockIdx.x, blockIdx.y, gridDim.y);
 }
 
 // Origin-side reduce for a token with more than 8 contributing rows. Out of line so
@@ -467,10 +509,61 @@ __device__ __noinline__ void reduce_token_any_rows(EpConfig cfg, WindowView self
                    bias1 ? bias1 + tbase : nullptr, cfg.hidden, lane);
 }
 
-// Origin side: accumulate across topk slots in strict order, in float32.
+// Origin side for token t: accumulate across topk slots in strict order, in float32.
 // bias0/bias1 are the accumulator's initial value and must seed it BEFORE the
 // topk sum so they share the rounding sequence.
 // `grouped` mirrors the sender: only the owner's last slot is populated.
+__device__ __forceinline__ void combine_reduce_token(const EpConfig& cfg, const WindowView& self,
+                                                     const int32_t* __restrict__ topk_idx, int t, int grouped,
+                                                     const bf16_t* __restrict__ bias0,
+                                                     const bf16_t* __restrict__ bias1,
+                                                     bf16_t* __restrict__ out, float* __restrict__ out_w,
+                                                     int lane) {
+  const int epr = cfg.experts_per_rank();
+  const int K = cfg.num_topk;
+  const size_t tbase = (size_t)t * cfg.hidden;
+
+  // Lane k decides slot k by the same rules as reduce_token_any_rows: the expert id
+  // is in range and, when grouped, no LATER slot has the same owner (the sender
+  // pushed that owner's row to its last slot). The ballot keeps ascending k.
+  const int e = lane < K ? topk_idx[(size_t)t * K + lane] : -1;
+  const int own = e >= 0 ? e / epr : -1;
+  bool take_k = lane < K && e >= 0 && e < cfg.num_experts;
+  if (grouped) {
+    for (int d = 1; d < K; ++d) {
+      const int later = __shfl(own, lane + d, kWarpSize);
+      if (lane + d < K && later == own) take_k = false;
+    }
+  }
+  const size_t my_slot = take_k ? EpWindowLayout::slot(cfg, own, t) : 0;
+  const int32_t my_row = (int32_t)(grouped ? my_slot : (my_slot * K + lane));
+  unsigned long long pending = __ballot(take_k);
+  const int nrow_fast = __popcll(pending);
+  if (nrow_fast <= 8) {
+    int32_t rows8[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      rows8[j] = __shfl(my_row, pending ? __builtin_ctzll(pending) : 0, kWarpSize);
+      pending &= pending - 1;
+    }
+    reduce_rows8_bf16(out + tbase, self.y(), rows8, nrow_fast,
+                      bias0 ? bias0 + tbase : nullptr,
+                      bias1 ? bias1 + tbase : nullptr, cfg.hidden, lane);
+  } else {
+    reduce_token_any_rows(cfg, self, topk_idx, t, grouped, bias0, bias1, out, lane);
+  }
+
+  if (out_w) {
+    for (int k = lane; k < K; k += kWarpSize) {
+      const int e = topk_idx[(size_t)t * K + k];
+      // Any owner of this token has the full weight row; -1 slots were never
+      // sent anywhere, so their weights are written as zero.
+      const int owner = (e >= 0) ? (e / epr) : -1;
+      out_w[(size_t)t * K + k] = (owner >= 0) ? self.cw()[EpWindowLayout::slot(cfg, owner, t) * K + k] : 0.f;
+    }
+  }
+}
+
 __global__ void combine_reduce_epilogue_impl(EpConfig cfg, WindowView self,
                                              const int32_t* __restrict__ topk_idx, // [ntok, num_topk] GLOBAL expert ids
                                              int num_tokens,
@@ -481,57 +574,61 @@ __global__ void combine_reduce_epilogue_impl(EpConfig cfg, WindowView self,
                                              float* __restrict__ out_w) { // [ntok, num_topk] or nullptr
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int stride = nwarps * gridDim.x;
-  const int epr = cfg.experts_per_rank();
-  const int K = cfg.num_topk;
-
   // One wave per token, so gridDim.x * nwarps waves chase num_tokens, and this
   // loop is sensitive in BOTH directions: too few waves and each serialises
   // many tokens, too many and most retire without work while the block still
   // pays for them. Launched at kEpWaves, which is sized for the many-token
   // case; python/rccl_ep_capi.hip records what that costs when tokens are few.
-  for (int t = blockIdx.x * nwarps + warp; t < num_tokens; t += stride) {
-    const size_t tbase = (size_t)t * cfg.hidden;
+  for (int t = blockIdx.x * nwarps + warp; t < num_tokens; t += stride)
+    combine_reduce_token(cfg, self, topk_idx, t, grouped, bias0, bias1, out, out_w, lane);
+}
 
-    // Lane k decides slot k by the same rules as reduce_token_any_rows: the expert id
-    // is in range and, when grouped, no LATER slot has the same owner (the sender
-    // pushed that owner's row to its last slot). The ballot keeps ascending k.
-    const int e = lane < K ? topk_idx[(size_t)t * K + lane] : -1;
-    const int own = e >= 0 ? e / epr : -1;
-    bool take_k = lane < K && e >= 0 && e < cfg.num_experts;
-    if (grouped) {
-      for (int d = 1; d < K; ++d) {
-        const int later = __shfl(own, lane + d, kWarpSize);
-        if (lane + d < K && later == own) take_k = false;
-      }
-    }
-    const size_t my_slot = take_k ? EpWindowLayout::slot(cfg, own, t) : 0;
-    const int32_t my_row = (int32_t)(grouped ? my_slot : (my_slot * K + lane));
-    unsigned long long pending = __ballot(take_k);
-    const int nrow_fast = __popcll(pending);
-    if (nrow_fast <= 8) {
-      int32_t rows8[8];
-#pragma unroll
-      for (int j = 0; j < 8; ++j) {
-        rows8[j] = __shfl(my_row, pending ? __builtin_ctzll(pending) : 0, kWarpSize);
-        pending &= pending - 1;
-      }
-      reduce_rows8_bf16(out + tbase, self.y(), rows8, nrow_fast,
-                        bias0 ? bias0 + tbase : nullptr,
-                        bias1 ? bias1 + tbase : nullptr, cfg.hidden, lane);
-    } else {
-      reduce_token_any_rows(cfg, self, topk_idx, t, grouped, bias0, bias1, out, lane);
-    }
-
-    if (out_w) {
-      for (int k = lane; k < K; k += kWarpSize) {
-        const int e = topk_idx[(size_t)t * K + k];
-        // Any owner of this token has the full weight row; -1 slots were never
-        // sent anywhere, so their weights are written as zero.
-        const int owner = (e >= 0) ? (e / epr) : -1;
-        out_w[(size_t)t * K + k] = (owner >= 0) ? self.cw()[EpWindowLayout::slot(cfg, owner, t) * K + k] : 0.f;
-      }
-    }
+// Streamed combine (RCCL_EP_STREAM_COMBINE): combine_impl and the reduce epilogue in one grid,
+// overlapped. Grid (num_ranks, push_cta + reduce CTAs). Rows y < push_cta push to source
+// blockIdx.x as combine_impl does, in chunks, publishing each (stream_publish); the others reduce
+// this rank's tokens, nwarps consecutive tokens per CTA at a time, each batch once every rank that
+// holds one of them has published the chunk holding it. Owner o pushes this rank's tokens in their
+// send order to o, so token t's row is position slot_of[o][t] there, in chunk
+// slot_of[o][t] / chunk_rows of every one of o's push CTAs. Push CTAs never wait.
+__global__ void combine_stream_impl(EpConfig cfg, const bf16_t* __restrict__ in_y, const float* __restrict__ in_w,
+                                    const int32_t* __restrict__ row_map, const int64_t* __restrict__ expert_rows,
+                                    const float* __restrict__ scales, int fma_mode,
+                                    const int32_t* __restrict__ recv_topk, const int32_t* __restrict__ src_idx,
+                                    int num_recv, int grouped, WindowView self, WindowView* __restrict__ peer_views,
+                                    const int32_t* __restrict__ topk_idx, int num_tokens,
+                                    const int32_t* __restrict__ slot_of,  // [num_ranks, num_tokens], -1 = not sent
+                                    const bf16_t* __restrict__ bias0, const bf16_t* __restrict__ bias1,
+                                    bf16_t* __restrict__ out, float* __restrict__ out_w, int push_cta,
+                                    int chunk_rounds, uint32_t seq) {
+  if ((int)blockIdx.x >= cfg.num_ranks) return;
+  if ((int)blockIdx.y < push_cta) {
+    combine_push<0>(cfg, in_y, in_w, row_map, expert_rows, scales, fma_mode, recv_topk, src_idx, num_recv,
+                    grouped, self, peer_views, 0, 0, blockIdx.x, blockIdx.y, push_cta, seq, chunk_rounds);
+    return;
   }
+  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
+  const int R = cfg.num_ranks;
+  const int nred = R * ((int)gridDim.y - push_cta);
+  const int rid = ((int)blockIdx.y - push_cta) * R + (int)blockIdx.x;
+  const int chunk_rows = chunk_rounds * nwarps * push_cta;
+  for (int t0 = rid * nwarps; t0 < num_tokens; t0 += nred * nwarps) {
+    const int t1 = min(num_tokens, t0 + nwarps);
+    // Lane o: the furthest position among these tokens' rows at owner o fixes how far o must have
+    // pushed. The plans assign positions in token order, but taking the maximum does not rely on it.
+    if ((int)threadIdx.x < R) {
+      const int o = threadIdx.x;
+      int p = -1;
+      for (int t = t0; t < t1; ++t) p = max(p, slot_of[(size_t)o * num_tokens + t]);
+      if (p >= 0) {
+        const uint32_t* words = &self.cprog()[o * kStreamMaxPushCta];
+        for (int b = 0; b < push_cta; ++b) stream_spin(words + b, seq, p / chunk_rows + 1);
+      }
+    }
+    if (threadIdx.x < kWarpSize) __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "");
+    __syncthreads();
+    if (t0 + warp < t1) combine_reduce_token(cfg, self, topk_idx, t0 + warp, grouped, bias0, bias1, out, out_w, lane);
+  }
+  stream_done(self.cprog(), self.sdone() + 1, R, push_cta, nred);
 }
 
 } // namespace rccl_ep
