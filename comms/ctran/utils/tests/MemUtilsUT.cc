@@ -4,8 +4,8 @@
 
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/MemUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/MemUtils.h"
 #include "comms/utils/commSpecs.h"
 
 TEST(MemUtilsTest, SingleAllocationCudaMalloc) {
