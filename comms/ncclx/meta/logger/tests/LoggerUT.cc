@@ -95,7 +95,12 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
           return new DataTableAllTables(createAllMockTables(mockPassthru));
         });
     meta::comms::logger::initCommLoggerRuntime();
+#ifdef NCCL_DEBUG_LEVEL_MASK_UNINITIALIZED
+    // 2.32+ gates on a per-level bitmask instead of a scalar level.
+    ncclDebugLevelMask = NCCL_DEBUG_LEVEL_MASK_UNINITIALIZED;
+#else
     ncclDebugLevel = -1;
+#endif
     initNcclLogger();
   }
 

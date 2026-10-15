@@ -99,6 +99,13 @@ the line prefix and the output destination. Also: `NCCL_LOG_ERROR` joins
 `meta::comms::logger::setSubSystemMask()`; and `ncclMetaDebugLog` /
 `ncclSetMyThreadLoggingName` are defined here.
 
+The exported plugin entry point `ncclDebugLog()` passes the plugin's combined
+`file:function` string as the file at every level (v2_30 does the same in its
+own copy of that function). Upstream 2.32 passes it as the file only for
+WARN/ATTN and as the function only for TRACE, and the sink prefix prints only
+`file:line]`, so plugin INFO/ERROR/VERSION/ABORT lines would lose their source.
+Guarded by `LoggingUT.PluginDebugBridgePreservesSourceMetadata`.
+
 Runtime reconfiguration (v2_30, v2_32): `ncclResetDebugInitInternal()` and the
 new `ncclRefreshDebugInitInternal()` both go through `reconfigureDebugInit()`,
 which re-runs `ncclDebugInit()` and `initNcclLogger(false)` so the native gate
@@ -127,8 +134,8 @@ writes to `ncclDebugFile` directly, and `ncclDebugLogger_t` points the other way
 **Deliberately left in place**: `ncclDebugInit()` still parses
 `NCCL_DEBUG_TIMESTAMP_LEVELS` / `NCCL_DEBUG_TIMESTAMP_FORMAT` /
 `NCCL_DEBUG_FILE` and still caches `hostname`/`pid`, even though the sink now
-supplies those. Keeping the upstream parsing intact keeps the fork to one
-function. The timestamp params are accepted but inert: nothing reads
+supplies those. Keeping the upstream parsing intact keeps the fork to the two
+logging entry points. The timestamp params are accepted but inert: nothing reads
 `ncclDebugTimestamp*` on the sink path, so `ERROR` in
 `NCCL_DEBUG_TIMESTAMP_LEVELS` is a no-op too.
 
