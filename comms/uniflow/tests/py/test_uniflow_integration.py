@@ -8,13 +8,18 @@ Exercises the full path: agent creation → segment registration →
 connection establishment → ctrl message exchange → get() data transfer →
 data correctness verification.
 
-GPU buffers use the normal PyTorch allocator and transfer over RDMA.
+GPU buffers use the normal PyTorch allocator. The agent test uses default
+transport selection; the transport tests verify each backend explicitly.
 """
+
+from __future__ import annotations
 
 import threading
 import unittest
 
 import torch
+from comms.uniflow.tests.py.transfer_test_utils import MultiTransportTransferTest
+from uniflow._core import TransportType
 
 
 _SKIP_NO_MULTI_GPU: bool = (
@@ -196,3 +201,14 @@ class TestUniflowIntegration(unittest.TestCase):
             _NUM_ELEMS, dtype=torch.float32, device="cuda:1"
         )
         torch.testing.assert_close(client_tensor, expected)
+
+
+class MultiTransportIntegrationTest(MultiTransportTransferTest):
+    def test_tcp_vram_put_get(self) -> None:
+        self._put_get(TransportType.TCP, gpu_buffers=True)
+
+    def test_p2p_vram_put_get(self) -> None:
+        self._put_get(TransportType.NVLink, gpu_buffers=True)
+
+    def test_rdma_vram_put_get(self) -> None:
+        self._put_get(TransportType.RDMA, gpu_buffers=True)

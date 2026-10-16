@@ -133,18 +133,28 @@ class TestTypesAndSegment(unittest.TestCase):
             Segment.from_tensor(t)
 
     def test_uniflow_agent_config(self) -> None:
-        from uniflow._core import UniflowAgentConfig
+        from uniflow._core import TransportType, UniflowAgentConfig
 
         config = UniflowAgentConfig(
             device_id=0,
             name="test_agent",
             connect_retries=5,
             connect_timeout_ms=2000,
+            enable_tcp=True,
+            tcp_bind_host="127.0.0.1",
+            preferred_transport=TransportType.TCP,
+            intra_node_transport=TransportType.NVLink,
+            inter_node_transport=TransportType.RDMA,
         )
         self.assertEqual(config.device_id, 0)
         self.assertEqual(config.name, "test_agent")
         self.assertEqual(config.connect_retries, 5)
         self.assertEqual(config.connect_timeout_ms, 2000)
+        self.assertTrue(config.enable_tcp)
+        self.assertEqual(config.tcp_bind_host, "127.0.0.1")
+        self.assertEqual(config.preferred_transport, TransportType.TCP)
+        self.assertEqual(config.intra_node_transport, TransportType.NVLink)
+        self.assertEqual(config.inter_node_transport, TransportType.RDMA)
 
     @unittest.skipUnless(_HAS_GPU, "Requires GPU")
     def test_get_unique_id_with_server(self) -> None:
