@@ -8,6 +8,7 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/utils/DevAttribute.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/commSpecs.h"
 
 #ifndef CTRAN_DISABLE_TCPDM
@@ -589,6 +590,7 @@ template <
 __global__ void ncclKernelAllReduceCtranRing(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allreduce::ring::KernArgs args);
 
 #endif // COMMS_CTRAN_ALLREDUCE_RING_COMMON_CUH

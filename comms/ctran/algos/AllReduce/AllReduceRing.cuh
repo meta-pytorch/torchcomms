@@ -9,6 +9,7 @@
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/algos/localReduce.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_TCPDM_ENABLE
@@ -395,8 +396,9 @@ template <typename T, commRedOp_t RedOp, bool EnableBidirAg, bool Unpack>
 __global__ void ncclKernelAllReduceCtranRing(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allreduce::ring::KernArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
@@ -423,27 +425,30 @@ __global__ void ncclKernelAllReduceCtranRing(
 }
 
 // Instantiation macro for bi-directional AG kernel
-#define DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)  \
-  template __global__ void                             \
-  ncclKernelAllReduceCtranRing<T, RedOp, true, false>( \
-      ctran::gpe::KernelFlagDev * flag,                \
-      CtranAlgoDeviceState * devState,                 \
+#define DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)             \
+  template __global__ void                                        \
+  ncclKernelAllReduceCtranRing<T, RedOp, true, false>(            \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::allreduce::ring::KernArgs args);
 
 // Instantiation macro for simple kernel (no bidir AG, lower register usage)
-#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)  \
-  template __global__ void                              \
-  ncclKernelAllReduceCtranRing<T, RedOp, false, false>( \
-      ctran::gpe::KernelFlagDev * flag,                 \
-      CtranAlgoDeviceState * devState,                  \
+#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)            \
+  template __global__ void                                        \
+  ncclKernelAllReduceCtranRing<T, RedOp, false, false>(           \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::allreduce::ring::KernArgs args);
 
 // Instantiation macro for simple kernel with TCPDM unpack
-#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE_UNPACK(T, RedOp) \
-  template __global__ void                                    \
-  ncclKernelAllReduceCtranRing<T, RedOp, false, true>(        \
-      ctran::gpe::KernelFlagDev * flag,                       \
-      CtranAlgoDeviceState * devState,                        \
+#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE_UNPACK(T, RedOp)     \
+  template __global__ void                                        \
+  ncclKernelAllReduceCtranRing<T, RedOp, false, true>(            \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::allreduce::ring::KernArgs args);
 
 // Combined macro to instantiate all kernel variants

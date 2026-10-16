@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 #ifndef CTRAN_DISABLE_TCPDM
 #include "comms/tcp_devmem/unpack/batch_unpack_kernel.cuh"
@@ -19,8 +20,9 @@ template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::broadcast::KernelArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
@@ -76,10 +78,11 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
   }
 }
 
-#define DECL_BROADCAST_KERN(UNPACK)                     \
-  template __global__ void ncclKernelBroadcast<UNPACK>( \
-      ctran::gpe::KernelFlagDev * flag,                 \
-      CtranAlgoDeviceState * devState,                  \
+#define DECL_BROADCAST_KERN(UNPACK)                               \
+  template __global__ void ncclKernelBroadcast<UNPACK>(           \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::broadcast::KernelArgs args)
 
 DECL_BROADCAST_KERN(/*UNPACK=*/false);

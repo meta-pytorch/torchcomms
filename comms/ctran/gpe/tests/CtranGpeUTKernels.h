@@ -5,12 +5,14 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 constexpr int numKElems = 10;
 
 __global__ void CtranGpeTestKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);
 
 struct CtranKernelCustomArgs {
@@ -22,6 +24,7 @@ struct CtranKernelCustomArgs {
 __global__ void CtranGpeTestCustomArgsKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelCustomArgs args);
 
 __global__ void CtranGpeTestStartAndExitKernel(ctran::gpe::KernelFlagDev* flag);
@@ -31,16 +34,19 @@ __global__ void CtranGpeTestTerminateKernel(ctran::gpe::KernelFlagDev* flag);
 __global__ void CtranGpeTestKElemsKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);
 
 __global__ void CtranGpeTestOneFlagKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);
 
 __global__ void CtranGpeTestPerBlockFlagKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);
 
 struct CtranKernelFtArgs {
@@ -50,19 +56,23 @@ struct CtranKernelFtArgs {
 __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args);
 
 __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args);
 
 __global__ void CtranGpeTestFtBaseKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args);
 
 __global__ void CtranGpeTestFtShmAbortKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args);
