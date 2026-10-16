@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 template <typename T>
 __device__ void prepareRedArg(
@@ -130,8 +131,9 @@ template <typename T, commRedOp_t RedOp>
 __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::reducescatter::KernelArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
   // channels.
@@ -155,11 +157,12 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
   }
 }
 
-#define DECL_CTRAN_REDUCESCATTERDIRECT_KERN(T, RedOp) \
-  template __global__ void __launch_bounds__(1024, 1) \
-      ncclKernelReduceScatterDirect<T, RedOp>(        \
-          ctran::gpe::KernelFlagDev * flag,           \
-          CtranAlgoDeviceState * devState,            \
+#define DECL_CTRAN_REDUCESCATTERDIRECT_KERN(T, RedOp)                 \
+  template __global__ void __launch_bounds__(1024, 1)                 \
+      ncclKernelReduceScatterDirect<T, RedOp>(                        \
+          ctran::gpe::KernelFlagDev * flag,                           \
+          CtranAlgoDeviceState * devState,                            \
+          meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
           ctran::reducescatter::KernelArgs args)
 
 #endif

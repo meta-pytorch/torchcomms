@@ -27,8 +27,9 @@
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
-#include "comms/utils/colltrace/CollRecord.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/v1/CollRecord.h"
+#include "comms/utils/colltrace/v2/CollTraceV2.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran;
@@ -172,9 +173,12 @@ commResult_t CtranGpe::Impl::submit(
           kernelConfig.stream, streamCaptureInfo));
   bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
 
+  const bool useCollTraceV2 = meta::comms::colltracev2::enabled() &&
+      ctran::gpe::inKernelColltraceSupported();
   // Only graph tracing on sm_90+ creates the ring consumed by the kernel.
-  const bool useInKernelColltrace = ctran::gpe::inKernelColltraceSupported() &&
-      isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
+  const bool useInKernelColltrace = !useCollTraceV2 &&
+      ctran::gpe::inKernelColltraceSupported() && isCapturing &&
+      NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
   // Single-kernel collectives emit both boundaries (the KernelConfig defaults);
   // multi-kernel collectives (the AllGatherP pipeline) set these per kernel.
   const bool colltraceEmitStart =
@@ -183,8 +187,6 @@ commResult_t CtranGpe::Impl::submit(
       useInKernelColltrace && kernelConfig.colltraceEmitEnd;
   // Multi-kernel graph collectives create one record at their start boundary.
   const bool colltraceCreatesRecord = !isCapturing || colltraceEmitStart;
-  // Boundary-only kernels still need a flag to carry colltraceHdr.
-  const bool colltraceNeedsFlag = colltraceEmitStart || colltraceEmitEnd;
 
   // For eager (non-capture) submits with empty opGroup but a
   // postKernelCleanup, we still need a cmd + kernelFlag so the GPE thread
@@ -193,13 +195,7 @@ commResult_t CtranGpe::Impl::submit(
   // retainUserObject, avoiding host-node overhead.
   bool needsKernelFlag = !opGroup.empty() ||
       kernelConfig.unpackPool != nullptr ||
-      (kernelConfig.postKernelCleanup && !isCapturing) || colltraceNeedsFlag;
-
-  // A boundary-only kernel never signals KERNEL_STARTED; retain its flag on
-  // the graph instead of routing it through the GPE worker.
-  const bool colltraceOnlyFlag = isCapturing && needsKernelFlag &&
-      opGroup.empty() && func == nullptr &&
-      kernelConfig.unpackPool == nullptr && !kernelConfig.postKernelCleanup;
+      (kernelConfig.postKernelCleanup && !isCapturing);
 
   auto kernelFlag = needsKernelFlag ? this->kernelFlagPool->pop() : nullptr;
   ctran::gpe::KernelFlagDev* flagDev = nullptr;
@@ -224,21 +220,24 @@ commResult_t CtranGpe::Impl::submit(
     flagDev = &kernelFlag->dev;
   }
 
-  // First kernel argument is the KernelFlagDev* (per-block flags + ring
-  // header). The kernel reads flagDev->gpeHdr directly for ring dispatch;
-  // submit() arms it below on the ring path. Remaining args are (devState,
-  // algoArgs).
-  std::array<void*, 3> kernelArgs;
+  // Kernel arguments: (KernelFlagDev*, devState, colltraceHdr, algoArgs). The
+  // kernel reads flagDev->gpeHdr directly for ring dispatch; submit() arms it
+  // below on the ring path. colltraceHdr travels by value, so a kernel is
+  // traced whether or not it has a flag; it is armed below, before the launch
+  // reads it.
+  meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr{};
+  std::array<void*, 4> kernelArgs;
   kernelArgs.at(0) = (void*)&flagDev;
   kernelArgs.at(1) = (void*)&kernelConfig.args.devState_d;
+  kernelArgs.at(2) = (void*)&colltraceHdr;
   if (kernelConfig.algoArgs) {
     // Use pointer to algoArgs if specified; otherwise, pass default
     // args.collective
     // TODO: refactor existing collective args following algoArgs approach, to
     // avoid aggregating algo specific args in a single struct
-    kernelArgs.at(2) = kernelConfig.algoArgs;
+    kernelArgs.at(3) = kernelConfig.algoArgs;
   } else {
-    kernelArgs.at(2) = (void*)&kernelConfig.args.collective;
+    kernelArgs.at(3) = (void*)&kernelConfig.args.collective;
   }
 
   // Record CollTrace event. Must be called before moving opGroup to cmd
@@ -253,16 +252,29 @@ commResult_t CtranGpe::Impl::submit(
       colltraceHandle};
 
   // Arm the collective kernel to publish its own start/end timestamps into the
-  // colltrace ring, replacing the host-launched timestamp kernels for the
-  // grouped/self-timing pipeline collective. The header defaults to disabled
-  // (cleared on flag recycle), so kernels that emit nothing fall through.
-  if (useInKernelColltrace && kernelFlag != nullptr) {
+  // colltrace ring. A default handle means the kernel emits nothing.
+  if (useInKernelColltrace) {
     ctran::gpe::armInKernelColltrace(
         pendingColltraceGroup_,
-        kernelFlag->dev,
+        colltraceHdr,
         colltraceHandle.get(),
         colltraceEmitStart,
         colltraceEmitEnd);
+  }
+  if (useCollTraceV2) {
+    auto& v2 = meta::comms::colltracev2::CollTraceV2::instance();
+    // The id was minted at the NCCL API entry; a collective's first kernel
+    // picks it up and later kernels reuse it. Standalone ctran (no NCCL entry
+    // point) mints its own.
+    if (kernelConfig.colltraceEmitStart) {
+      const auto& commDesc = comm->logMetaData_.commDesc;
+      collTraceV2CollId_ = v2.getLatestCollId(commDesc);
+      if (collTraceV2CollId_ ==
+          meta::comms::colltracev2::COLLTRACE_INVALID_COLLID) {
+        collTraceV2CollId_ = v2.newCollId(commDesc);
+      }
+    }
+    colltraceHdr = v2.getKernelHandle(collTraceV2CollId_);
   }
 
   cudaStream_t launchStream = kernelConfig.stream;
@@ -287,7 +299,7 @@ commResult_t CtranGpe::Impl::submit(
   size_t opGroupSize = 0;
   // Enqueue op to gpeThread if any op is appended, or if there is a
   // postKernelCleanup that needs to run after the kernel completes.
-  if (needsKernelFlag && !colltraceOnlyFlag) {
+  if (needsKernelFlag) {
     // record opGroup size before moving the object
     opGroupSize = opGroup.size();
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
@@ -356,26 +368,6 @@ commResult_t CtranGpe::Impl::submit(
     }
   } else {
     FB_COMMCHECK(maybeAcquireWorkStreamScope());
-  }
-
-  // Colltrace-only graph flag: no GPE cmd is created (the kernel does no GPE
-  // work and never signals the flag), so retain the armed flag on the graph and
-  // reclaim it on destroy — clearPersistent()+reset() makes it reclaimable by
-  // the pool, mirroring what ~CtranGpeCmd does for the cmd path.
-  if (colltraceOnlyFlag) {
-    kernelFlag->setPersistent();
-    FB_COMMCHECKGOTO(
-        utils::cudagraph::retainUserObject(
-            /*obj=*/kernelFlag,
-            /*destroyCallback=*/
-            [](void* p) {
-              auto* f = static_cast<KernelFlagItem*>(p);
-              f->clearPersistent();
-              f->reset();
-            },
-            streamCaptureInfo),
-        res,
-        fail);
   }
 
   // For the no-cmd path during graph capture, retain cleanup on the graph.

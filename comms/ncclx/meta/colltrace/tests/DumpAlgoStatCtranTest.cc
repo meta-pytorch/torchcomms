@@ -8,7 +8,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/DistEnvironmentBase.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/utils/colltrace/AlgoStats.h"
+#include "comms/utils/colltrace/v1/AlgoStats.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 
 #include "comm.h"

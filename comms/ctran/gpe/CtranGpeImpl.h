@@ -29,6 +29,7 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
+#include "comms/utils/colltrace/v2/CollTraceV2.h"
 
 struct CommLogData;
 
@@ -43,10 +44,9 @@ struct alignas(128) KernelFlagItem {
     for (int i = 0; i < numGroups_; i++) {
       dev.flag_[i] = KERNEL_UNSET;
     }
-    // Clear the full ring + colltrace headers (not just enabled) so a stale
-    // ring/cmdId/collId can never be published; submit() re-arms them per-cmd.
+    // Clear the full ring header (not just enabled) so a stale ring/cmdId can
+    // never be published; submit() re-arms it per-cmd.
     dev.gpeHdr = {};
-    dev.colltraceHdr = {};
   }
 
   bool inUse() {
@@ -66,10 +66,9 @@ struct alignas(128) KernelFlagItem {
       dev.flag_[i] = KERNEL_SCHEDULED;
     }
     numGroups_ = 1;
-    // Clear the full ring + colltrace headers (not just enabled) so a stale
-    // ring/cmdId/collId can never be published; submit() re-arms them per-cmd.
+    // Clear the full ring header (not just enabled) so a stale ring/cmdId can
+    // never be published; submit() re-arms it per-cmd.
     dev.gpeHdr = {};
-    dev.colltraceHdr = {};
   }
 
   bool testFlagAllGroups(int flag) {
@@ -319,6 +318,10 @@ class CtranGpe::Impl {
   // (capture) thread, and a group's submits are always contiguous, so a single
   // pending slot suffices.
   meta::comms::colltrace::ColltraceDeviceHandle pendingColltraceGroup_{};
+  // Colltrace v2 id of the collective currently being submitted; same
+  // single-slot reasoning as pendingColltraceGroup_.
+  uint64_t collTraceV2CollId_{
+      meta::comms::colltracev2::COLLTRACE_INVALID_COLLID};
 
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.

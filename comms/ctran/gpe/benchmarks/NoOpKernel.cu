@@ -5,4 +5,5 @@
 __global__ void NoOpKernel(
     ctran::gpe::KernelFlagDev* /*flag*/,
     CtranAlgoDeviceState* /*devState*/,
+    meta::comms::colltrace::ColltraceDeviceHandle /*colltraceHdr*/,
     ctran::allgather::KernelArgs /*args*/) {}

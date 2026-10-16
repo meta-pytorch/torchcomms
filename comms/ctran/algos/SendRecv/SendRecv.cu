@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 #ifndef CTRAN_DISABLE_TCPDM
 #include "comms/tcp_devmem/unpack/batch_unpack_kernel.cuh"
@@ -18,8 +19,9 @@ __shared__ UnpackBlockState sendRecvUnpack;
 __global__ void __launch_bounds__(1024, 1) ncclKernelSend(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::sendrecv::KernelSendArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
@@ -50,8 +52,9 @@ template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::sendrecv::KernelRecvArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
@@ -92,8 +95,9 @@ template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::sendrecv::KernelSendRecvArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
@@ -137,14 +141,16 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
   }
 }
 
-#define DECL_SENDRECV_KERN(UNPACK)                     \
-  template __global__ void ncclKernelRecv<UNPACK>(     \
-      ctran::gpe::KernelFlagDev * flag,                \
-      CtranAlgoDeviceState * devState,                 \
-      ctran::sendrecv::KernelRecvArgs args);           \
-  template __global__ void ncclKernelSendRecv<UNPACK>( \
-      ctran::gpe::KernelFlagDev * flag,                \
-      CtranAlgoDeviceState * devState,                 \
+#define DECL_SENDRECV_KERN(UNPACK)                                \
+  template __global__ void ncclKernelRecv<UNPACK>(                \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
+      ctran::sendrecv::KernelRecvArgs args);                      \
+  template __global__ void ncclKernelSendRecv<UNPACK>(            \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::sendrecv::KernelSendRecvArgs args)
 
 DECL_SENDRECV_KERN(/*UNPACK=*/false);

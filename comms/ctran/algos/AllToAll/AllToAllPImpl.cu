@@ -3,6 +3,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/barrier.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 namespace ctran::alltoallp {
 // Sync-only kernel for the host-CE-copy AllToAllP path. The intra-node data is
@@ -16,8 +17,9 @@ namespace ctran::alltoallp {
 // ncclKernelAllGatherPDirect.
 __global__ void ncclKernelAllToAllPDirect(
     ctran::gpe::KernelFlagDev* f,
-    CtranAlgoDeviceState* devState) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr) {
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);

@@ -10,6 +10,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 __device__ inline void prepareBcastArg(
     KernelElem* elemH,
@@ -50,8 +51,9 @@ template <typename T>
 __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
@@ -71,8 +73,9 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
   }
 }
 
-#define DECL_CTRAN_ALLGATHERDIRECT_KERN(T)                    \
-  template __global__ void ncclKernelAllGatherCtranDirect<T>( \
-      ctran::gpe::KernelFlagDev * flag,                       \
-      CtranAlgoDeviceState * devState,                        \
+#define DECL_CTRAN_ALLGATHERDIRECT_KERN(T)                        \
+  template __global__ void ncclKernelAllGatherCtranDirect<T>(     \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::allgather::KernelArgs args)
