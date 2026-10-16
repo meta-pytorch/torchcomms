@@ -3,6 +3,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import gc
+import os
 import unittest
 
 import torch
@@ -14,6 +15,8 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
 
 class NvlsWindowReduceScatterTest(unittest.TestCase):
     def test_window_slices_reuse_and_close(self):
+        if os.environ["TEST_BACKEND"] != "mccl":
+            self.skipTest("Owned windows require the MCCL backend")
         wrapper = TorchCommTestWrapper()
         comm = wrapper.get_torchcomm()
         rank, size = comm.get_rank(), comm.get_size()
