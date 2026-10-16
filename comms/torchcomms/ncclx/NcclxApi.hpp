@@ -20,6 +20,11 @@
 // For conda feedstock builds with older NCCLX versions, device API is disabled
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 #include <nccl_device/core.h> // @manual=//comms/ncclx:nccl
+// NCCLX 2.32 moved the host-side device API (devcomm create/destroy, window
+// device pointers, teams) from core.h to host.h.
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 32, 0)
+#include <nccl_device/host.h> // @manual=//comms/ncclx:nccl
+#endif
 #endif
 
 namespace torch::comms {

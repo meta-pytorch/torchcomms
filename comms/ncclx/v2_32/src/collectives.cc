@@ -534,6 +534,91 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   return baseRecv(recvbuff, count, datatype, peer, comm, stream);
 }
 
+NCCL_API(
+    ncclResult_t,
+    ncclAllToAllv,
+    const void* sendbuff,
+    const size_t sendcounts[],
+    const size_t sdispls[],
+    void* recvbuff,
+    const size_t recvcounts[],
+    const size_t rdispls[],
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream);
+ncclResult_t ncclAllToAllv(
+    const void* sendbuff,
+    const size_t sendcounts[],
+    const size_t sdispls[],
+    void* recvbuff,
+    const size_t recvcounts[],
+    const size_t rdispls[],
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream) {
+  NCCLCHECK(CommCheck(comm, "ncclAllToAllv", "comm"));
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
+  NCCLCHECK(PtrCheck((void*)sendcounts, "sendcounts", "ncclAllToAllv"));
+  NCCLCHECK(PtrCheck((void*)recvcounts, "recvcounts", "ncclAllToAllv"));
+  // sendbuff/recvbuff can be NULL only if sendcounts/recvcounts is 0
+  size_t totalSendCount = 0, totalRecvCount = 0;
+  for (int i = 0; i < comm->nRanks; i++) {
+    totalSendCount += sendcounts[i];
+    totalRecvCount += recvcounts[i];
+  }
+
+  if (totalSendCount > 0) {
+    NCCLCHECK(CudaPtrCheck(sendbuff, comm, "sendbuff", "ncclAllToAllv"));
+  }
+  if (totalRecvCount > 0) {
+    NCCLCHECK(CudaPtrCheck(recvbuff, comm, "recvbuff", "ncclAllToAllv"));
+  }
+
+  if (totalSendCount && totalRecvCount && sendbuff == recvbuff) {
+    ERR(
+        ncclInvalidArgument,
+        "Found sendbuff %p == recvbuff %p. In-place ncclAllToAllv is not supported.",
+        sendbuff,
+        recvbuff);
+    return ncclInvalidArgument;
+  }
+
+  if ((NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo) == NCCL_ALLTOALLV_ALGO::ctran) &&
+      ctranAllToAllvSupport(comm->ctranComm_.get())) {
+    return metaCommToNccl(ctranAllToAllv(
+        sendbuff,
+        sendcounts,
+        sdispls,
+        recvbuff,
+        recvcounts,
+        rdispls,
+        ncclToMetaComm(datatype),
+        comm->ctranComm_.get(),
+        stream));
+  }
+
+  // fallback to baseline send/recv based alltoallv
+  NCCLCHECK(ncclGroupStart());
+  for (int r = 0; r < comm->nRanks; r++) {
+    NCCLCHECK(baseSend(
+        ((char*)sendbuff) + sdispls[r] * ncclTypeSize(datatype),
+        sendcounts[r],
+        datatype,
+        r,
+        comm,
+        stream));
+    NCCLCHECK(baseRecv(
+        ((char*)recvbuff) + rdispls[r] * ncclTypeSize(datatype),
+        recvcounts[r],
+        datatype,
+        r,
+        comm,
+        stream));
+  }
+  NCCLCHECK(ncclGroupEnd());
+  return ncclSuccess;
+}
+
 NCCL_API(ncclResult_t, ncclPutSignal, const void* localbuff, size_t count, ncclDataType_t datatype, int peer,
          ncclWindow_t peerWin, size_t peerWinOffset, int sigIdx, int ctx, unsigned int flags, ncclComm_t comm,
          cudaStream_t stream);
@@ -617,4 +702,112 @@ ncclResult_t ncclWaitSignal(int nDesc, ncclWaitSignalDesc_t* signalDescs, ncclCo
                           nDesc,
                           signalDescs}; /* nDesc, signalDescs */
   return ncclEnqueueCheck(&info);
+}
+
+// [NCCLX] Retired dynamic-collective surface; kept for source and symbol
+// compatibility. Mirrors v2_30: each entry returns ncclInvalidUsage.
+__attribute__((visibility("default")))
+ncclResult_t ncclx::deviceAllToAllv(
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    const int64_t* /*sendcounts_d*/,
+    const int64_t* /*recvcounts_d*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    cudaStream_t /*stream*/,
+    int64_t /*sendcountsMultiplier*/,
+    int64_t /*recvcountsMultiplier*/,
+    const std::unordered_map<std::string, std::string>& /*hints*/) {
+  WARN("deviceAllToAllv: retired NCCLX API, returning ncclInvalidUsage");
+  return ncclInvalidUsage;
+}
+
+__attribute__((visibility("default")))
+ncclResult_t ncclx::alltoallvDynamic(
+    const void* const* /*sendbuffs*/,
+    const size_t* /*sendcounts*/,
+    void* const* /*recvbuffs*/,
+    size_t /*maxSendcount*/,
+    size_t /*maxRecvcount*/,
+    size_t* /*actualRecvcounts*/,
+    const ncclx::Hints& /*hints*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    cudaStream_t /*stream*/) {
+  WARN("alltoallvDynamic: retired NCCLX API, returning ncclInvalidUsage");
+  return ncclInvalidUsage;
+}
+
+__attribute__((visibility("default")))
+ncclResult_t ncclx::alltoallvDynamicSplit(
+    const void* /*sendbuff*/,
+    const size_t* /*sendSplitLengths*/,
+    void* const* /*recvbuffs*/,
+    size_t /*maxSendcount*/,
+    size_t /*maxRecvcount*/,
+    size_t* /*actualRecvcounts*/,
+    const ncclx::Hints& /*hints*/,
+    ncclDataType_t /*datatype*/,
+    ncclComm_t /*comm*/,
+    cudaStream_t /*stream*/) {
+  WARN("alltoallvDynamicSplit: retired NCCLX API, returning ncclInvalidUsage");
+  return ncclInvalidUsage;
+}
+
+__attribute__((visibility("default")))
+ncclResult_t ncclx::alltoallvDynamicSplitNonContig(
+  const void* /*sendbuff*/,
+  const size_t* /*sendSplitLengths*/,
+  size_t /*numSendSplitLengths*/,
+  const size_t* /*sendIndices*/,
+  const size_t* /*sendIndicesBlockLengths*/,
+  void* const* /*recvbuffs*/,
+  size_t* /*recvAllSplitLengths*/,
+  size_t* /*recvIndices*/,
+  size_t* /*recvIndicesBlockLengths*/,
+  size_t /*maxSendcount*/,
+  size_t /*maxRecvcount*/,
+  const ncclx::Hints& /*hints*/,
+  ncclDataType_t /*datatype*/,
+  ncclComm_t /*comm*/,
+  cudaStream_t /*stream*/) {
+  WARN("alltoallvDynamicSplitNonContig: retired NCCLX API, returning ncclInvalidUsage");
+  return ncclInvalidUsage;
+}
+
+__attribute__((visibility("default")))
+ncclResult_t ncclx::alltoallvDynamicDispatch(
+  const void* /*sendbuff*/,
+  const size_t* /*sendSplitLengths*/,
+  size_t /*numSendSplitLengths*/,
+  const size_t* /*sendIndices*/,
+  const size_t* /*sendIndicesBlockLengths*/,
+  void* const* /*recvbuffs*/,
+  size_t* /*recvAllSplitLengths*/,
+  size_t /*maxSendcount*/,
+  size_t /*maxRecvcount*/,
+  const ncclx::Hints& /*hints*/,
+  ncclDataType_t /*datatype*/,
+  ncclComm_t /*comm*/,
+  cudaStream_t /*stream*/) {
+  WARN("alltoallvDynamicDispatch: retired NCCLX API, returning ncclInvalidUsage");
+  return ncclInvalidUsage;
+}
+
+__attribute__((visibility("default")))
+ncclResult_t ncclx::alltoallvDynamicCombine(
+  const void* /*sendbuff*/,
+  const size_t* /*sendSplitLengths*/,
+  size_t /*numSendSplitLengths*/,
+  const size_t* /*sendIndices*/,
+  const size_t* /*sendIndicesBlockLengths*/,
+  void* /*recvbuff*/,
+  size_t /*maxSendcount*/,
+  size_t /*maxRecvcount*/,
+  const ncclx::Hints& /*hints*/,
+  ncclDataType_t /*datatype*/,
+  ncclComm_t /*comm*/,
+  cudaStream_t /*stream*/) {
+  WARN("alltoallvDynamicCombine: retired NCCLX API, returning ncclInvalidUsage");
+  return ncclInvalidUsage;
 }
