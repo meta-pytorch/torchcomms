@@ -10,7 +10,7 @@
 #endif
 
 #ifdef UNIFLOW_ENABLE_P2P_TRANSPORT
-#include "comms/uniflow/transport/p2p/P2pTransport.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pTransport.h"
 #endif
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
 #include <arpa/inet.h>
@@ -113,9 +113,7 @@ bool isLoopbackHost(const std::string& host) {
 }
 #endif
 
-} // namespace
-
-void addExtensionTransportFactories(
+void addFactories(
     int deviceId,
     EventBase* evb,
     const MultiTransportFactoryOptions& options,
@@ -224,21 +222,48 @@ void addExtensionTransportFactories(
 #endif
 }
 
-Status extensionTransportSupported(TransportType type) {
+Status transportSupported(TransportType type) {
   switch (type) {
-#ifdef UNIFLOW_ENABLE_P2P_TRANSPORT
     case TransportType::NVLink:
+#ifdef UNIFLOW_ENABLE_P2P_TRANSPORT
       return P2pTransportFactory::supported();
+#else
+      break;
 #endif
-#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
     case TransportType::TCP:
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
       return TcpTransportFactory::supported();
+#else
+      break;
 #endif
-    default:
-      return Err(
-          ErrCode::NotImplemented,
-          "transport not linked; add uniflow_extensions:default_transports");
+    case TransportType::RDMA:
+    case TransportType::Mock:
+    case TransportType::NumTransportType:
+      break;
   }
+  return Err(
+      ErrCode::NotImplemented,
+      "transport not linked; add uniflow_extensions:default_transports");
+}
+
+[[maybe_unused]] const bool initialized = [] {
+  detail::extensionTransportFactories = addFactories;
+  detail::extensionTransportSupport = transportSupported;
+  return true;
+}();
+
+} // namespace
+
+void addExtensionTransportFactories(
+    int deviceId,
+    EventBase* evb,
+    const MultiTransportFactoryOptions& options,
+    std::vector<std::shared_ptr<TransportFactory>>& factories) {
+  addFactories(deviceId, evb, options, factories);
+}
+
+Status extensionTransportSupported(TransportType type) {
+  return transportSupported(type);
 }
 
 } // namespace uniflow

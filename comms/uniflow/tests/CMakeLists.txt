@@ -81,7 +81,7 @@ if(UNIFLOW_ENABLE_RDMA)
   add_subdirectory(../transport/rdma/tests rdma_tests)
 endif()
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  add_subdirectory(../transport/p2p/tests p2p_tests)
+  add_subdirectory("${UNIFLOW_EXTENSIONS_DIR}/transport/p2p/tests" p2p_tests)
 endif()
 
 if(UNIFLOW_ENABLE_RDMA AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
