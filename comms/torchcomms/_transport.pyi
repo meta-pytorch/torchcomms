@@ -1,1 +1,0 @@
-transport/_transport.pyi

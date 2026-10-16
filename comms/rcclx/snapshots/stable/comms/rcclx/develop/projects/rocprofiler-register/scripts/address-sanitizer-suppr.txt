@@ -1,3 +1,0 @@
-#
-# AddressSanitizer suppressions file for rocprofiler-register project.
-#

@@ -1,8 +1,0 @@
-# These dependencies should be installed using pip in order
-# to build the documentation.
-
-sphinx
-sphinxcontrib-programoutput
-sphinx-rtd-theme
-# Restrict to pygments <2.13
-pygments <2.13

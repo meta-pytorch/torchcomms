@@ -1,7 +1,0 @@
-# $Id$
-
-COMPSRCS += components/bgpm/NWunit/linux-NWunit.c 
-COMPOBJS += linux-NWunit.o 
-
-linux-NWunit.o: components/bgpm/NWunit/linux-NWunit.c components/bgpm/NWunit/linux-NWunit.h $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/bgpm/NWunit/linux-NWunit.c -o linux-NWunit.o

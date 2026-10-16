@@ -1,7 +1,0 @@
-# $Id$
-
-COMPSRCS += components/emon/linux-emon.c
-COMPOBJS += linux-emon.o
-
-linux-emon.o: components/emon/linux-emon.c $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/emon/linux-emon.c -o linux-emon.o -I/bgsys/drivers/ppcfloor

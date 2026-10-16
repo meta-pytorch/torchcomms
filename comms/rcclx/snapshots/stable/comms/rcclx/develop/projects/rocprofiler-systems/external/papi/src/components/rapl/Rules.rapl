@@ -1,6 +1,0 @@
-
-COMPSRCS += components/rapl/linux-rapl.c 
-COMPOBJS += linux-rapl.o
-
-linux-rapl.o: components/rapl/linux-rapl.c
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/rapl/linux-rapl.c -o linux-rapl.o 

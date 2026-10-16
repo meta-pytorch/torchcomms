@@ -1,9 +1,0 @@
-services:
-  doctest: # service name
-    build:
-      context: ../../../
-      dockerfile: projects/rocprofiler-compute/docker/Dockerfile.doctest
-    volumes:
-      - ../../../:/app
-    tty: true
-    stdin_open: true

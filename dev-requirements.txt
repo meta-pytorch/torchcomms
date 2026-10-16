@@ -1,8 +1,0 @@
-# Add any requirements needed for development or CI here.
-pytest
-numpy
-psutil
-lintrunner
-parameterized
-pydot
-expecttest

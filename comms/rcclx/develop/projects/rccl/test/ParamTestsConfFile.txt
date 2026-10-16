@@ -1,3 +1,0 @@
-# Comment: This file is required to run unit tests for param.cc
-TEST_VAR_WITH_NO_VALUE
-TEST_VAR=12345

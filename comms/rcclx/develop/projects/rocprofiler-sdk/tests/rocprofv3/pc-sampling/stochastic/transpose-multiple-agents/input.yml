@@ -1,9 +1,0 @@
-jobs:
-  - kernel_trace: true
-    pc_sampling_unit: "cycles"
-    pc_sampling_method: "stochastic"
-    pc_sampling_interval: 1048576
-    output_file: "out"
-    output_format:
-      - "csv"
-      - "json"
