@@ -1,3 +1,7 @@
+> AMD-owned files and transports live in `neteng/network_ai/uniflow_extensions`.
+> Consumers link `:default_transports`; shared CUDA/RDMA sources still hipify in core.
+> CMake builds use `-DUNIFLOW_BUILD_EXTENSIONS=ON` and the extension source directory.
+
 # Building Uniflow for AMD GPUs
 
 This document describes how to build uniflow with AMD GPU support using ROCm/HIP.

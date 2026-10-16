@@ -52,6 +52,9 @@ option(UNIFLOW_BUILD_BENCHMARKS "Build UniFlow benchmarks" OFF)
 
 set(UNIFLOW_MINIMUM_CUDA_VERSION 12.8)
 include(UniflowGpuPlatform)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP AND NOT UNIFLOW_BUILD_EXTENSIONS)
+  message(FATAL_ERROR "AMD builds require UNIFLOW_BUILD_EXTENSIONS=ON.")
+endif()
 
 function(_uniflow_resolve_feature_option name description default_value)
   if(DEFINED ${name})
