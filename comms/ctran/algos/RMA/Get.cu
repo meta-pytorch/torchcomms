@@ -4,7 +4,7 @@
 #include <cuda_runtime_api.h>
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeKernelDev.cuh"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 __global__ void ncclKernelGet(
     ctran::gpe::KernelFlagDev* f,

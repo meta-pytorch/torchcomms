@@ -9,11 +9,11 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/gpe/CtranGpe.h"
-#include "comms/utils/colltrace/CPUWaitEvent.h"
-#include "comms/utils/colltrace/CollMetadataImpl.h"
-#include "comms/utils/colltrace/DummyCollTraceHandle.h"
-#include "comms/utils/colltrace/GenericMetadata.h"
-#include "comms/utils/colltrace/tests/MockTypes.h"
+#include "comms/utils/colltrace/v1/CPUWaitEvent.h"
+#include "comms/utils/colltrace/v1/CollMetadataImpl.h"
+#include "comms/utils/colltrace/v1/DummyCollTraceHandle.h"
+#include "comms/utils/colltrace/v1/GenericMetadata.h"
+#include "comms/utils/colltrace/v1/tests/MockTypes.h"
 #include "comms/utils/commSpecs.h"
 
 using namespace meta::comms::colltrace;

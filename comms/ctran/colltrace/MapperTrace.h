@@ -13,7 +13,7 @@
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/TypeUtils.h"
-#include "comms/utils/colltrace/CollRecord.h"
+#include "comms/utils/colltrace/v1/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 // Allow test class to access private members

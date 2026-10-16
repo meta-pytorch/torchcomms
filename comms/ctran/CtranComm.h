@@ -27,8 +27,8 @@
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/window/WinCache.h"
-#include "comms/utils/colltrace/AlgoStats.h"
-#include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/utils/colltrace/v1/AlgoStats.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
 using meta::comms::CommBackend;

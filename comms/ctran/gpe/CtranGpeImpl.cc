@@ -27,8 +27,8 @@
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
-#include "comms/utils/colltrace/CollRecord.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/v1/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran;

@@ -10,8 +10,8 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
-#include "comms/utils/colltrace/GraphCollTraceEvent.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/GraphCollTraceEvent.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
 

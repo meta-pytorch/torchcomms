@@ -14,7 +14,7 @@
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/CudaGraphUtils.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include <folly/ScopeGuard.h>
