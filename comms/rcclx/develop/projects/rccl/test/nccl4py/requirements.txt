@@ -1,2 +1,0 @@
-# Testing dependencies for the nccl4py build-smoke harness
-pytest

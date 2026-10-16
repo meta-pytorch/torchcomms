@@ -1,3 +1,0 @@
-Checks: '-*,kokkos-*,modernize-use-using,modernize-use-nullptr,cppcoreguidelines-pro-type-cstyle-cast'
-FormatStyle: file
-HeaderFilterRegex: '.*/*.hpp'

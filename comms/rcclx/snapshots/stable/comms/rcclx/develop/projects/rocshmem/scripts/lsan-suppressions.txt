@@ -1,5 +1,0 @@
-leak:pmix.so
-leak:hwloc.so
-leak:open-pal.so
-leak:ucs.so
-leak:uct.so

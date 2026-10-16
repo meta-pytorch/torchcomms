@@ -1,5 +1,0 @@
-pmc:
-
-gpu:
-range:
-kernel: "vecCopy(double*,,double*,,double*,,int,,int),[clone,.kd]"

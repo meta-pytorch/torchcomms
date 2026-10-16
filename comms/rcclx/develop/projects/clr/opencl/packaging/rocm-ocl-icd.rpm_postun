@@ -1,5 +1,0 @@
-if [ $1 -eq 0 ]; then
-  # ldconfig during remove/uninstall operation. No ldconfig during upgrade
-  ldconfig
-fi
-

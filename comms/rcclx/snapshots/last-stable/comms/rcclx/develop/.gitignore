@@ -1,8 +1,0 @@
-# Copyright (c) 2015-2016, NVIDIA CORPORATION. All rights reserved.
-*.gcov
-/coverage/
-build/
-ext/
-
-# Visual Studio Code
-.vscode
