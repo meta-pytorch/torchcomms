@@ -183,10 +183,6 @@ CollTrace::CollTrace(
 
 void CollTrace::warmupGraphTracing(
     const std::function<CommsMaybeVoid(void)>& threadSetupFunc) {
-  // This can overlap a capture the user starts right after init returns, so
-  // keep its CUDA calls out of that capture regardless of what
-  // threadSetupFunc does to the capture mode.
-  StreamCaptureModeGuard captureGuard{cudaStreamCaptureModeRelaxed};
   // The latch below is counted down exactly once on every path that returns,
   // so record-side waits terminate on recoverable failures (which leave
   // ringBuffer_ null). Calibration failures abort()/LOG(FATAL) by default and
@@ -195,11 +191,18 @@ void CollTrace::warmupGraphTracing(
     if (config_.beforeGraphWarmupHook) {
       config_.beforeGraphWarmupHook();
     }
+    // threadSetupFunc selects the device before any other CUDA call on this
+    // thread: a runtime call made first (the capture-mode exchange included)
+    // creates the primary context on device 0, not the communicator's device.
     if (auto res = threadSetupFunc(); res.hasError()) {
       COMMS_LOGGER_STREAM(*logger_, ERR)
           << logPrefix_
           << ": graph warmup device setup failed: " << res.error().message;
     } else {
+      // This can overlap a capture the user starts right after init returns,
+      // so keep the CUDA calls below out of that capture regardless of what
+      // threadSetupFunc does to the capture mode.
+      StreamCaptureModeGuard captureGuard{cudaStreamCaptureModeRelaxed};
       // Calibrate before publishing the ring: the poll thread reads the
       // calibration as soon as it sees a ring.
       ::hrdw_ring_buffer::GlobaltimerCalibration::get();
