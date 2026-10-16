@@ -18,7 +18,6 @@
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/MultiTransport.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
-#include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
 #include "comms/uniflow/transport/Topology.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
@@ -353,7 +352,6 @@ enum class TransferOp { Put, Get };
 enum class MemType {
   Dram, // CPU memory (std::vector)
   CudaMalloc, // GPU memory via cudaMalloc
-  Fabric, // GPU memory via cuMem VMM with CU_MEM_HANDLE_TYPE_FABRIC
 };
 
 struct CrossHostTransferParam {
@@ -371,11 +369,7 @@ std::string crossHostParamName(
 }
 
 bool isGpu(MemType t) {
-  return t == MemType::CudaMalloc || t == MemType::Fabric;
-}
-
-bool isFabric(MemType t) {
-  return t == MemType::Fabric;
+  return t == MemType::CudaMalloc;
 }
 
 const size_t kLargeBufferSize = 12 * 1024 * 1024 + 12 * 1024; // 12MB + 12KB
@@ -403,143 +397,12 @@ struct CudaBuffer {
   CudaBuffer& operator=(const CudaBuffer&) = delete;
 };
 
-// RAII wrapper for cuMem VMM GPU memory allocation.
-// Uses cuMemCreate with CU_MEM_HANDLE_TYPE_FABRIC for MNNVL.
-#ifndef __HIP_PLATFORM_AMD__
-class VmmAllocation {
- public:
-  VmmAllocation() = default;
-
-  Status alloc(CudaDriverApi& driverApi, int deviceId, size_t requestedSize) {
-    driverApi_ = &driverApi;
-
-    CUdevice device;
-    CHECK_RETURN(driverApi_->cuDeviceGet(&device, deviceId));
-
-    CUmemAllocationProp prop{};
-    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    prop.location.id = device;
-    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
-
-    CHECK_RETURN(driverApi_->cuMemGetAllocationGranularity(
-        &granularity_, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
-
-    size_ = ((requestedSize + granularity_ - 1) / granularity_) * granularity_;
-
-    CHECK_RETURN(driverApi_->cuMemCreate(&allocHandle_, size_, &prop, 0));
-    created_ = true;
-
-    CHECK_RETURN(
-        driverApi_->cuMemAddressReserve(&ptr_, size_, granularity_, 0, 0));
-    reserved_ = true;
-
-    CHECK_RETURN(driverApi_->cuMemMap(ptr_, size_, 0, allocHandle_, 0));
-    mapped_ = true;
-
-    CUmemAccessDesc accessDesc{};
-    accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    accessDesc.location.id = device;
-    accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    CHECK_RETURN(driverApi_->cuMemSetAccess(ptr_, size_, &accessDesc, 1));
-
-    return Ok();
-  }
-
-  ~VmmAllocation() {
-    if (!driverApi_) {
-      return;
-    }
-    if (mapped_) {
-      driverApi_->cuMemUnmap(ptr_, size_);
-    }
-    if (reserved_) {
-      driverApi_->cuMemAddressFree(ptr_, size_);
-    }
-    if (created_) {
-      driverApi_->cuMemRelease(allocHandle_);
-    }
-  }
-
-  VmmAllocation(const VmmAllocation&) = delete;
-  VmmAllocation& operator=(const VmmAllocation&) = delete;
-
-  void* ptr() const {
-    // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    return reinterpret_cast<void*>(ptr_);
-  }
-
-  size_t size() const {
-    return size_;
-  }
-
- private:
-  CudaDriverApi* driverApi_{nullptr};
-  CUmemGenericAllocationHandle allocHandle_{};
-  CUdeviceptr ptr_{0};
-  size_t size_{0};
-  size_t granularity_{0};
-  bool created_{false};
-  bool reserved_{false};
-  bool mapped_{false};
-};
-#else
-// AMD: VMM fabric (MNNVL) allocation has no HIP equivalent until MI450 (no
-// CU_MEM_HANDLE_TYPE_FABRIC). Provide a stub so the test compiles; alloc()
-// always fails, so the Fabric-parameterized cases skip at runtime.
-class VmmAllocation {
- public:
-  VmmAllocation() = default;
-
-  Status alloc(CudaDriverApi&, int, size_t) {
-    return Err(
-        ErrCode::NotImplemented,
-        "Fabric (MNNVL) VMM allocation is not supported on AMD");
-  }
-
-  VmmAllocation(const VmmAllocation&) = delete;
-  VmmAllocation& operator=(const VmmAllocation&) = delete;
-
-  void* ptr() const {
-    return nullptr;
-  }
-
-  size_t size() const {
-    return 0;
-  }
-};
-#endif
-
 // --- Same-device transfer tests (parameterized by mem type + alloc type) ---
 
 class SameDeviceTransferTest
     : public MultiTransportCrossHostTest,
       public ::testing::WithParamInterface<CrossHostTransferParam> {
  protected:
-  void SetUp() override {
-    MultiTransportCrossHostTest::SetUp();
-    driverApi_ = std::make_shared<CudaDriverApi>();
-    auto initStatus = driverApi_->init();
-    driverApiAvailable_ = initStatus.hasValue();
-  }
-
-  // Allocate GPU memory for the given MemType. For CudaMalloc, allocates into
-  // cudaBuf. For Fabric, allocates into vmmBuf. Returns the data pointer.
-  // For Dram, returns nullptr (caller should use cpuBuf directly).
-  void* allocGpuBuffer(
-      MemType memType,
-      int cudaDev,
-      size_t totalSize,
-      CudaBuffer& cudaBuf,
-      VmmAllocation& vmmBuf) {
-    if (memType == MemType::Fabric) {
-      auto st = vmmBuf.alloc(*driverApi_, cudaDev, totalSize);
-      return st.hasValue() ? vmmBuf.ptr() : nullptr;
-    }
-    // CudaMalloc — cudaBuf already constructed by caller.
-    return cudaBuf.ptr;
-  }
-
   // Fill buffer with pattern (GPU buffers go through a staging copy).
   void fillBuffer(
       void* ptr,
@@ -601,17 +464,12 @@ class SameDeviceTransferTest
   uniflow::MemoryType toSegmentMemType(MemType t) {
     return isGpu(t) ? MemoryType::VRAM : MemoryType::DRAM;
   }
-
-  std::shared_ptr<CudaDriverApi> driverApi_;
-  bool driverApiAvailable_{false};
 };
 
 TEST_P(SameDeviceTransferTest, Transfer) {
   const auto& param = GetParam();
   const bool needsCuda =
       isGpu(param.localMemType) || isGpu(param.remoteMemType);
-  const bool needsFabric =
-      isFabric(param.localMemType) || isFabric(param.remoteMemType);
 
   if (needsCuda) {
     int deviceCount = 0;
@@ -620,17 +478,6 @@ TEST_P(SameDeviceTransferTest, Transfer) {
     if (anyRank(noCuda)) {
       GTEST_SKIP() << "Some rank lacks CUDA devices (local: " << deviceCount
                    << ")";
-    }
-  }
-
-  if (needsFabric) {
-    bool canFabric = driverApiAvailable_;
-    if (canFabric) {
-      VmmAllocation probe;
-      canFabric = probe.alloc(*driverApi_, 0, 4096).hasValue();
-    }
-    if (anyRank(!canFabric)) {
-      GTEST_SKIP() << "Fabric (MNNVL) not supported on some rank";
     }
   }
 
@@ -652,13 +499,12 @@ TEST_P(SameDeviceTransferTest, Transfer) {
   // Allocate buffer for this rank.
   std::vector<char> cpuBuf;
   CudaBuffer cudaBuf(myMemType == MemType::CudaMalloc ? totalSize : 0, cudaDev);
-  VmmAllocation vmmBuf;
   void* myPtr = nullptr;
   if (myMemType == MemType::Dram) {
     cpuBuf.resize(totalSize);
     myPtr = cpuBuf.data();
   } else {
-    myPtr = allocGpuBuffer(myMemType, cudaDev, totalSize, cudaBuf, vmmBuf);
+    myPtr = cudaBuf.ptr;
   }
   EXPECT_NE(myPtr, nullptr)
       << "Buffer allocation failed on rank " << globalRank;
@@ -695,12 +541,7 @@ TEST_P(SameDeviceTransferTest, Transfer) {
     EXPECT_FALSE(status.hasError())
         << (isPut ? "put" : "get") << " failed: " << status.error().message();
 
-    // VRAM→VRAM with Fabric → NVLink; everything else → RDMA.
-    bool expectNvlink = param.localMemType == MemType::Fabric &&
-        param.remoteMemType == MemType::Fabric;
-    auto expectedTransport =
-        expectNvlink ? TransportType::NVLink : TransportType::RDMA;
-    EXPECT_EQ(pair.transport->transferCount(expectedTransport), 1u);
+    EXPECT_EQ(pair.transport->transferCount(TransportType::RDMA), 1u);
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -736,13 +577,6 @@ INSTANTIATE_TEST_SUITE_P(
         CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_12MB12KB"},
         CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Put, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Put_12MB12KB_batch"},
         CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_12MB12KB_batch"},
-        // VRAM → VRAM (Fabric / MNNVL)
-        CrossHostTransferParam{4096, 1, TransferOp::Put, MemType::Fabric, MemType::Fabric, "Fabric_Put_4KB"},
-        CrossHostTransferParam{4096, 1, TransferOp::Get, MemType::Fabric, MemType::Fabric, "Fabric_Get_4KB"},
-        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Put, MemType::Fabric, MemType::Fabric, "Fabric_Put_12MB12KB"},
-        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::Fabric, MemType::Fabric, "Fabric_Get_12MB12KB"},
-        CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Put, MemType::Fabric, MemType::Fabric, "Fabric_Put_12MB12KB_batch"},
-        CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Get, MemType::Fabric, MemType::Fabric, "Fabric_Get_12MB12KB_batch"},
         // VRAM → DRAM (mixed)
         CrossHostTransferParam{4096, 1, TransferOp::Put, MemType::CudaMalloc, MemType::Dram, "VRAM_DRAM_Put_4KB"},
         CrossHostTransferParam{4096, 1, TransferOp::Get, MemType::CudaMalloc, MemType::Dram, "VRAM_DRAM_Get_4KB"},
@@ -757,22 +591,11 @@ INSTANTIATE_TEST_SUITE_P(
 // clang-format on
 
 // --- VRAM→VRAM cross-device tests (parameterized by alloc type) ---
-// Rank 0 uses GPU 0, rank 1 uses GPU 1. cudaMalloc → RDMA, Fabric → NVLink.
+// Rank 0 uses GPU 0, rank 1 uses GPU 1.
 
 class CrossDeviceGpuTransferTest
     : public MultiTransportCrossHostTest,
-      public ::testing::WithParamInterface<CrossHostTransferParam> {
- protected:
-  void SetUp() override {
-    MultiTransportCrossHostTest::SetUp();
-    driverApi_ = std::make_shared<CudaDriverApi>();
-    auto initStatus = driverApi_->init();
-    driverApiAvailable_ = initStatus.hasValue();
-  }
-
-  std::shared_ptr<CudaDriverApi> driverApi_;
-  bool driverApiAvailable_{false};
-};
+      public ::testing::WithParamInterface<CrossHostTransferParam> {};
 
 TEST_P(CrossDeviceGpuTransferTest, Transfer) {
   int deviceCount = 0;
@@ -784,20 +607,6 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
   }
 
   const auto& param = GetParam();
-  // Cross-device uses localMemType for the GPU alloc method on both ranks.
-  const bool useFabric = isFabric(param.localMemType);
-
-  if (useFabric) {
-    bool canFabric = driverApiAvailable_;
-    if (canFabric) {
-      VmmAllocation probe;
-      canFabric = probe.alloc(*driverApi_, globalRank, 4096).hasValue();
-    }
-    if (anyRank(!canFabric)) {
-      GTEST_SKIP() << "Fabric (MNNVL) not supported on some rank";
-    }
-  }
-
   const size_t bufSize = param.bufSize;
   const size_t numRequests = param.numRequests;
   const size_t totalSize = bufSize * numRequests;
@@ -807,19 +616,9 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
   auto pair = connectCrossHost(cudaDev);
   ASSERT_NE(pair.transport, nullptr);
 
-  CudaBuffer cudaBuf(useFabric ? 0 : totalSize, cudaDev);
-  VmmAllocation vmmBuf;
-  void* gpuPtr = nullptr;
-  if (useFabric) {
-    auto allocStatus = vmmBuf.alloc(*driverApi_, cudaDev, totalSize);
-    EXPECT_TRUE(allocStatus.hasValue())
-        << "Fabric VMM alloc failed: " << allocStatus.error().message();
-    gpuPtr = allocStatus.hasValue() ? vmmBuf.ptr() : nullptr;
-  } else {
-    EXPECT_NE(cudaBuf.ptr, nullptr)
-        << "cudaMalloc failed on device " << cudaDev;
-    gpuPtr = cudaBuf.ptr;
-  }
+  CudaBuffer cudaBuf(totalSize, cudaDev);
+  EXPECT_NE(cudaBuf.ptr, nullptr) << "cudaMalloc failed on device " << cudaDev;
+  void* gpuPtr = cudaBuf.ptr;
   ASSERT_FALSE(anyRank(gpuPtr == nullptr));
 
   const int fillRank = isPut ? 0 : 1;
@@ -857,9 +656,7 @@ TEST_P(CrossDeviceGpuTransferTest, Transfer) {
         << "Cross-device " << (isPut ? "put" : "get")
         << " failed: " << status.error().message();
 
-    auto expectedTransport =
-        useFabric ? TransportType::NVLink : TransportType::RDMA;
-    EXPECT_EQ(pair.transport->transferCount(expectedTransport), 1u);
+    EXPECT_EQ(pair.transport->transferCount(TransportType::RDMA), 1u);
   }
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -887,12 +684,7 @@ INSTANTIATE_TEST_SUITE_P(
         CrossHostTransferParam{4096, 1, TransferOp::Put, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Put_4KB"},
         CrossHostTransferParam{4096, 1, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_4KB"},
         CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Put, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Put_12MB12KB"},
-        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_12MB12KB"},
-        // Fabric (MNNVL)
-        CrossHostTransferParam{4096, 1, TransferOp::Put, MemType::Fabric, MemType::Fabric, "Fabric_Put_4KB"},
-        CrossHostTransferParam{4096, 1, TransferOp::Get, MemType::Fabric, MemType::Fabric, "Fabric_Get_4KB"},
-        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Put, MemType::Fabric, MemType::Fabric, "Fabric_Put_12MB12KB"},
-        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::Fabric, MemType::Fabric, "Fabric_Get_12MB12KB"}),
+        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_12MB12KB"}),
     crossHostParamName);
 // clang-format on
 
