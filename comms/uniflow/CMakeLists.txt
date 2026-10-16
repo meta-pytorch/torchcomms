@@ -41,6 +41,11 @@ set(UNIFLOW_HIPIFY_DIR ${CMAKE_CURRENT_BINARY_DIR}/hipified)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+option(UNIFLOW_BUILD_EXTENSIONS
+  "Build UniFlow extensions in tree; fbsource builds must set UNIFLOW_EXTENSIONS_DIR" OFF)
+set(UNIFLOW_EXTENSIONS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extensions" CACHE PATH
+    "UniFlow extensions source directory (fbsource: <fbsource>/fbcode/neteng/network_ai/uniflow_extensions)")
+
 option(UNIFLOW_BUILD_PYTHON "Build the UniFlow Python extension" OFF)
 option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
 option(UNIFLOW_BUILD_BENCHMARKS "Build UniFlow benchmarks" OFF)
@@ -575,6 +580,10 @@ target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
 
 if(UNIFLOW_LIB_TYPE STREQUAL SHARED)
   target_link_options(uniflow PRIVATE "LINKER:--no-undefined")
+endif()
+
+if(UNIFLOW_BUILD_EXTENSIONS)
+  add_subdirectory("${UNIFLOW_EXTENSIONS_DIR}" extensions)
 endif()
 
 if(UNIFLOW_BUILD_PYTHON)
