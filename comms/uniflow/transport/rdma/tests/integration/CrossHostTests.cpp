@@ -60,6 +60,21 @@ class CompletionHoldingIbvApi final : public IbvApi {
  public:
   Status postSend(ibv_qp* qp, ibv_send_wr* wr, ibv_send_wr** badWr) override {
     postCount_.fetch_add(1, std::memory_order_relaxed);
+    if (wr->next != nullptr &&
+        failNextPostAfterFirstWr_.exchange(false, std::memory_order_acq_rel)) {
+      // Like a provider that accepted only part of the chain. The transport
+      // then posts a recovery WR, whose completion is held.
+      auto* rest = wr->next;
+      wr->next = nullptr;
+      auto status = IbvApi::postSend(qp, wr, badWr);
+      wr->next = rest;
+      if (status.hasError()) {
+        return status;
+      }
+      holdNextPost_.store(true, std::memory_order_release);
+      *badWr = rest;
+      return Err(ErrCode::DriverError, "injected partial post failure");
+    }
     if (holdNextPost_.exchange(false, std::memory_order_acq_rel)) {
       auto* completionWr = wr;
       while (completionWr->next != nullptr) {
@@ -67,6 +82,7 @@ class CompletionHoldingIbvApi final : public IbvApi {
       }
       std::lock_guard lock(mutex_);
       heldWrId_ = completionWr->wr_id;
+      heldQpNum_ = qp->qp_num;
     }
     return IbvApi::postSend(qp, wr, badWr);
   }
@@ -81,7 +97,9 @@ class CompletionHoldingIbvApi final : public IbvApi {
     std::lock_guard lock(mutex_);
     int visible = 0;
     for (int i = 0; i < result.value(); ++i) {
-      if (heldWrId_ && wcs[i].wr_id == *heldWrId_) {
+      // A later transport can reuse the wr_id, but not the QP.
+      if (heldWrId_ && wcs[i].wr_id == *heldWrId_ &&
+          wcs[i].qp_num == heldQpNum_) {
         heldCompletion_ = wcs[i];
         heldWrId_.reset();
         completionCv_.notify_all();
@@ -90,6 +108,12 @@ class CompletionHoldingIbvApi final : public IbvApi {
       }
     }
     return visible;
+  }
+
+  /// The next post of two or more WRs posts only its first WR and fails the
+  /// rest, and the completion of the post after it (the recovery WR) is held.
+  void failNextPostAfterFirstWr() {
+    failNextPostAfterFirstWr_.store(true, std::memory_order_release);
   }
 
   void holdNextPostCompletion() {
@@ -120,9 +144,11 @@ class CompletionHoldingIbvApi final : public IbvApi {
   std::mutex mutex_;
   std::condition_variable completionCv_;
   std::atomic<bool> holdNextPost_{false};
+  std::atomic<bool> failNextPostAfterFirstWr_{false};
   std::atomic<uint64_t> pollCount_{0};
   std::atomic<uint64_t> postCount_{0};
   std::optional<uint64_t> heldWrId_;
+  uint32_t heldQpNum_{0};
   std::optional<ibv_wc> heldCompletion_;
 };
 
@@ -532,6 +558,104 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<HeldCompletionOp>& info) {
       return info.param == HeldCompletionOp::Put ? "Put" : "Get";
     });
+
+class ForcedShutdownCrossHostTest : public CrossHostTest {
+ protected:
+  std::shared_ptr<IbvApi> makeIbvApi() override {
+    completionApi_ = std::make_shared<CompletionHoldingIbvApi>();
+    return completionApi_;
+  }
+
+  std::shared_ptr<CompletionHoldingIbvApi> completionApi_;
+};
+
+// Verifies on real NICs that shutdown() ends a put that already failed but
+// whose recovery completion never arrives, which no request deadline covers,
+// and that a new transport from the same factory then works. On rank 0,
+// shutdown() aborts only once requestTimeout has passed. kWaitTimeout is only a
+// watchdog that stops a broken run from hanging.
+TEST_F(ForcedShutdownCrossHostTest, ShutdownEndsErroredPut) {
+  using namespace std::chrono_literals;
+  constexpr auto kWaitTimeout = 5s;
+
+  RdmaTransportConfig config;
+  config.requestTimeout = 1s;
+  auto pair = connectCrossHost(/*numNics=*/1, config);
+  // Two chunks, so the put posts a chain of two WRs on its one QP.
+  const size_t transferSize = 2 * config.chunkSize;
+  std::vector<char> localBuf(transferSize, 0);
+  auto segments = registerAndExchangeSegments(
+      *pair.factory, localBuf.data(), localBuf.size(), MemoryType::DRAM);
+  if (!segments) {
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return;
+  }
+  const std::vector<TransferRequest> requests = {{
+      .local = segments->local.span(size_t{0}, transferSize),
+      .remote = segments->remote.span(size_t{0}, transferSize),
+  }};
+  boundedMpiBarrier(15s);
+
+  if (globalRank == 0) {
+    completionApi_->failNextPostAfterFirstWr();
+    auto future = pair.transport->put(requests);
+    if (future.wait_for(kWaitTimeout) != std::future_status::ready) {
+      ADD_FAILURE() << "partially posted put did not report its error";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    const auto status = future.get();
+    if (!status.hasError()) {
+      ADD_FAILURE() << "partially posted put succeeded";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+  }
+
+  boundedMpiBarrier(15s);
+  const auto shutdownStart = std::chrono::steady_clock::now();
+  auto shutdownDone =
+      std::async(std::launch::async, [&pair] { pair.transport->shutdown(); });
+  if (shutdownDone.wait_for(kWaitTimeout) != std::future_status::ready) {
+    ADD_FAILURE() << "shutdown() did not end the errored put";
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return;
+  }
+  if (globalRank == 0) {
+    // Rank 1 has nothing in flight, so its shutdown() returns at once.
+    const auto shutdownMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - shutdownStart);
+    EXPECT_GE(shutdownMs.count(), config.requestTimeout->count());
+  }
+  EXPECT_EQ(pair.transport->state(), TransportState::Disconnected);
+  pair.transport.reset();
+  const auto counters = pair.factory->counters();
+  EXPECT_EQ(counters->shutdownsForced.load(), globalRank == 0 ? 1u : 0u);
+  EXPECT_EQ(counters->timeoutsFired.load(), 0u);
+
+  auto replacement = connectTransport(*pair.factory);
+  boundedMpiBarrier(15s);
+  if (globalRank == 0) {
+    auto healthy = replacement->put(requests);
+    if (healthy.wait_for(kWaitTimeout) != std::future_status::ready) {
+      ADD_FAILURE() << "PUT on the new transport did not complete";
+      MPI_Abort(MPI_COMM_WORLD, 1);
+      return;
+    }
+    const auto healthyStatus = healthy.get();
+    EXPECT_FALSE(healthyStatus.hasError()) << healthyStatus.error().message();
+  }
+
+  boundedMpiBarrier(15s);
+  replacement->shutdown();
+  EXPECT_EQ(replacement->state(), TransportState::Disconnected);
+  evbThread_.reset();
+  replacement.reset();
+  segments.reset();
+  pair.factory.reset();
+}
 
 // --- Parameterized transfer tests ---
 

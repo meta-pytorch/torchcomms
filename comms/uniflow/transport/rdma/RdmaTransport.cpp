@@ -938,8 +938,9 @@ Result<uint32_t> RdmaTransport::spray(
 // ---------------------------------------------------------------------------
 
 bool RdmaTransport::admitTask(const std::shared_ptr<Task>& task) {
-  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
-    task->setTerminalResult(ErrCode::Aborted);
+  if (const auto reason = terminalReason_.load(std::memory_order_acquire);
+      reason != TerminalReason::None) {
+    task->setTerminalResult(ErrCode::Aborted, abortedMessage(reason));
     task->fulfill();
     return false;
   }
@@ -1020,16 +1021,24 @@ bool RdmaTransport::processDeadlines() {
   if (!deadlineHead || !deadlineHead->deadlineExpired(currentTime)) {
     return false;
   }
-  abortTransport(*deadlineHead, deadlineHeadTaskId);
+  abortTransport(TerminalReason::Timeout, deadlineHead, deadlineHeadTaskId);
   return true;
 }
 
+const char* RdmaTransport::abortedMessage(TerminalReason reason) {
+  return reason == TerminalReason::Shutdown
+      ? "RDMA transport shut down before the request completed"
+      : "RDMA transport deadline expired";
+}
+
 void RdmaTransport::abortTransport(
-    Task& culprit,
+    TerminalReason reason,
+    Task* culprit,
     uint32_t culpritTaskId) noexcept {
+  assert(reason != TerminalReason::None);
   TerminalReason expected = TerminalReason::None;
   if (!terminalReason_.compare_exchange_strong(
-          expected, TerminalReason::Timeout, std::memory_order_acq_rel)) {
+          expected, reason, std::memory_order_acq_rel)) {
     return;
   }
 
@@ -1092,31 +1101,51 @@ void RdmaTransport::abortTransport(
   for (const auto& task : tasks) {
     putTasks += task->type() == IOType::Put;
     getTasks += task->type() == IOType::Get;
-    if (!task->isDone()) {
-      const bool isCulprit = task.get() == &culprit;
-      abortedTasks += !isCulprit;
-      task->setTerminalResult(isCulprit ? ErrCode::Timeout : ErrCode::Aborted);
+    if (task->isDone()) {
+      continue;
+    }
+    if (task.get() == culprit) {
+      task->setTerminalResult(
+          ErrCode::Timeout, "RDMA request deadline expired");
+    } else {
+      ++abortedTasks;
+      task->setTerminalResult(ErrCode::Aborted, abortedMessage(reason));
     }
   }
   // Update the counters before publishing, so they are current once any
   // result is visible.
-  counters_->timeoutsFired.fetch_add(1, std::memory_order_relaxed);
+  auto& reasonCounter = reason == TerminalReason::Timeout
+      ? counters_->timeoutsFired
+      : counters_->shutdownsForced;
+  reasonCounter.fetch_add(1, std::memory_order_relaxed);
   counters_->requestsAborted.fetch_add(abortedTasks, std::memory_order_relaxed);
   for (const auto& task : tasks) {
     task->fulfill();
   }
-  UNIFLOW_LOG_ERROR(
-      "abortTransport: terminalReason=Timeout requestTimeout={}ms "
-      "winner={} taskId={} remainingWrs={} remoteDomainId={} qps=[{}] "
-      "putTasks={} getTasks={}",
-      config_.requestTimeout->count(),
-      culprit.type() == IOType::Put ? "put" : "get",
-      culpritTaskId,
-      culprit.remainingWrs(),
-      remoteDomainId_,
-      qpNums,
-      putTasks,
-      getTasks);
+  if (culprit) {
+    UNIFLOW_LOG_ERROR(
+        "abortTransport: terminalReason=Timeout requestTimeout={}ms "
+        "winner={} taskId={} remainingWrs={} remoteDomainId={} qps=[{}] "
+        "putTasks={} getTasks={}",
+        config_.requestTimeout->count(),
+        culprit->type() == IOType::Put ? "put" : "get",
+        culpritTaskId,
+        culprit->remainingWrs(),
+        remoteDomainId_,
+        qpNums,
+        putTasks,
+        getTasks);
+  } else {
+    UNIFLOW_LOG_ERROR(
+        "abortTransport: terminalReason=Shutdown requestTimeout={}ms "
+        "aborted={} remoteDomainId={} qps=[{}] putTasks={} getTasks={}",
+        config_.requestTimeout->count(),
+        abortedTasks,
+        remoteDomainId_,
+        qpNums,
+        putTasks,
+        getTasks);
+  }
 }
 
 void RdmaTransport::ioLooper() noexcept {
@@ -1239,9 +1268,16 @@ std::future<Status> RdmaTransport::rdmaPutGetTransfer(
   if (auto status = validateTimeout(options); status.hasError()) {
     return make_ready_future<Status>(std::move(status));
   }
-  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+  // A forced shutdown sets shutdown_ before it makes the transport terminal,
+  // so requests after it get NotConnected below, as after any shutdown.
+  if (terminalReason_.load(std::memory_order_acquire) ==
+      TerminalReason::Timeout) {
     return make_ready_future<Status>(
-        Err(ErrCode::Aborted, "RDMA transport deadline expired"));
+        Err(ErrCode::Aborted, abortedMessage(TerminalReason::Timeout)));
+  }
+  if (shutdown_.load(std::memory_order_acquire)) {
+    return make_ready_future<Status>(
+        Err(ErrCode::NotConnected, "RDMA transport is shutting down"));
   }
   if (state_ != TransportState::Connected) {
     return make_ready_future<Status>(
@@ -1303,9 +1339,15 @@ std::future<Status> RdmaTransport::rdmaSendRecvTransfer(
   if (auto status = validateTimeout(options); status.hasError()) {
     return make_ready_future<Status>(std::move(status));
   }
-  if (terminalReason_.load(std::memory_order_acquire) != TerminalReason::None) {
+  // As in rdmaPutGetTransfer(), a forced shutdown gets NotConnected below.
+  if (terminalReason_.load(std::memory_order_acquire) ==
+      TerminalReason::Timeout) {
     return make_ready_future<Status>(
-        Err(ErrCode::Aborted, "RDMA transport deadline expired"));
+        Err(ErrCode::Aborted, abortedMessage(TerminalReason::Timeout)));
+  }
+  if (shutdown_.load(std::memory_order_acquire)) {
+    return make_ready_future<Status>(
+        Err(ErrCode::NotConnected, "RDMA transport is shutting down"));
   }
   if (config_.requestTimeout.has_value()) {
     return make_ready_future<Status>(
@@ -1955,12 +1997,29 @@ void RdmaTransport::shutdown() {
     std::condition_variable cv;
     bool done = false;
 
+    // validateTimeout() with default options passes only when requestTimeout
+    // is unset or in range. An out-of-range value admits no request, so there
+    // is nothing to abort, and adding it to the clock could overflow.
+    std::optional<Clock::time_point> abortAt;
+    if (config_.requestTimeout.has_value() &&
+        validateTimeout(RequestOptions{}).hasValue()) {
+      abortAt = now() + *config_.requestTimeout;
+    }
+
     // Make sure that there is no tasks in the evb loop thread related to this
     // transport instance
-    evb_->dispatch([this, &m, &cv, &done]() noexcept {
-      auto drain = [this, &m, &cv, &done](auto& self) -> void {
-        if (pendingTransfers_.empty() && pendingCompletions_.empty() &&
-            inflightTasks_.empty()) {
+    evb_->dispatch([this, &m, &cv, &done, abortAt]() noexcept {
+      auto drain = [this, &m, &cv, &done, abortAt](auto& self) -> void {
+        const auto drained = [this] {
+          return pendingTransfers_.empty() && pendingCompletions_.empty() &&
+              inflightTasks_.empty();
+        };
+        if (abortAt.has_value() && !drained() && now() >= *abortAt) {
+          abortTransport(TerminalReason::Shutdown, nullptr, 0);
+        }
+        // A queued ioLooper() callback must run before the transport is
+        // destroyed; it stops itself once the queues are empty.
+        if (drained() && !ioLooperScheduled_) {
           state_ = TransportState::Disconnected;
           // Notify under the lock: `cv` lives on the waiter's stack and is
           // destroyed as soon as the waiter observes `done`.
