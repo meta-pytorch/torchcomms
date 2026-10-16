@@ -6,7 +6,7 @@
 /// export + device-to-device data plane on real hardware. Runs on AMD GPU CI.
 
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/p2p/P2pTransport.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pTransport.h"
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 

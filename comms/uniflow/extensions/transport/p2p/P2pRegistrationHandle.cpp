@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pRegistrationHandle.h"
 
 #include <algorithm>
 
