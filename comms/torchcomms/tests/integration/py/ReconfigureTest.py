@@ -38,6 +38,11 @@ class ReconfigureTest(unittest.TestCase):
     def setUp(self):
         """Set up test environment before each test."""
         self.backend = os.getenv("TEST_BACKEND", "")
+        if self.backend == "nccl":
+            self.skipTest(
+                "nccl backend: NCCL 2.32.3 blocks the excluded rank's finalize() "
+                "after a shrink in commDestroySync, hanging the suite"
+            )
 
         if self._is_supported_backend():
             self.rank = int(
