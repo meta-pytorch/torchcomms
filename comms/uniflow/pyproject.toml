@@ -35,4 +35,4 @@ wheel.install-dir = "."
 # An sdist would otherwise sweep up the whole directory, including build
 # configuration and test trees that are not part of the distribution.
 sdist.exclude = ["**/BUCK", "**/TARGETS", "**/*.bzl", "**/PACKAGE", ".clang-tidy",
-                 "fb", "docs", ".claude"]
+                 "fb", "docs", ".claude", ".llms", ".codex", "extensions"]
