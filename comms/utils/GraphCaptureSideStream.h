@@ -6,6 +6,8 @@
 #include <cuda_runtime.h>
 
 #include <functional>
+#include <mutex>
+#include <unordered_map>
 
 namespace meta::comms {
 
@@ -42,6 +44,15 @@ namespace meta::comms {
 // captured chain of user ops across the same capture, which is fine —
 // it's always off main's critical path.
 //
+// Green contexts: a ``stream`` that belongs to a CUDA green context forks
+// onto a side stream created in that same green context (one per green
+// context, created on first use and kept until destruction), so the captured
+// fork/rejoin stays inside the caller's context instead of hopping to the
+// primary context and back. Other streams use the side stream created at
+// construction. Within one capture, work forked onto different side streams
+// keeps the order it was forked in, as it would on a single side stream: a
+// fork onto another side stream first waits for the previous fork's work.
+//
 // Construction must happen OUTSIDE of an active graph capture (it
 // allocates a stream and event). Typical usage: one instance per
 // communicator, created at ``init()`` time.
@@ -76,8 +87,25 @@ class GraphSideStream {
   }
 
  private:
+  struct SideStream {
+    cudaStream_t stream{nullptr};
+    cudaEvent_t dep_event{nullptr};
+  };
+
+  // The side stream ``stream`` forks onto; falls back to the construction-time
+  // side stream for streams outside a green context.
+  SideStream side_stream_for(cudaStream_t stream);
+
+  int priority_{0};
   cudaStream_t side_stream_{nullptr};
   cudaEvent_t dep_event_{nullptr};
+  std::mutex mutex_;
+  // Keyed by the green context's ``cuCtxGetId``, which CUDA never reuses
+  // (unlike ``CUgreenCtx`` addresses).
+  std::unordered_map<unsigned long long, SideStream> green_side_streams_;
+  // The side stream that ran the last fork, and the capture it ran in.
+  unsigned long long last_capture_id_{0};
+  SideStream last_side_;
 };
 
 } // namespace meta::comms

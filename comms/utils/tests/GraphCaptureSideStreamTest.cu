@@ -2,6 +2,7 @@
 
 #include "comms/utils/GraphCaptureSideStream.h"
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
@@ -523,5 +524,300 @@ TEST_F(GraphSideStreamTest, CapturedGraphInstantiatesAndReplays) {
   EXPECT_EQ(cudaStreamDestroy(main), cudaSuccess);
   EXPECT_EQ(cudaFree(dev_counter), cudaSuccess);
 }
+
+#if CUDART_VERSION >= 12050
+// An 8-SM green context on device 0.
+void makeGreenContext(CUgreenCtx* green_ctx) {
+  CUdevice dev = 0;
+  ASSERT_EQ(cuDeviceGet(&dev, 0), CUDA_SUCCESS);
+  CUdevResource sm = {};
+  ASSERT_EQ(
+      cuDeviceGetDevResource(dev, &sm, CU_DEV_RESOURCE_TYPE_SM), CUDA_SUCCESS);
+  unsigned int groups = 1;
+  CUdevResource green_sm = {};
+  CUdevResource remaining = {};
+  ASSERT_EQ(
+      cuDevSmResourceSplitByCount(
+          &green_sm, &groups, &sm, &remaining, 0, /*minCount=*/8),
+      CUDA_SUCCESS);
+  CUdevResourceDesc desc = nullptr;
+  ASSERT_EQ(cuDevResourceGenerateDesc(&desc, &green_sm, 1), CUDA_SUCCESS);
+  ASSERT_EQ(
+      cuGreenCtxCreate(green_ctx, desc, dev, CU_GREEN_CTX_DEFAULT_STREAM),
+      CUDA_SUCCESS);
+}
+
+// A stream in a green context forks onto a side stream in that same green
+// context, created on first use mid-capture and reused afterwards, so the
+// captured fork never leaves the caller's context.
+TEST_F(GraphSideStreamTest, ForkFromGreenContextStaysInGreenContext) {
+  CUgreenCtx green_ctx = nullptr;
+  ASSERT_NO_FATAL_FAILURE(makeGreenContext(&green_ctx));
+  CUstream main = nullptr;
+  ASSERT_EQ(
+      cuGreenCtxStreamCreate(&main, green_ctx, CU_STREAM_NON_BLOCKING, 0),
+      CUDA_SUCCESS);
+
+  {
+    GraphSideStream side;
+    int* dev_counter = nullptr;
+    ASSERT_EQ(cudaMalloc(&dev_counter, sizeof(int)), cudaSuccess);
+    std::vector<cudaStream_t> forked;
+
+    ASSERT_EQ(
+        cudaStreamBeginCapture(main, cudaStreamCaptureModeGlobal), cudaSuccess);
+    for (int i = 0; i < 2; ++i) {
+      ASSERT_EQ(
+          cudaMemsetAsync(dev_counter, 0, sizeof(int), main), cudaSuccess);
+      ASSERT_EQ(
+          side.fork_from(
+              main,
+              [&](cudaStream_t s) {
+                forked.push_back(s);
+                (void)cudaMemsetAsync(dev_counter, 1, sizeof(int), s);
+              }),
+          cudaSuccess);
+    }
+    cudaGraph_t graph = nullptr;
+    ASSERT_EQ(cudaStreamEndCapture(main, &graph), cudaSuccess);
+
+    ASSERT_EQ(forked.size(), 2u);
+    EXPECT_NE(forked[0], side.get());
+    EXPECT_EQ(forked[0], forked[1]);
+    CUcontext ctx = nullptr;
+    CUgreenCtx forked_green_ctx = nullptr;
+    ASSERT_EQ(
+        cuStreamGetCtx_v2(forked[0], &ctx, &forked_green_ctx), CUDA_SUCCESS);
+    EXPECT_EQ(forked_green_ctx, green_ctx);
+
+    cudaGraphExec_t exec = nullptr;
+    ASSERT_EQ(
+        cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), cudaSuccess);
+    ASSERT_EQ(cudaGraphLaunch(exec, main), cudaSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(main), cudaSuccess);
+
+    EXPECT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+    EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+    EXPECT_EQ(cudaFree(dev_counter), cudaSuccess);
+  }
+
+  EXPECT_EQ(cuStreamDestroy(main), CUDA_SUCCESS);
+  EXPECT_EQ(cuGreenCtxDestroy(green_ctx), CUDA_SUCCESS);
+}
+
+// The first fork from a device-0 green stream may happen while another device
+// is current; the side stream's event must still belong to device 0, or this
+// fork and every later one fail to record it.
+TEST_F(GraphSideStreamTest, ForkFromGreenContextWithAnotherDeviceCurrent) {
+  int device_count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&device_count), cudaSuccess);
+  if (device_count < 2) {
+    GTEST_SKIP() << "Needs two CUDA devices";
+  }
+  CUgreenCtx green_ctx = nullptr;
+  ASSERT_NO_FATAL_FAILURE(makeGreenContext(&green_ctx));
+  CUstream main = nullptr;
+  ASSERT_EQ(
+      cuGreenCtxStreamCreate(&main, green_ctx, CU_STREAM_NON_BLOCKING, 0),
+      CUDA_SUCCESS);
+
+  {
+    GraphSideStream side;
+    int* dev_counter = nullptr;
+    ASSERT_EQ(cudaMalloc(&dev_counter, sizeof(int)), cudaSuccess);
+    int forks = 0;
+    auto fork = [&](cudaStream_t s) {
+      ++forks;
+      (void)cudaMemsetAsync(dev_counter, 1, sizeof(int), s);
+    };
+
+    ASSERT_EQ(
+        cudaStreamBeginCapture(main, cudaStreamCaptureModeGlobal), cudaSuccess);
+    ASSERT_EQ(cudaMemsetAsync(dev_counter, 0, sizeof(int), main), cudaSuccess);
+    ASSERT_EQ(cudaSetDevice(1), cudaSuccess);
+    EXPECT_EQ(side.fork_from(main, fork), cudaSuccess);
+    ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
+    EXPECT_EQ(side.fork_from(main, fork), cudaSuccess);
+    cudaGraph_t graph = nullptr;
+    ASSERT_EQ(cudaStreamEndCapture(main, &graph), cudaSuccess);
+    EXPECT_EQ(forks, 2);
+
+    cudaGraphExec_t exec = nullptr;
+    ASSERT_EQ(
+        cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), cudaSuccess);
+    ASSERT_EQ(cudaGraphLaunch(exec, main), cudaSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(main), cudaSuccess);
+
+    EXPECT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+    EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+    EXPECT_EQ(cudaFree(dev_counter), cudaSuccess);
+  }
+
+  EXPECT_EQ(cuStreamDestroy(main), CUDA_SUCCESS);
+  EXPECT_EQ(cuGreenCtxDestroy(green_ctx), CUDA_SUCCESS);
+}
+
+// Two collectives captured on streams of two different green contexts fork
+// onto two side streams; the second fork's work must still run after the
+// first's, as it did when every fork shared one side stream (graph-monitor
+// replay counters precede the START events of later collectives).
+TEST_F(GraphSideStreamTest, ForksAcrossGreenContextsKeepForkOrder) {
+  CUgreenCtx green_a = nullptr;
+  CUgreenCtx green_b = nullptr;
+  ASSERT_NO_FATAL_FAILURE(makeGreenContext(&green_a));
+  ASSERT_NO_FATAL_FAILURE(makeGreenContext(&green_b));
+  CUstream main_a = nullptr;
+  CUstream main_b = nullptr;
+  ASSERT_EQ(
+      cuGreenCtxStreamCreate(&main_a, green_a, CU_STREAM_NON_BLOCKING, 0),
+      CUDA_SUCCESS);
+  ASSERT_EQ(
+      cuGreenCtxStreamCreate(&main_b, green_b, CU_STREAM_NON_BLOCKING, 0),
+      CUDA_SUCCESS);
+  cudaEvent_t join = nullptr;
+  ASSERT_EQ(
+      cudaEventCreateWithFlags(&join, cudaEventDisableTiming), cudaSuccess);
+
+  {
+    GraphSideStream side;
+    int* first = nullptr;
+    int* second = nullptr;
+    ASSERT_EQ(cudaMalloc(&first, sizeof(int)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&second, sizeof(int)), cudaSuccess);
+
+    ASSERT_EQ(
+        cudaStreamBeginCapture(main_a, cudaStreamCaptureModeGlobal),
+        cudaSuccess);
+    ASSERT_EQ(cudaEventRecord(join, main_a), cudaSuccess);
+    ASSERT_EQ(cudaStreamWaitEvent(main_b, join), cudaSuccess);
+    ASSERT_EQ(
+        side.fork_from(
+            main_a,
+            [&](cudaStream_t s) {
+              (void)cudaMemsetAsync(first, 1, sizeof(int), s);
+            }),
+        cudaSuccess);
+    ASSERT_EQ(
+        side.fork_from(
+            main_b,
+            [&](cudaStream_t s) {
+              (void)cudaMemsetAsync(second, 1, sizeof(int), s);
+            }),
+        cudaSuccess);
+    ASSERT_EQ(cudaEventRecord(join, main_b), cudaSuccess);
+    ASSERT_EQ(cudaStreamWaitEvent(main_a, join), cudaSuccess);
+    cudaGraph_t graph = nullptr;
+    ASSERT_EQ(cudaStreamEndCapture(main_a, &graph), cudaSuccess);
+
+    auto memset_to = [&](const int* dst) -> cudaGraphNode_t {
+      for (cudaGraphNode_t node : getNodes(graph)) {
+        if (nodeType(node) != cudaGraphNodeTypeMemset) {
+          continue;
+        }
+        cudaMemsetParams params{};
+        EXPECT_EQ(cudaGraphMemsetNodeGetParams(node, &params), cudaSuccess);
+        if (params.dst == dst) {
+          return node;
+        }
+      }
+      return nullptr;
+    };
+    cudaGraphNode_t first_node = memset_to(first);
+    cudaGraphNode_t second_node = memset_to(second);
+    ASSERT_NE(first_node, nullptr);
+    ASSERT_NE(second_node, nullptr);
+    std::set<cudaGraphNode_t> seen;
+    std::vector<cudaGraphNode_t> frontier{second_node};
+    while (!frontier.empty()) {
+      cudaGraphNode_t node = frontier.back();
+      frontier.pop_back();
+      for (cudaGraphNode_t pred : getPreds(node)) {
+        if (seen.insert(pred).second) {
+          frontier.push_back(pred);
+        }
+      }
+    }
+    EXPECT_TRUE(seen.count(first_node))
+        << "the second fork's work must depend on the first fork's";
+
+    cudaGraphExec_t exec = nullptr;
+    ASSERT_EQ(
+        cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), cudaSuccess);
+    ASSERT_EQ(cudaGraphLaunch(exec, main_a), cudaSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(main_a), cudaSuccess);
+
+    EXPECT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+    EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+    EXPECT_EQ(cudaFree(first), cudaSuccess);
+    EXPECT_EQ(cudaFree(second), cudaSuccess);
+  }
+
+  EXPECT_EQ(cudaEventDestroy(join), cudaSuccess);
+  EXPECT_EQ(cuStreamDestroy(main_a), CUDA_SUCCESS);
+  EXPECT_EQ(cuStreamDestroy(main_b), CUDA_SUCCESS);
+  EXPECT_EQ(cuGreenCtxDestroy(green_a), CUDA_SUCCESS);
+  EXPECT_EQ(cuGreenCtxDestroy(green_b), CUDA_SUCCESS);
+}
+
+// One helper outlives a green context. A later green context, even one the
+// driver places at the retired context's address, must get side resources of
+// its own rather than the retired context's.
+TEST_F(GraphSideStreamTest, ForkFromRecreatedGreenContext) {
+  GraphSideStream side;
+  int* dev_counter = nullptr;
+  ASSERT_EQ(cudaMalloc(&dev_counter, sizeof(int)), cudaSuccess);
+  auto capture_one_fork = [&](CUgreenCtx green_ctx) {
+    CUstream main = nullptr;
+    ASSERT_EQ(
+        cuGreenCtxStreamCreate(&main, green_ctx, CU_STREAM_NON_BLOCKING, 0),
+        CUDA_SUCCESS);
+    ASSERT_EQ(
+        cudaStreamBeginCapture(main, cudaStreamCaptureModeGlobal), cudaSuccess);
+    ASSERT_EQ(cudaMemsetAsync(dev_counter, 0, sizeof(int), main), cudaSuccess);
+    EXPECT_EQ(
+        side.fork_from(
+            main,
+            [&](cudaStream_t s) {
+              (void)cudaMemsetAsync(dev_counter, 1, sizeof(int), s);
+            }),
+        cudaSuccess);
+    cudaGraph_t graph = nullptr;
+    ASSERT_EQ(cudaStreamEndCapture(main, &graph), cudaSuccess);
+    cudaGraphExec_t exec = nullptr;
+    ASSERT_EQ(
+        cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), cudaSuccess);
+    ASSERT_EQ(cudaGraphLaunch(exec, main), cudaSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(main), cudaSuccess);
+    EXPECT_EQ(cudaGraphExecDestroy(exec), cudaSuccess);
+    EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+    EXPECT_EQ(cuStreamDestroy(main), CUDA_SUCCESS);
+  };
+
+  CUgreenCtx retired = nullptr;
+  ASSERT_NO_FATAL_FAILURE(makeGreenContext(&retired));
+  ASSERT_NO_FATAL_FAILURE(capture_one_fork(retired));
+  const CUgreenCtx retired_address = retired;
+  ASSERT_EQ(cuGreenCtxDestroy(retired), CUDA_SUCCESS);
+
+  // Prefer a context at the retired address, the case a pointer-keyed cache
+  // gets wrong; keep the last one created either way.
+  CUgreenCtx recreated = nullptr;
+  for (int i = 0; i < 16; ++i) {
+    ASSERT_NO_FATAL_FAILURE(makeGreenContext(&recreated));
+    if (recreated == retired_address) {
+      break;
+    }
+    ASSERT_EQ(cuGreenCtxDestroy(recreated), CUDA_SUCCESS);
+    recreated = nullptr;
+  }
+  if (recreated == nullptr) {
+    ASSERT_NO_FATAL_FAILURE(makeGreenContext(&recreated));
+  }
+  ASSERT_NO_FATAL_FAILURE(capture_one_fork(recreated));
+
+  EXPECT_EQ(cuGreenCtxDestroy(recreated), CUDA_SUCCESS);
+  EXPECT_EQ(cudaFree(dev_counter), cudaSuccess);
+}
+#endif
 
 } // namespace
