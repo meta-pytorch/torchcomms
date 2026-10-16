@@ -569,7 +569,9 @@ INSTANTIATE_TEST_SUITE_P(
         CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Put, MemType::Dram, MemType::Dram, "DRAM_DRAM_Put_12MB12KB"},
         CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::Dram, MemType::Dram, "DRAM_DRAM_Get_12MB12KB"},
         CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Put, MemType::Dram, MemType::Dram, "DRAM_DRAM_Put_12MB12KB_batch"},
-        CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Get, MemType::Dram, MemType::Dram, "DRAM_DRAM_Get_12MB12KB_batch"},
+        CrossHostTransferParam{kLargeBufferSize, 4, TransferOp::Get, MemType::Dram, MemType::Dram, "DRAM_DRAM_Get_12MB12KB_batch"}
+#ifndef UNIFLOW_TEST_MTIA
+        ,
         // VRAM → VRAM (cudaMalloc)
         CrossHostTransferParam{4096, 1, TransferOp::Put, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Put_4KB"},
         CrossHostTransferParam{4096, 1, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_4KB"},
@@ -586,10 +588,13 @@ INSTANTIATE_TEST_SUITE_P(
         CrossHostTransferParam{4096, 1, TransferOp::Put, MemType::Dram, MemType::CudaMalloc, "DRAM_VRAM_Put_4KB"},
         CrossHostTransferParam{4096, 1, TransferOp::Get, MemType::Dram, MemType::CudaMalloc, "DRAM_VRAM_Get_4KB"},
         CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Put, MemType::Dram, MemType::CudaMalloc, "DRAM_VRAM_Put_12MB12KB"},
-        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::Dram, MemType::CudaMalloc, "DRAM_VRAM_Get_12MB12KB"}),
+        CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::Dram, MemType::CudaMalloc, "DRAM_VRAM_Get_12MB12KB"}
+#endif
+        ),
     crossHostParamName);
 // clang-format on
 
+#ifndef UNIFLOW_TEST_MTIA
 // --- VRAM→VRAM cross-device tests (parameterized by alloc type) ---
 // Rank 0 uses GPU 0, rank 1 uses GPU 1.
 
@@ -687,6 +692,8 @@ INSTANTIATE_TEST_SUITE_P(
         CrossHostTransferParam{kLargeBufferSize, 1, TransferOp::Get, MemType::CudaMalloc, MemType::CudaMalloc, "CudaMalloc_Get_12MB12KB"}),
     crossHostParamName);
 // clang-format on
+
+#endif
 
 } // namespace uniflow
 

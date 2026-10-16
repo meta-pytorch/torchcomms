@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
+#include "comms/uniflow/extensions/benchmarks/bench/XgmiBandwidthBenchmark.h"
 
 #include <algorithm>
 #include <chrono>
