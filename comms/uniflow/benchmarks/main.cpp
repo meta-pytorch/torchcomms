@@ -18,8 +18,8 @@
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
 #endif
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_TCP_TRANSPORT)
-#include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+#include "comms/uniflow/extensions/benchmarks/bench/TcpBandwidthBenchmark.h"
 #endif
 #include "comms/uniflow/logging/Logger.h"
 
@@ -583,7 +583,7 @@ int main(int argc, char** argv) {
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
 #endif
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_TCP_TRANSPORT)
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
           opts.tcpIface,

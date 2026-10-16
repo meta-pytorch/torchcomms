@@ -17,7 +17,7 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
 #endif
 
 #include <algorithm>

@@ -34,7 +34,7 @@
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
 
 using meta::comms::MpiBaseTestFixture;
 using meta::comms::MPIEnvironmentBase;
