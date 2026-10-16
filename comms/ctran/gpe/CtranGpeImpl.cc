@@ -29,6 +29,7 @@
 
 #include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 #include "comms/utils/colltrace/v1/CollRecord.h"
+#include "comms/utils/colltrace/v2/CollTraceV2.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran;
@@ -172,9 +173,12 @@ commResult_t CtranGpe::Impl::submit(
           kernelConfig.stream, streamCaptureInfo));
   bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
 
+  const bool useCollTraceV2 = meta::comms::colltracev2::enabled() &&
+      ctran::gpe::inKernelColltraceSupported();
   // Only graph tracing on sm_90+ creates the ring consumed by the kernel.
-  const bool useInKernelColltrace = ctran::gpe::inKernelColltraceSupported() &&
-      isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
+  const bool useInKernelColltrace = !useCollTraceV2 &&
+      ctran::gpe::inKernelColltraceSupported() && isCapturing &&
+      NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
   // Single-kernel collectives emit both boundaries (the KernelConfig defaults);
   // multi-kernel collectives (the AllGatherP pipeline) set these per kernel.
   const bool colltraceEmitStart =
@@ -256,6 +260,21 @@ commResult_t CtranGpe::Impl::submit(
         colltraceHandle.get(),
         colltraceEmitStart,
         colltraceEmitEnd);
+  }
+  if (useCollTraceV2) {
+    auto& v2 = meta::comms::colltracev2::CollTraceV2::instance();
+    // The id was minted at the NCCL API entry; a collective's first kernel
+    // picks it up and later kernels reuse it. Standalone ctran (no NCCL entry
+    // point) mints its own.
+    if (kernelConfig.colltraceEmitStart) {
+      const auto& commDesc = comm->logMetaData_.commDesc;
+      collTraceV2CollId_ = v2.getLatestCollId(commDesc);
+      if (collTraceV2CollId_ ==
+          meta::comms::colltracev2::COLLTRACE_INVALID_COLLID) {
+        collTraceV2CollId_ = v2.newCollId(commDesc);
+      }
+    }
+    colltraceHdr = v2.getKernelHandle(collTraceV2CollId_);
   }
 
   cudaStream_t launchStream = kernelConfig.stream;

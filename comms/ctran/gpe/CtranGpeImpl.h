@@ -29,6 +29,7 @@
 #include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
+#include "comms/utils/colltrace/v2/CollTraceV2.h"
 
 struct CommLogData;
 
@@ -317,6 +318,10 @@ class CtranGpe::Impl {
   // (capture) thread, and a group's submits are always contiguous, so a single
   // pending slot suffices.
   meta::comms::colltrace::ColltraceDeviceHandle pendingColltraceGroup_{};
+  // Colltrace v2 id of the collective currently being submitted; same
+  // single-slot reasoning as pendingColltraceGroup_.
+  uint64_t collTraceV2CollId_{
+      meta::comms::colltracev2::COLLTRACE_INVALID_COLLID};
 
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.

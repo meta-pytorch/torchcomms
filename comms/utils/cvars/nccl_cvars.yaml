@@ -2641,6 +2641,20 @@ cvars:
      enabled via NCCL_COLLTRACE. Set to false to leave only the CTRAN
      GPE-routed collectives in those stats.
 
+ - name        : NCCL_COLLTRACE_VERSION
+   type        : int
+   default     : 1
+   description : |-
+     Which implementation backs NCCL_COLLTRACE. 1 is the plugin-based
+     colltrace (comms/utils/colltrace/v1). 2 is colltrace v2
+     (comms/utils/colltrace/v2): every collective kernel publishes its own
+     start/end timestamps into a per-communicator ring buffer, which is
+     drained on demand through the lifecycle event feed. Under v2
+     NCCL_COLLTRACE accepts only "lifecycle" or "all" (equivalent); there is
+     no algostat, trace, verbose, or watchdog. v2 needs sm_90+; on older
+     devices collectives go untraced. v2 reads its own sizing knobs
+     (COLLTRACE_*), documented in comms/utils/colltrace/v2/CollTraceV2.h.
+
  - name        : NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD
    type        : bool
    default     : true

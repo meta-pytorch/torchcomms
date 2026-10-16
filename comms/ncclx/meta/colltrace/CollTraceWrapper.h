@@ -27,6 +27,11 @@ std::unordered_map<std::string, std::string> collTraceGetInfo();
 
 namespace ncclx::colltrace {
 
+// Called at the top of every collective/p2p API entry point, before any early
+// return, so every user call gets a colltrace v2 id even if it launches no
+// kernel. No-op under v1.
+void onCollectiveEnqueue(ncclComm* comm);
+
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
 prepareNcclKernelColltrace(
     ncclKernelPlan* plan,

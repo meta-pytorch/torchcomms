@@ -21,6 +21,7 @@
 #include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 #include "comms/utils/colltrace/v1/plugins/LifecycleEventFeedPlugin.h"
 #include "comms/utils/colltrace/v1/plugins/WatchdogPlugin.h"
+#include "comms/utils/colltrace/v2/CollTraceV2.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/NcclxChecks.h"
 #include "meta/NcclxLogger.h"
@@ -165,6 +166,43 @@ std::chrono::milliseconds getCollTraceWatchdogTimeout() {
   }
   // 0 will be treated as no timeout
   return std::chrono::seconds{NCCL_COLLTRACE_WATCHDOG_DEFAULT_TIMEOUT_SEC};
+}
+
+bool useCollTraceV2() {
+  return meta::comms::colltracev2::enabled();
+}
+
+meta::comms::colltracev2::CollTraceV2& getCollTraceV2() {
+  return meta::comms::colltracev2::CollTraceV2::instance();
+}
+
+// v2 produces only the lifecycle feed, so NCCL_COLLTRACE is just on or off:
+// "lifecycle" or "all" enable it; anything else is rejected. NCCL only
+// registers the comm and arms kernels; consumers read v2 through its own API.
+ncclResult_t collTraceV2Init(ncclComm* comm) {
+  for (const auto& mode : NCCL_COLLTRACE) {
+    if (mode != "ALL" && mode != "all" && mode != "lifecycle") {
+      NCCLX_LOG(
+          ERR,
+          "NCCL_COLLTRACE mode '{}' is not supported by colltrace v2; valid modes are all and lifecycle",
+          mode);
+      return ncclInvalidArgument;
+    }
+  }
+  const auto& commDesc = comm->logMetaData.commDesc;
+  if (comm->compCap < 90) {
+    NCCLX_LOG(
+        WARN,
+        "CollTrace v2 needs sm_90+ (compCap {}); commDesc {} will not be traced",
+        comm->compCap,
+        commDesc);
+    return ncclSuccess;
+  }
+  NCCLX_LOG(INFO, "Initializing CollTrace v2 for commDesc {}", commDesc);
+  if (!getCollTraceV2().registerComm(commDesc)) {
+    NCCLX_LOG(ERR, "CollTrace v2 failed to register commDesc {}", commDesc);
+  }
+  return ncclSuccess;
 }
 
 std::string getAlgoNameFromCollTask(const ncclTaskColl& collTask) {
@@ -329,6 +367,10 @@ getEmptyKernelTaskMetadata(
 } // namespace
 
 ncclResult_t newCollTraceInit(ncclComm* comm) {
+  if (useCollTraceV2()) {
+    return collTraceV2Init(comm);
+  }
+
   // Parse NCCL_COLLTRACE configuration flags
   bool algoStatEnabled = false;
   bool lifecycleEnabled = false;
@@ -463,6 +505,9 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
 }
 
 ncclResult_t newCollTraceDestroy(ncclComm* comm) {
+  if (useCollTraceV2()) {
+    getCollTraceV2().deregisterComm(comm->logMetaData.commDesc);
+  }
   deregisterLifecycleFeed(comm);
   comm->newCollTrace.reset();
   return ncclSuccess;
@@ -551,6 +596,7 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
 std::unordered_map<std::string, std::string> collTraceGetInfo() {
   std::unordered_map<std::string, std::string> info;
   info["colltrace_enabled"] = folly::to<std::string>(!NCCL_COLLTRACE.empty());
+  info["colltrace_version"] = folly::to<std::string>(NCCL_COLLTRACE_VERSION);
   info["colltrace_new_colltrace"] = folly::to<std::string>(true);
   info["colltrace_supports_check_async_error"] = folly::to<std::string>(true);
   // Only new colltrace supports checking timeout
@@ -802,7 +848,27 @@ void armNcclInKernelColltrace(
 #endif // in-kernel colltrace gate
 }
 
+// The id was minted by onCollectiveEnqueue at the API entry; a kernel belongs
+// to the most recently enqueued collective on its comm.
+void armCollTraceV2([[maybe_unused]] ncclKernelPlan& plan) {
+#ifdef NCCLX_INKERNEL_COLLTRACE
+  if (plan.isSymColl || plan.kernelArgs == nullptr) {
+    return;
+  }
+  auto& v2 = meta::comms::ncclx::getCollTraceV2();
+  plan.kernelArgs->colltraceHdr =
+      v2.getKernelHandle(v2.getLatestCollId(plan.comm->logMetaData.commDesc));
+#endif // in-kernel colltrace gate
+}
+
 } // namespace
+
+void onCollectiveEnqueue(ncclComm* comm) {
+  if (comm == nullptr || !meta::comms::ncclx::useCollTraceV2()) {
+    return;
+  }
+  meta::comms::ncclx::getCollTraceV2().newCollId(comm->logMetaData.commDesc);
+}
 
 std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>
 prepareNcclKernelColltrace(
@@ -815,6 +881,11 @@ prepareNcclKernelColltrace(
       plan->comm->algoStats->record(
           algoInfo->opName, algoInfo->algoName, algoInfo->msgSize);
     }
+  }
+
+  if (meta::comms::ncclx::useCollTraceV2()) {
+    armCollTraceV2(*plan);
+    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
   }
 
   auto handle = NCCL_COLLTRACE.empty()
