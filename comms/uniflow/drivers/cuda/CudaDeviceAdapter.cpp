@@ -69,13 +69,22 @@ Result<DmaBuff> CudaDeviceAdapter::exportDmaBuff(
 #endif
   }
 
-  // dma-buf registration requires a page-aligned base address. Align down
-  // and remember the offset so the caller can pass it to regDmabufMr.
   const auto addr = reinterpret_cast<uint64_t>(ptr);
+#if defined(__HIP_PLATFORM_AMD__)
+  // HIP DMA-BUF handles cover the backing allocation.
+  CUdeviceptr allocationBase = nullptr;
+  size_t dmaBufLen = 0;
+  CHECK_EXPR(cudaDriverApi_->cuMemGetAddressRange_v2(
+      &allocationBase, &dmaBufLen, toDevicePtr(addr)));
+  const uintptr_t alignedAddr = reinterpret_cast<uintptr_t>(allocationBase);
+  const uint64_t dmaBufOffset = addr - alignedAddr;
+#else
+  // CUDA can export a page-aligned subrange of an allocation.
   const uintptr_t alignedAddr = addr & ~(pageSize_ - 1);
   const uint64_t dmaBufOffset = addr - alignedAddr;
   const size_t dmaBufLen =
       (len + dmaBufOffset + pageSize_ - 1) & ~(pageSize_ - 1);
+#endif
 
   DmaBuff out;
   auto status = cudaDriverApi_->memGetHandleForAddressRange(
