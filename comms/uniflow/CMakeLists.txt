@@ -502,6 +502,10 @@ set(UNIFLOW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Uniflow.cpp
 )
 
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP OR UNIFLOW_ENABLE_TCP)
+  list(APPEND UNIFLOW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/TransportHooks.cpp)
+endif()
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/UniflowPublicHeaders.cmake)
 
 add_library(uniflow_objects OBJECT

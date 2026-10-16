@@ -844,6 +844,10 @@ TEST_F(MultiTransportTest, DramPutRoutesToRdma) {
 }
 
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+TEST_F(MultiTransportTest, TcpCapabilityWithHooksSucceeds) {
+  EXPECT_TRUE(MultiTransportFactory::supported(TransportType::TCP).hasValue());
+}
+
 TEST_F(MultiTransportTest, PreferredTcpOverridesRdma) {
   MultiTransport mt(
       0,
@@ -930,6 +934,42 @@ TEST_F(MultiTransportTest, PreferredTcpReturnsNotImplemented) {
   EXPECT_EQ(rdma->putCount, 0);
 }
 
+TEST_F(MultiTransportTest, TcpCapabilityWithoutHooksReturnsNotImplemented) {
+  const auto status = MultiTransportFactory::supported(TransportType::TCP);
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::NotImplemented);
+  EXPECT_NE(
+      status.error().message().find("transport not linked"), std::string::npos);
+}
+
+TEST_F(MultiTransportTest, TcpCaseOverridesWithoutHooksDoNotFallBackToRdma) {
+  for (const auto memType : {MemoryType::VRAM, MemoryType::DRAM}) {
+    const bool intraNode = memType == MemoryType::VRAM;
+    MultiTransport mt(
+        0,
+        nullptr,
+        intraNode ? std::optional(TransportType::TCP) : std::nullopt,
+        std::nullopt,
+        intraNode ? std::nullopt : std::optional(TransportType::TCP));
+    auto* rdma = addMock(mt, TransportType::RDMA);
+    auto* tcp = addMock(mt, TransportType::TCP);
+    const std::vector<TransportType> types{
+        TransportType::RDMA, TransportType::TCP};
+    TestSegments local(memType, 0, types);
+    TestSegments remote(memType, 0, types);
+    std::vector<TransferRequest> reqs = {
+        {local.regSeg.span(size_t{0}, size_t{32}),
+         remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+    const auto status = mt.put(reqs).get();
+
+    ASSERT_TRUE(status.hasError());
+    EXPECT_EQ(status.error().code(), ErrCode::NotImplemented);
+    EXPECT_EQ(rdma->putCount, 0);
+    EXPECT_EQ(tcp->putCount, 0);
+  }
+}
+
 TEST_F(MultiTransportTest, CommonTcpOnlyReturnsNotImplemented) {
   MultiTransport mt(0);
   TestSegments local(MemoryType::DRAM, -1, {TransportType::TCP});
@@ -1011,6 +1051,27 @@ TEST_F(MultiTransportTest, VramFallsBackToRdmaWhenNoNvLink) {
   auto future = mt.put(reqs);
   EXPECT_TRUE(future.get().hasValue());
   EXPECT_EQ(rdma->putCount, 1);
+}
+
+TEST_F(MultiTransportTest, NvLinkPreferencesFallBackToRdmaWhenTierAbsent) {
+  for (const bool preferred : {false, true}) {
+    MultiTransport mt(
+        0,
+        nullptr,
+        preferred ? std::nullopt : std::optional(TransportType::NVLink),
+        preferred ? std::optional(TransportType::NVLink) : std::nullopt);
+    auto* rdma = addMock(mt, TransportType::RDMA);
+    const std::vector<TransportType> types{
+        TransportType::NVLink, TransportType::RDMA};
+    TestSegments local(MemoryType::VRAM, 0, types);
+    TestSegments remote(MemoryType::VRAM, 0, types);
+    std::vector<TransferRequest> reqs = {
+        {local.regSeg.span(size_t{0}, size_t{32}),
+         remote.remoteSeg.span(size_t{0}, size_t{32})}};
+
+    EXPECT_TRUE(mt.put(reqs).get().hasValue());
+    EXPECT_EQ(rdma->putCount, 1);
+  }
 }
 
 TEST_F(MultiTransportTest, MultiplePutsBatchToSameTransport) {

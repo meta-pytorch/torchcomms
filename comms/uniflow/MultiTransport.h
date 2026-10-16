@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 namespace uniflow {
 
@@ -76,6 +77,14 @@ struct MultiTransportFactoryOptions {
   // RDMA ignoring RequestOptions::timeout.
   std::optional<std::chrono::milliseconds> rdmaRequestTimeout;
 };
+
+void addExtensionTransportFactories(
+    int deviceId,
+    EventBase* evb,
+    const MultiTransportFactoryOptions& options,
+    std::vector<std::shared_ptr<TransportFactory>>& factories);
+
+Status extensionTransportSupported(TransportType type);
 
 class MultiTransport {
  public:
