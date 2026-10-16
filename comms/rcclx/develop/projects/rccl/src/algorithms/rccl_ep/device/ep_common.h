@@ -56,6 +56,15 @@ struct WindowView {
   __device__ __forceinline__ int32_t* src_idx() const {
     return (int32_t*)(base + l.off_src_idx);
   }
+  __device__ __forceinline__ uint32_t* prog() const {
+    return (uint32_t*)(base + l.off_prog);
+  }
+  __device__ __forceinline__ uint32_t* cprog() const {
+    return (uint32_t*)(base + l.off_cprog);
+  }
+  __device__ __forceinline__ int32_t* sdone() const {
+    return (int32_t*)(base + l.off_sdone);
+  }
   __device__ __forceinline__ bf16_t* y() const {
     return (bf16_t*)(base + l.off_y);
   }
@@ -269,6 +278,66 @@ __device__ __forceinline__ void wave_copy_bytes(uint8_t* __restrict__ dst, const
   auto* d4 = reinterpret_cast<uint4*>(dst);
   for (int i = lane; i < nvec; i += kWarpSize) d4[i] = s4[i];
   for (int i = nvec * 16 + lane; i < n; i += kWarpSize) dst[i] = src[i];
+}
+
+// Streamed dispatch and combine (RCCL_EP_STREAM_DISPATCH, RCCL_EP_STREAM_COMBINE): the push CTAs
+// publish their progress in chunks into the receiver's window, one word per (sender, push CTA): the
+// low 16 bits of the call's sequence number over the number of chunks pushed. The receiver's CTAs
+// wait for the chunks they need and work while the rest are still in flight. When the last of them
+// is done it zeroes every word (stream_done), so no word outlives its call: a word that does not
+// carry this call's number was never written in it, whatever the number of push CTAs was before,
+// and a replayed graph, whose calls reuse one number, cannot see the previous replay's words.
+__device__ __forceinline__ uint32_t stream_prog(uint32_t seq, int chunks) {
+  return (seq << 16) | (uint32_t)chunks;
+}
+
+// Ends a chunk of a push CTA. Each wave waits for its own stores, then one thread makes the whole
+// CTA's chunk visible system-wide and publishes it in `word`. One system fence per CTA, not one per
+// wave: the write-back it issues is cache-wide, and 16 of them per chunk cost more than the overlap
+// gains.
+__device__ __forceinline__ void stream_publish(uint32_t* word, uint32_t seq, int chunks) {
+#if defined(__GFX9__)
+  __builtin_amdgcn_s_waitcnt(0);  // vmcnt counts stores too on gfx9
+#else
+  __threadfence_system();
+#endif
+  __syncthreads();
+  if (threadIdx.x != 0) return;
+  __threadfence_system();
+  __hip_atomic_store(word, stream_prog(seq, chunks), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+}
+
+// Spins until `word` holds at least `chunks` chunks of call `seq`. Plain system-scope loads; the
+// caller acquires once after the spin, which keeps the caches out of the poll.
+__device__ __forceinline__ void stream_spin(const uint32_t* word, uint32_t seq, int chunks) {
+  const uint32_t hi = seq & 0xffffu;
+  for (;;) {
+    const uint32_t v = __hip_atomic_load(word, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+    if ((v >> 16) == hi && (int)(v & 0xffffu) >= chunks) return;
+    __builtin_amdgcn_s_sleep(2);
+  }
+}
+
+// Holds the calling CTA until each of a sender's `push_cta` push CTAs (words[0, push_cta)) has
+// published `chunks` chunks of call `seq`: lane b of the first wave polls word b, then one acquire.
+__device__ __forceinline__ void stream_wait(const uint32_t* words, int push_cta, uint32_t seq, int chunks) {
+  if ((int)threadIdx.x < push_cta) stream_spin(words + threadIdx.x, seq, chunks);
+  if (threadIdx.x < kWarpSize) __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "");
+  __syncthreads();
+}
+
+// Called by every receiving CTA when it is done with the call's words: the last of `nrecv` zeroes
+// words[r * kStreamMaxPushCta + b] for every sender r and push CTA b, and the counter. A sender
+// writes again only after the next call's barrier A or count exchange, which this kernel's end
+// precedes on this rank.
+__device__ __forceinline__ void stream_done(uint32_t* words, int32_t* done, int num_ranks, int push_cta,
+                                            int nrecv) {
+  __syncthreads();
+  if (threadIdx.x != 0) return;
+  if (atomicAdd(done, 1) != nrecv - 1) return;
+  for (int r = 0; r < num_ranks; ++r)
+    for (int b = 0; b < push_cta; ++b) words[r * kStreamMaxPushCta + b] = 0;
+  *done = 0;
 }
 
 }  // namespace rccl_ep

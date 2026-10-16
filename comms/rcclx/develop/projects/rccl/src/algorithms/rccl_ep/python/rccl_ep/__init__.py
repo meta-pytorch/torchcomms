@@ -106,6 +106,9 @@ def _lib():
         lib.ep_plan_notify.argtypes = [ctypes.c_void_p, P, I, P, P, P, P, P, P]
         lib.ep_dispatch_v3.restype = I
         lib.ep_dispatch_v3.argtypes = [ctypes.c_void_p, P, P, P, P, I, P, P, I, I, P, P, P, P, P, P]
+        lib.ep_dispatch_v4.restype = I
+        lib.ep_dispatch_v4.argtypes = [ctypes.c_void_p, P, P, P, P, I, P, P, I, I, P, P, P, P, P, P,
+                                       P]
         lib.ep_wait_counts.restype = I
         lib.ep_wait_counts.argtypes = [ctypes.c_void_p, ctypes.c_void_p, I]
         lib.ep_wait_counts_v2.restype = I
@@ -118,6 +121,9 @@ def _lib():
                                           I, I, P, I, I, P, P, I, P]
         lib.ep_combine.restype = I
         lib.ep_combine.argtypes = [ctypes.c_void_p, P, P, P, P, P, I, P, I, P, P, I, P, P, I, P]
+        lib.ep_combine_v5.restype = I
+        lib.ep_combine_v5.argtypes = [ctypes.c_void_p, P, P, P, P, P, I, P, P, I, P, I, P, P, I,
+                                      P, P, I, I, P, P]
         lib.ep_combine_v4.restype = I
         lib.ep_combine_v4.argtypes = [ctypes.c_void_p, P, P, P, P, P, I, P, P, I, P, I, P, P, I,
                                       P, P, I, I, P]
@@ -787,11 +793,24 @@ class ElasticBuffer:
                 # comes between.
                 if payload_later and lib.ep_dispatch_payload_later(self._h) != 0:
                     raise RuntimeError("ep_dispatch_payload_later failed")
-                if lib.ep_dispatch_v2(self._h, x.data_ptr(), _ptr(x_sf), ti32.data_ptr(),
-                                      tw.data_ptr(), num_tokens, send_list.data_ptr(),
-                                      sendc.data_ptr(), 1 if use_fp8 else 0, num_sms,
-                                      _ptr(rx), _ptr(rsf), rtk.data_ptr(),
-                                      rtw.data_ptr(), rsrc.data_ptr(), 0, 0, stream) != 0:
+                # The plan's own per-source prefix, so the library needs no scan after the push
+                # and can stream the copy with it (RCCL_EP_STREAM_DISPATCH).
+                psum = (h._psum_src if h._psum_src is not None
+                        else h.psum_num_recv_tokens_per_scaleup_rank)
+                if psum is not None and not self.internode:
+                    rc = lib.ep_dispatch_v4(self._h, x.data_ptr(), _ptr(x_sf), ti32.data_ptr(),
+                                            tw.data_ptr(), num_tokens, send_list.data_ptr(),
+                                            sendc.data_ptr(), 1 if use_fp8 else 0, num_sms,
+                                            _ptr(rx), _ptr(rsf), rtk.data_ptr(),
+                                            rtw.data_ptr(), rsrc.data_ptr(), psum.data_ptr(),
+                                            stream)
+                else:
+                    rc = lib.ep_dispatch_v2(self._h, x.data_ptr(), _ptr(x_sf), ti32.data_ptr(),
+                                            tw.data_ptr(), num_tokens, send_list.data_ptr(),
+                                            sendc.data_ptr(), 1 if use_fp8 else 0, num_sms,
+                                            _ptr(rx), _ptr(rsf), rtk.data_ptr(),
+                                            rtw.data_ptr(), rsrc.data_ptr(), 0, 0, stream)
+                if rc != 0:
                     raise RuntimeError("ep_dispatch_v2 failed")
                 n = handle.num_recv
             elif self.internode:
@@ -1245,7 +1264,15 @@ class ElasticBuffer:
         recv_src = (handle.recv_src if handle.recv_src is not None
                     else handle.recv_src_metadata[:, 0].contiguous())
         self._inter_bind(handle)
-        rc = lib.ep_combine_v4(self._h, x.data_ptr(), _ptr(in_w),
+        # The plan's positions let the library reduce while the rows arrive
+        # (RCCL_EP_STREAM_COMBINE); flat intranode handles only. Whether it streams is decided
+        # from this pointer on each rank and must agree across ranks, so a rank with no tokens,
+        # whose empty plan has data_ptr() 0, passes a placeholder (it reads none of it).
+        slot_of = (handle.slot if not self.internode and not self.hybrid
+                   and getattr(handle, "slot", None) is not None else None)
+        if slot_of is not None and slot_of.numel() == 0:
+            slot_of = torch.zeros(1, dtype=torch.int32, device=x.device)
+        rc = lib.ep_combine_v5(self._h, x.data_ptr(), _ptr(in_w),
                             _ptr(handle.row_map) if handle.expanded else 0, _ptr(expert_rows),
                             _ptr(row_scales), 1 if fma else 0,
                             handle.recv_topk_idx.data_ptr(),
@@ -1254,7 +1281,7 @@ class ElasticBuffer:
                             handle.topk_idx_i32.data_ptr(), num_tokens,
                             _ptr(b0), _ptr(b1), grouped,
                             out.data_ptr(), _ptr(out_w), num_sms,
-                            1 if return_recv_hook else 0, stream)
+                            1 if return_recv_hook else 0, _ptr(slot_of), stream)
         if rc != 0:
             raise RuntimeError("ep_combine failed")
         if not return_recv_hook:
