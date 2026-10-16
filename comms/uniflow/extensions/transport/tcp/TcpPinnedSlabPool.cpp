@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpPinnedSlabPool.h"
 
 #include <limits>
 #include <string>
