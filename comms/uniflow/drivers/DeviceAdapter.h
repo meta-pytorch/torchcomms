@@ -118,11 +118,9 @@ std::shared_ptr<DeviceAdapter> createDeviceAdapter(
     std::shared_ptr<CudaApi> cudaApi = nullptr,
     std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr);
 
-/// Whether the NVLink transport is usable on this build's accelerator.
-/// Selected at link time by the platform's backend: true for CUDA (NVLink
-/// is an NVIDIA technology), false for backends with no NVLink. Prefer this
-/// over constructing a DeviceAdapter to read the constant, since adapter
-/// construction may load backend runtimes (e.g. libcuda) unnecessarily.
+/// Legacy flag supplied by the platform's DeviceAdapter backend.
+/// This does not report transport availability. Query
+/// MultiTransportFactory::supported(TransportType::NVLink) for support.
 bool isNvlinkAvailable();
 
 } // namespace uniflow
