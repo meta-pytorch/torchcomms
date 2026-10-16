@@ -1,7 +1,0 @@
-# $Id$
-
-COMPSRCS += components/mx/linux-mx.c 
-COMPOBJS += linux-mx.o
-
-linux-mx.o: components/mx/linux-mx.c $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/mx/linux-mx.c -o linux-mx.o 

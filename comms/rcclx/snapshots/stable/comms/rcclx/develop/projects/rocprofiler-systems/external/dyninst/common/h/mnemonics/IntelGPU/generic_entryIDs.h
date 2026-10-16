@@ -1,1 +1,0 @@
-intel_gpu_op_general,

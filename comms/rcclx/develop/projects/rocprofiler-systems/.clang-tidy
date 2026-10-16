@@ -1,6 +1,0 @@
----
-Checks: "-*,\
-misc-const-correctness,\
-"
-
-HeaderFilterRegex: "/rocprofiler-systems/source/"

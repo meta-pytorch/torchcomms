@@ -1,2 +1,0 @@
-#!/usr/bin/env bash
-exec "$(git rev-parse --show-toplevel)/.github/hooks/clang-format-check.sh"

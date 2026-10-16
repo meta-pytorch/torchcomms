@@ -1,7 +1,0 @@
-# $Id$
-
-COMPSRCS += components/lustre/linux-lustre.c
-COMPOBJS += linux-lustre.o
-
-linux-lustre.o: components/lustre/linux-lustre.c $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/lustre/linux-lustre.c -o linux-lustre.o 

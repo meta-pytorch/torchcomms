@@ -1,3 +1,0 @@
-# timemory python front-end
-
-The timemory python package implements the front-end interface to the modules and utilities provided by timemory python bindings. Please refer to [timemory python bindings in ^timemory/source/python](../source/python/README.md#timemory_python_bindings) for detailed documentation on the contents, utilities, sub-modules and sub-packages provided by timemory's python package, their usage and a few examples.

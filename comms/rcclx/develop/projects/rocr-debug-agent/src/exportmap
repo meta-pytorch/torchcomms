@@ -1,5 +1,0 @@
-{
-global: OnLoad;
-        OnUnload;
-local:  *;
-};
