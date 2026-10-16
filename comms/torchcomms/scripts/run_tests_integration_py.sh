@@ -40,15 +40,16 @@ run_tests () {
 export TEST_BACKEND=nccl
 run_tests
 
-# NCCLX (skip if built with USE_NCCLX=0)
-if [ "${USE_NCCLX}" != "0" ] && [ "${USE_NCCLX}" != "OFF" ]; then
+# NCCLX (deprecated; skip unless built with USE_NCCLX=1)
+HAS_NCCLX=$(python -c "import importlib.util; print(int(importlib.util.find_spec('torchcomms._comms_ncclx') is not None))")
+if [ "${HAS_NCCLX}" = "1" ]; then
     export TEST_BACKEND=ncclx
     run_tests
     # TODO(d4l3k): reenable once NCCLX tests are passing
     # Failed to initialize NCCL communicator: internal error
     #run_tests "$NCCLX_INTEGRATION_TEST_DIRS"
 else
-    echo "Skipping ncclx tests (USE_NCCLX=${USE_NCCLX})"
+    echo "Skipping ncclx tests (torchcomms._comms_ncclx not built)"
 fi
 
 # Gloo with CPU

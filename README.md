@@ -14,6 +14,12 @@ both the high level collectives API as well as several out of the box backends.
 * [Documentation](https://meta-pytorch.org/torchcomms/main/index.html)
 * [Examples](./comms/torchcomms/examples)
 
+> [!WARNING]
+> The NCCLX backend is deprecated in open source. It is no longer included in
+> wheels or tested in CI, and its sources are no longer updated. Use
+> [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html)
+> instead; all torchcomms features have been upstreamed in PyTorch 2.15.
+
 ## Prerequisites
 
 torchcomms requires the following software and hardware:
@@ -83,7 +89,9 @@ cd torchcomms
 
 No build needed - uses the library provided by PyTorch
 
-##### NCCLX Backend
+##### NCCLX Backend (deprecated)
+
+NCCLX is deprecated and must be explicitly enabled with `USE_NCCLX=ON`. Use [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html) instead; all torchcomms features have been upstreamed in PyTorch 2.15.
 
 If you want to install the third-party dependencies directly from conda, run the following command:
 ```bash
@@ -196,7 +204,7 @@ You can customize the build by setting environment variables before running pip 
 ```bash
 # Enable/disable specific backends (ON/OFF or 1/0)
 export USE_NCCL=ON    # Default: ON
-export USE_NCCLX=ON   # Default: ON
+export USE_NCCLX=OFF  # Default: OFF (deprecated)
 export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF

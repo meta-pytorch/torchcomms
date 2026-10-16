@@ -13,8 +13,8 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 
-# Test utilities (e.g., CudaGraphTestUtils) — only needed for CUDA backends
-if(USE_NCCL OR USE_NCCLX)
+# Test utilities (e.g., CudaGraphTestUtils) need folly/spdlog from build_ncclx.sh.
+if(USE_NCCLX)
   add_subdirectory(
     ${ROOT}/comms/utils/test_utils
     ${CMAKE_CURRENT_BINARY_DIR}/test_utils)

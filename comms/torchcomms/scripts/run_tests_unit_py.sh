@@ -19,10 +19,12 @@ collect_unit_test_dirs () {
 
 UNIT_TEST_DIRS=$(collect_unit_test_dirs | sort -u)
 
+HAS_TRANSPORT=$(python -c "import importlib.util; print(int(importlib.util.find_spec('torchcomms._transport') is not None))")
+
 run_tests () {
     for dir in $UNIT_TEST_DIRS; do
-        if [[ "$dir" == *transport* ]] && { [ "${USE_TRANSPORT}" = "0" ] || [ "${USE_TRANSPORT}" = "OFF" ]; }; then
-            echo "Skipping $dir (USE_TRANSPORT=${USE_TRANSPORT})"
+        if [[ "$dir" == *transport* ]] && [ "${HAS_TRANSPORT}" = "0" ]; then
+            echo "Skipping $dir (torchcomms._transport not built)"
             continue
         fi
         if find "$dir" -maxdepth 1 -name 'test_*.py' -print -quit | read -r; then
