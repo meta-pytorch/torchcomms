@@ -177,7 +177,7 @@ class PyReader {
   poll(int64_t stream, std::chrono::milliseconds timeout) {
     std::vector<PyEntry> out;
     // Hoist the calibration singleton fetch out of the per-entry lambda
-    // (same pattern as comms/utils/colltrace/CollTrace.cc) — get() is
+    // (same pattern as comms/utils/colltrace/v1/CollTrace.cc) — get() is
     // function-local-static so the per-call check is cheap but pointless.
     // Used by both scope branches below so `Entry.timestamp` is wall-clock
     // ns since the system_clock epoch regardless of ring scope.

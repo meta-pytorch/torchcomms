@@ -484,7 +484,7 @@ static_assert(
 // Templated kernel launch for host-side write(). The template definition
 // is available in .cu compilation units; .cc files link against explicit
 // instantiations provided by consumers (see
-// comms/utils/colltrace/HRDWRingBufferInstantiations.cu for examples).
+// comms/utils/colltrace/v1/HRDWRingBufferInstantiations.cu for examples).
 #if defined(__CUDACC__) || defined(__HIPCC__)
 namespace detail {
 template <typename DataT, MemoryCoherenceScope C = MemoryCoherenceScope::System>

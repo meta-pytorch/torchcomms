@@ -12,7 +12,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 template <typename T, commRedOp_t RedOp>
 __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterRHD(

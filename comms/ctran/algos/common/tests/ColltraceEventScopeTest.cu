@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 
 #include "comms/ctran/algos/common/ColltraceEventScope.cuh"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 // Every thread constructs the scope; ColltraceEventScope elects a single writer
 // (block 0, thread 0) internally, emitting the start on construction and the

@@ -8,7 +8,7 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/utils/DevAttribute.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 #include "comms/utils/commSpecs.h"
 
 #ifndef CTRAN_DISABLE_TCPDM

@@ -1,0 +1,182 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#include "comms/utils/colltrace/v1/CollTraceHandle.h"
+
+#include <folly/Unit.h>
+
+#include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
+#include "comms/utils/commSpecs.h"
+
+namespace meta::comms::colltrace {
+
+std::string_view triggerStateToStr(CollTraceHandleTriggerState state) {
+  switch (state) {
+    case CollTraceHandleTriggerState::BeforeEnqueueKernel:
+      return "BeforeEnqueueKernel";
+    case CollTraceHandleTriggerState::AfterEnqueueKernel:
+      return "AfterEnqueueKernel";
+    case CollTraceHandleTriggerState::KernelStarted:
+      return "KernelStarted";
+    case CollTraceHandleTriggerState::KernelFinished:
+      return "KernelFinished";
+    default:
+      return "UnknownState";
+  }
+}
+
+CollTraceHandle::CollTraceHandle(
+    ICollTrace* collTrace,
+    CollTraceEvent* event,
+    std::shared_ptr<EagerCancellationGate> cancellationGate)
+    : state_(
+          CollTraceHandleState{
+              .collTrace_ = collTrace,
+              .event_ = event,
+              .cancellationGate_ = std::move(cancellationGate)}) {}
+
+CommsMaybeVoid CollTraceHandle::checkTriggerStateValidity(
+    CollTraceHandleTriggerState state) noexcept {
+  // Check if we're triggering in the correct order. All of the checks below
+  // are unlikely to be true, but we want to ensure that we're not triggering
+  // states in the wrong order, which might create pretty hard to debug issues
+
+  auto lastState = lastTriggerState_.load();
+
+  if (lastState == CollTraceHandleTriggerState::NumTriggerStates) {
+    if (state != CollTraceHandleTriggerState::BeforeEnqueueKernel)
+        [[unlikely]] {
+      return folly::makeUnexpected(CommsError(
+          "First state must be BeforeEnqueueKernel", commInvalidArgument));
+    } else {
+      return folly::unit;
+    }
+  }
+
+  // Simple validation to ensure states are triggered in the correct order
+  if (lastState == state) [[unlikely]] {
+    return folly::makeUnexpected(
+        CommsError("Same state triggered multiple times", commInvalidArgument));
+  }
+
+  // Ensure proper ordering of states. It IS possible for KernelStarted to be
+  // triggered before AfterEnqueueKernel, as GPE thread and Kernel might start
+  // before the enqueue thread to call AfterEnqueueKernel. In rare cases, the
+  // kernel might even finish before enqueue kernel is called
+  if ((state == CollTraceHandleTriggerState::KernelStarted &&
+       (lastState != CollTraceHandleTriggerState::BeforeEnqueueKernel &&
+        lastState != CollTraceHandleTriggerState::AfterEnqueueKernel)) ||
+      (state == CollTraceHandleTriggerState::KernelFinished &&
+       (lastState != CollTraceHandleTriggerState::KernelStarted &&
+        lastState != CollTraceHandleTriggerState::BeforeEnqueueKernel &&
+        lastState != CollTraceHandleTriggerState::AfterEnqueueKernel)))
+      [[unlikely]] {
+    return folly::makeUnexpected(CommsError(
+        fmt::format(
+            "States triggered in incorrect order, last state: {}, triggering state: {}",
+            triggerStateToStr(lastState),
+            triggerStateToStr(state)),
+        commInvalidArgument));
+  }
+  return folly::unit;
+}
+
+CommsMaybeVoid CollTraceHandle::trigger(
+    CollTraceHandleTriggerState state) noexcept {
+  auto stateWriteLocked = state_.wlock();
+  if (stateWriteLocked->referenceInvalidated_) [[unlikely]] {
+    return folly::makeUnexpected(
+        CommsError("Handle is invalidated", commInvalidArgument));
+  }
+
+  if (stateWriteLocked->collTrace_ == nullptr) [[unlikely]] {
+    return folly::makeUnexpected(CommsError(
+        "CollTrace is null, cannot trigger event state", commInternalError));
+  }
+
+  if (stateWriteLocked->event_ == nullptr) [[unlikely]] {
+    return folly::makeUnexpected(CommsError(
+        "CollTraceEvent is null, cannot trigger event state",
+        commInternalError));
+  }
+
+  EXPECT_CHECK(checkTriggerStateValidity(state));
+
+  auto res = stateWriteLocked->collTrace_->triggerEventState(
+      *stateWriteLocked->event_, state);
+  if (!res.hasError()) {
+    lastTriggerState_.store(state);
+  }
+  return res;
+}
+
+CommsMaybeVoid CollTraceHandle::triggerPlugin(
+    std::string pluginName,
+    folly::dynamic params) noexcept {
+  return folly::makeUnexpected(CommsError(
+      "Currently trigger plugin from the new CollTrace is not supported",
+      commInternalError));
+}
+
+CommsMaybe<std::shared_ptr<ICollRecord>>
+CollTraceHandle::getCollRecord() noexcept {
+  auto stateReadLocked = state_.rlock();
+  if (stateReadLocked->referenceInvalidated_) [[unlikely]] {
+    return folly::makeUnexpected(
+        CommsError("Handle is invalidated", commInvalidArgument));
+  }
+
+  if (stateReadLocked->event_ == nullptr) {
+    return nullptr;
+  }
+
+  return stateReadLocked->event_->collRecord;
+}
+
+CommsMaybeVoid CollTraceHandle::cancel() noexcept {
+  std::shared_ptr<EagerCancellationGate> cancellationGate;
+  CollTraceEvent* event;
+  {
+    auto stateWriteLocked = state_.wlock();
+    if (stateWriteLocked->referenceInvalidated_) {
+      return folly::unit;
+    }
+    if (stateWriteLocked->event_ == nullptr) {
+      return folly::makeUnexpected(CommsError(
+          "Cannot cancel a handle without an owning CollTrace event",
+          commInternalError));
+    }
+
+    cancellationGate = std::move(stateWriteLocked->cancellationGate_);
+    event = stateWriteLocked->event_;
+    stateWriteLocked->referenceInvalidated_ = true;
+    stateWriteLocked->collTrace_ = nullptr;
+    stateWriteLocked->event_ = nullptr;
+  }
+  if (cancellationGate == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Cannot cancel a handle without an owning CollTrace",
+        commInternalError));
+  }
+  return cancellationGate->cancel(event);
+}
+
+CommsMaybeVoid CollTraceHandle::invalidate() noexcept {
+  auto stateWriteLocked = state_.wlock();
+  stateWriteLocked->referenceInvalidated_ = true;
+  stateWriteLocked->collTrace_ = nullptr;
+  stateWriteLocked->event_ = nullptr;
+  stateWriteLocked->cancellationGate_ = nullptr;
+
+  return folly::unit;
+}
+
+void CollTraceHandle::invalidateUnsafe() noexcept {
+  auto& state = state_.unsafeGetUnlocked();
+  state.referenceInvalidated_ = true;
+  state.collTrace_ = nullptr;
+  state.event_ = nullptr;
+  state.cancellationGate_ = nullptr;
+}
+
+} // namespace meta::comms::colltrace

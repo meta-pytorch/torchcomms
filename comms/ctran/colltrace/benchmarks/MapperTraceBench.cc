@@ -6,7 +6,7 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/testinfra/BenchUtils.h"
-#include "comms/utils/colltrace/CollRecord.h"
+#include "comms/utils/colltrace/v1/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ncclx::colltrace;

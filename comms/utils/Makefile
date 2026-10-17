@@ -88,12 +88,12 @@ SRC := $(wildcard $(UTILS_DIR)/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/trainer/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/logger/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/memtrace/*.cc)
-SRC += $(wildcard $(UTILS_DIR)/colltrace/*.cc)
-SRC += $(wildcard $(UTILS_DIR)/colltrace/plugins/*.cc)
+SRC += $(wildcard $(UTILS_DIR)/colltrace/v1/*.cc)
+SRC += $(wildcard $(UTILS_DIR)/colltrace/v1/plugins/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/hrdw_ring_buffer/*.cc)
 SRC += $(filter-out $(CVARS_CC),$(wildcard $(CVARS_DIR)/*.cc)) $(CVARS_CC)
 CUSRC := $(UTILS_DIR)/hrdw_ring_buffer/GpuClockCalibration.cu
-CUSRC += $(UTILS_DIR)/colltrace/HRDWRingBufferInstantiations.cu
+CUSRC += $(UTILS_DIR)/colltrace/v1/HRDWRingBufferInstantiations.cu
 
 OBJ := $(SRC:$(BASE_DIR)/%.cc=$(OBJDIR)/%.o) $(CUSRC:$(BASE_DIR)/%.cu=$(OBJDIR)/%.cu.o)
 

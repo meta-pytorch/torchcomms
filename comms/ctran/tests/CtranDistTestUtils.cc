@@ -8,8 +8,8 @@
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/testinfra/DistEnvironmentBase.h"
-#include "comms/utils/colltrace/CollTrace.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 
 namespace ctran {
 

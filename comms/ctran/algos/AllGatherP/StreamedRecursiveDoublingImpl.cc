@@ -2,7 +2,7 @@
 
 #include <memory>
 #include <vector>
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 #include <folly/ScopeGuard.h>
 

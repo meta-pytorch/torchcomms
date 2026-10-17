@@ -1,0 +1,362 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <latch>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <folly/MPMCQueue.h>
+#include <folly/Synchronized.h>
+#include <folly/concurrency/ConcurrentHashMap.h>
+#include <folly/container/F14Map.h>
+
+#include "comms/utils/colltrace/common/GraphCollTraceEvent.h"
+#include "comms/utils/colltrace/v1/CollTraceEvent.h"
+#include "comms/utils/colltrace/v1/CollTraceHandle.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
+#include "comms/utils/colltrace/v1/CollTracePlugin.h"
+#include "comms/utils/commSpecs.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBufferReader.h"
+
+struct CUstream_st;
+
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
+
+namespace meta::comms::colltrace {
+
+struct GraphCollTraceState;
+struct GraphCollectiveEntry;
+class GraphCancellationGate;
+class GraphCudaWaitEvent;
+class CollTraceGraphReplayTestAccessor;
+class GraphRingLifetimeTestAccessor;
+
+// Whether graph-captured collectives can be timed on the *current* device.
+// Requires both a compute capability of sm_90+ (the ring's 128b System-scope
+// atomic) and a CUDA driver outside [13.0, 13.2] (that range miscompiles the
+// device-side ColltraceDeviceHandle layout -- a [[no_unique_address]] bug fixed
+// in 13.3; cuda-compat's 13.3 driver on a 13.1 build is fine). When false the
+// collective kernel never publishes start/end timestamps, so graph colltrace is
+// disabled outright and the ring is never allocated -- that preserves the
+// deadlock-safety invariant that a graph colltrace record only exists when its
+// kernel will emit, since an unemitted record can never complete and would hang
+// the poll thread on drain. Both inputs are fixed for the process, so the
+// verdict is computed once and cached (this assumes a homogeneous-GPU host).
+// Exposed so tests can skip on hosts where graph timing cannot work.
+bool graphColltraceSupported(
+    std::string_view logPrefix,
+    std::string_view loggerName = "comms");
+
+struct CollTraceConfig {
+  static constexpr ::size_t kDefaultMaxPendingQueueSize{1024};
+  std::string loggerName{"comms"};
+  // The max time CollTrace thread will be waiting before it can respond to
+  // a cancellation request. This is to ensure that we don't wait forever and
+  // will respond reasonably quickly during teardown. Default to 1 second.
+  std::chrono::milliseconds maxCheckCancelInterval{1000};
+
+  // If the collective takes more than this to finish, we will consider it as
+  // a timeout and trigger whenCollKernelHang() function of plugins.
+  std::chrono::seconds collTraceCollStuckTimeout{30};
+
+  // Tuning parameters for the size of the pending queue.
+  // If we have too many pending events, we will start dropping events.
+  // 1024 should be enough for most of the cases.
+  ::size_t maxPendingQueueSize{kDefaultMaxPendingQueueSize};
+
+  // Test seam. Invoked on the poll thread after the cancelled-collective
+  // sweep and before any ring entry is dispatched, so a test can land a
+  // cancellation exactly in that window. Empty in production.
+  std::function<void()> afterGraphSweepHook;
+
+  // Test seam. Invoked before graph warmup's device setup (on the warmup
+  // thread, or the constructing thread when NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP
+  // is off), so a test can gate warmup deterministically and assert that
+  // construction does not block on it. Empty in production.
+  std::function<void()> beforeGraphWarmupHook;
+};
+
+// Action types for the unified polling pipeline.
+enum class PendingActionType {
+  kScheduleAndStart, // Graph replay started — fire scheduled + start plugins
+  kStart, // Eager collective started — fire start plugin
+  kProgressing, // Heartbeat — fire progressing plugin (watchdog)
+  kEnd, // Collective ended — fire end plugin
+  /* Tracking ended without a valid completion. */
+  kTerminate,
+};
+
+struct PendingAction {
+  CollTraceEvent* event{nullptr};
+  PendingActionType type{};
+  std::chrono::system_clock::time_point timestamp{};
+  std::optional<CollTraceTerminalReason> terminalReason;
+
+  // ordered by timestamp, or by action type if timestamp is the same
+  // which will ensure that for a given collective, we always fire the
+  // the start plugin before the progressing plugin, and the progressing plugin
+  // before the end plugin.
+  bool operator<(const PendingAction& other) const {
+    if (timestamp != other.timestamp) {
+      return timestamp < other.timestamp;
+    }
+    return type < other.type;
+  }
+};
+
+class CollTrace : public ICollTrace {
+ public:
+  // Create a thread to collect traces (In the future we should use singelton or
+  // coroutines). When graph tracing is enabled, threadSetupFunc runs twice: on
+  // the graph warmup thread, where it selects the device used for graph
+  // bring-up, and on the poll thread. Any naming or logging it does shows up
+  // once per thread.
+  CollTrace(
+      CollTraceConfig config,
+      CommLogData logMetaData,
+      std::function<CommsMaybeVoid(void)> threadSetupFunc,
+      std::vector<std::unique_ptr<ICollTracePlugin>> plugins);
+
+  // Stop the CollTrace thread and wait for it to finish. This will also
+  // invalidate all the handles that are still valid.
+  ~CollTrace() override;
+
+  // Delete copy constructor and copy assignment operator
+  CollTrace(const CollTrace&) = delete;
+  CollTrace& operator=(const CollTrace&) = delete;
+  // Delete move constructor and move assignment operator
+  CollTrace(CollTrace&&) = delete;
+  CollTrace& operator=(CollTrace&&) = delete;
+
+  // Enqueue a collective event to be traced. Note that now this will first in
+  // the pending enqueue map. Then it will move the queue for pending execution
+  // once the collective is scheduled.
+  CommsMaybe<std::shared_ptr<ICollTraceHandle>> recordCollective(
+      std::unique_ptr<ICollMetadata> metadata,
+      std::unique_ptr<ICollWaitEvent> waitEvent) noexcept override;
+
+  // Returns the plugin with specific name. Please note there is NO GUARANTEE
+  // that the Colltrace thread might not be using the plugin at the time.
+  ICollTracePlugin* getPluginByName(std::string name) noexcept override;
+
+  CommsMaybeVoid triggerEventState(
+      CollTraceEvent& collEvent,
+      CollTraceHandleTriggerState state) noexcept override;
+
+  CommsMaybeVoid cancelEvent(CollTraceEvent& collEvent) noexcept override;
+
+  std::optional<CapturedCollDescription> describeCapturedCollective(
+      uint64_t capturedCollId) noexcept override;
+
+  uint64_t requestFlush() noexcept override;
+  void waitFlush(uint64_t gen) noexcept override;
+  bool waitFlush(uint64_t gen, std::chrono::nanoseconds timeout) noexcept
+      override;
+
+ private:
+  /*
+   * Terminal notifications may run on the caller thread for events that were
+   * never published, on the poll thread for tracked events, or on the
+   * destroying thread after the poll thread is joined. Each event remains
+   * owned by exactly one of those threads when its terminalReason is written.
+   */
+  void terminateEvent(
+      CollTraceEvent& event,
+      CollTraceTerminalReason reason) noexcept;
+  friend class CollTraceGraphReplayTestAccessor;
+  friend class GraphRingLifetimeTestAccessor;
+
+  // Internal impl for graph-captured collectives, called when
+  // recordCollective detects a GraphCudaWaitEvent.
+  CommsMaybe<std::shared_ptr<ICollTraceHandle>> recordGraphCollectiveImpl(
+      std::unique_ptr<ICollMetadata> metadata,
+      std::unique_ptr<ICollWaitEvent> waitEvent) noexcept;
+  CommsMaybeVoid cancelGraphCollective(uint32_t collId) noexcept;
+
+  /****************************************************************************
+   * Start of Private Methods for CollTrace thread. All of these methods should
+   * be called from the CollTrace thread only. And they should all support
+   * cancellation.
+   ***************************************************************************/
+  bool isThreadCancelled() const noexcept;
+  void ackFlush(uint64_t gen) noexcept;
+
+  struct AmbiguousGraphReplayState {
+    uint64_t outstandingEndMarkers{0};
+    uint64_t clearAfterSlot{0};
+  };
+  void markAmbiguousGraphReplay(
+      uint32_t collId,
+      uint64_t additionalMarkers,
+      uint64_t currentSlot,
+      uint64_t recoveryWindow) noexcept;
+  void expireAmbiguousGraphReplays(uint64_t consumedUpTo) noexcept;
+
+  void collTraceThread(
+      const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
+
+  // One-time graph-tracing bring-up (globaltimer calibration + shared ring
+  // allocation). Runs on a dedicated thread, off the construction critical
+  // path, unless NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP is off. First call pays the
+  // process-cold CUDA cost (~750ms on GB300); graph records block on
+  // graphWarmupDone_ until it completes. Recoverable failures leave
+  // ringBuffer_ null and still count the latch down; calibration failures
+  // abort the process by default.
+  void warmupGraphTracing(
+      const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
+
+  // Poll all active graph-captured events (non-blocking), appending completed
+  // or progressing actions to the provided vector.
+  void pollGraphEvents(std::multiset<PendingAction>& actions) noexcept;
+
+  // Get or create the per-graph state for a stream currently in graph capture.
+  // Installs a cleanup user object on first call per graph so we know when the
+  // graph is destroyed.
+  std::shared_ptr<GraphCollTraceState> getOrCreateGraphState(
+      CUstream_st* stream);
+
+  // Non-blocking drain of MPMC queue and poll of in-flight eager events,
+  // appending completed or progressing actions to the provided vector.
+  void pollEagerEvents(std::multiset<PendingAction>& actions) noexcept;
+  // for all temporarly-ordered pending actions fire plugins and clean
+  // up completed eager events.
+  void processCompletedEvents(std::multiset<PendingAction>& actions) noexcept;
+
+  // **** Start of Private Member Variables ****
+  CollTraceConfig config_;
+  logger::CommsSpdlogLogger* logger_{nullptr};
+
+  // Represents the metadata of the communicator that is being traced.
+  // This is used for logging purposes.
+  CommLogData logMetaData_;
+  std::string logPrefix_;
+
+  // Represends the collectives that has been enqueued but not yet executed.
+  // Producer: Enqueing Thread
+  // Consumer: CollTrace Thread (should be single consumer)
+  folly::MPMCQueue<std::unique_ptr<CollTraceEvent>> pendingTraceColls_;
+
+  // The next event to enqueue. Currently we only support one pending enqueue
+  // event. This is okay as enqueueing multiple events at the same time is not
+  // going to work for any of the CCLs we support anyway.
+  std::unique_ptr<CollTraceEvent> pendingEnqueueColl_;
+
+  // Represents the currently active handles. The handle corresponds to a
+  // collective event should be invalidated and removed from this map once the
+  // CollTraceEvent is destroyed.
+  // Insert by: Enqueing Thread
+  // Remove by: CollTrace Thread
+  folly::ConcurrentHashMap<CollTraceEvent*, std::shared_ptr<CollTraceHandle>>
+      eventToHandleMap_;
+  std::shared_ptr<EagerCancellationGate> eagerCancellationGate_;
+
+  std::unordered_map<std::string, ICollTracePlugin&> pluginByName_;
+  std::vector<std::unique_ptr<ICollTracePlugin>> plugins_;
+
+  // CollTrace internal collective id. Should always increment monotonically.
+  // uint32_t to match GraphCollTraceEvent.collId without truncation.
+  std::atomic<uint32_t> collId_{0};
+
+  // Should only be accessed from CollTrace thread
+  std::optional<ICollWaitEvent::system_clock_time_point> lastCollEndTime_;
+
+  // Per-graph state map — maps CUDA graph IDs to their GraphCollTraceState.
+  // Accessed from capture threads (recordCollective) and the poll thread
+  // (pollGraphEvents). Protected by graphStatesMutex_.
+  std::mutex graphStateMutex_;
+  std::unordered_map<unsigned long long, std::shared_ptr<GraphCollTraceState>>
+      graphStateMap_;
+  std::shared_ptr<GraphCancellationGate> graphCancellationGate_;
+  std::atomic<bool> hasCancelledGraphCollectives_{false};
+
+  // Single shared ring buffer for ALL cuda graphs. Graph user objects retain
+  // shared ownership because their kernels may still write after CollTrace
+  // teardown has stopped the poller. Published once by the warmup thread;
+  // synchronized so record threads, the poll thread, and test readers can
+  // load it safely with or without waiting on graphWarmupDone_.
+  folly::Synchronized<
+      std::shared_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>>
+      ringBuffer_;
+  // CPU-side reader for the shared ring buffer (poll thread only).
+  std::optional<::hrdw_ring_buffer::HRDWRingBufferReader<GraphCollTraceEvent>>
+      ringReader_;
+  // Map from collId to GraphCollectiveEntry* for fast lookup during polling.
+  // Only accessed from the colltrace thread (no mutex needed). Entries are
+  // added under graphStatesMutex_ and then inserted here on first poll.
+  std::unordered_map<uint32_t, GraphCollectiveEntry*> collIdMap_;
+  // CollIds that have seen a start event but not yet a matching end event.
+  // Used to emit periodic kProgressing actions so the watchdog plugin can
+  // detect hung graph collectives.
+  std::unordered_set<uint32_t> progressingGraphCollectives_;
+  // Completed graph replay events whose kEnd has been processed. Cleared
+  // at the end of processCompletedEvents once plugins have taken ownership
+  // of the CollRecord shared_ptr.
+  std::vector<std::unique_ptr<CollTraceEvent>> graphReplayEvents_;
+
+  // Maps collId → in-flight replayEvent for collectives whose start event
+  // has been processed but end event hasn't arrived yet. The clone is
+  // created at start time so its startTs is captured immediately and
+  // can't be clobbered by a subsequent start for the same collId.
+  // Owns the CollTraceEvent so it survives across poll cycles.
+  std::unordered_map<uint32_t, std::unique_ptr<CollTraceEvent>>
+      inFlightReplays_;
+  /*
+   * The absolute ring slot for each in-flight replay's start marker. Keeping
+   * this across poll calls distinguishes a replay whose start precedes a loss
+   * boundary from one known to have started after that boundary.
+   */
+  folly::F14FastMap<uint32_t, uint64_t> inFlightReplayStartSlots_;
+  /*
+   * Untagged end markers are consumed while correlation is ambiguous. The
+   * slot bound restores tracking after one ring window even when an end marker
+   * was itself overwritten and therefore can never decrement the count.
+   */
+  folly::F14FastMap<uint32_t, AmbiguousGraphReplayState> ambiguousGraphReplays_;
+
+  // Eager events being polled by the colltrace thread. Only accessed from
+  // the colltrace thread — no mutex needed.
+  std::vector<std::unique_ptr<CollTraceEvent>> eagerEvents_;
+
+  // Flush synchronization: requestFlush() increments requested and pushes
+  // a nullptr sentinel to wake the poll thread. The poll thread stores the
+  // requested value into completed after draining, then notifies via cv.
+  struct FlushState {
+    std::atomic<uint64_t> requested{0};
+    std::atomic<uint64_t> completed{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+  } flushState_;
+
+  std::atomic_flag threadShouldStop_;
+  // Signaled by the poll thread after its first loop iteration completes.
+  // The constructor waits on this so the poll thread is actively polling
+  // before any graph replays can fire.
+  std::latch threadStarted_{1};
+  // Signaled by the warmup thread once graph bring-up completes (or fails).
+  // Counted down in the constructor when graph tracing is disabled, so
+  // record-side waits always terminate. Graph records wait on it; the wait
+  // performs no CUDA and is safe during stream capture.
+  std::latch graphWarmupDone_{1};
+  // Short-lived bring-up thread for calibration + ring allocation. Joined in
+  // the destructor; normally long finished by then.
+  std::thread graphWarmupThread_;
+  // Always keep this thread as the last member variable to ensure that it is
+  // initialized after all the other member variables.
+  std::thread traceCollThread_;
+};
+
+} // namespace meta::comms::colltrace
