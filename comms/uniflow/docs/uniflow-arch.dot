@@ -66,7 +66,7 @@ digraph uniflow {
       multi [fillcolor="#DCFCE7" color="#4FA96C" label=<
         <B>MultiTransport</B> — <FONT POINT-SIZE="10">selectTransport()</FONT><BR/>
         <FONT POINT-SIZE="9" COLOR="#444444">batch eligible only if every request has a matching<BR/>
-        handle on both sides · intra-node VRAM↔VRAM → NVLink/P2P</FONT>>];
+        handle on both sides · NVIDIA → RDMA · AMD intra-node → P2P</FONT>>];
       conn -> multi [color="#4FA96C" penwidth=1.4];
     }
   }
@@ -96,8 +96,8 @@ digraph uniflow {
     fontsize=13; fontname="Helvetica-Bold";
     style="rounded,filled"; fillcolor="#FAF5FF"; color="#C4A2E8";
     nvlink [fillcolor="#F3E8FF" color="#A472D8" label=<
-      <B>NVLinkTransport</B><BR/>
-      <FONT POINT-SIZE="9">intra-node / MNNVL<BR/>NVLinkTopology<BR/>CopyOp on a CUDA stream</FONT>>];
+      <B>AMD P2pTransport (extensions)</B><BR/>
+      <FONT POINT-SIZE="9">intra-node XGMI<BR/>transport slot 0<BR/>shared hipified CUDA operations</FONT>>];
     rdma [fillcolor="#F3E8FF" color="#A472D8" label=<
       <B>RdmaTransport</B><BR/>
       <FONT POINT-SIZE="9">RC queue pairs · multi-NIC<BR/>

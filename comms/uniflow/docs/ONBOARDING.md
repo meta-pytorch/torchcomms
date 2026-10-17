@@ -24,6 +24,18 @@ platforms.
 
 ---
 
+## Core and extensions
+
+See [source ownership/release](../SOURCE_MOVE.md) and
+[package variants](../python/README.md). Core owns NVIDIA, RDMA and TCP control.
+AMD files, MTIA, P2P/XGMI and TCP data live in
+fbcode/neteng/network_ai/uniflow_extensions; export nests them at
+comms/uniflow/extensions. Namespace and Python imports remain unchanged.
+
+Shared CUDA/RDMA sources still hipify. Applicable AMD/MTIA consumers link the
+default transport bundle. NVIDIA NVLink is deleted; slot 0 remains AMD P2P,
+and NVIDIA same-host transfers use RDMA.
+
 ## Architecture at a Glance
 
 ![UniFlow architecture](uniflow-arch.png)
@@ -123,13 +135,10 @@ comms/uniflow/
 │   ├── TransportType.h    NVLink | RDMA | TCP | Mock
 │   ├── Topology.h/cpp     PCIe/NIC topology discovery (GPU↔NIC affinity)
 │   ├── rdma/              RDMA backend — RdmaTransport, RdmaSlabPool, CopyEngine
-│   ├── nvlink/            NVLink backend — NVLinkTransport, NVLinkTopology
-│   ├── p2p/               AMD XGMI backend — reports TransportType::NVLink, same intra-node tier
-│   └── tcp/               TCP backend — gated on UNIFLOW_ENABLE_TCP_TRANSPORT (AMD builds)
 ├── drivers/               Hardware abstraction (cuda, ibverbs, nvml, sysfs), all mockable
 ├── tests/                 unit/ · integration/ · py/
 ├── benchmarks/            Performance benchmark suite (see below)
-├── amd/                   AMD/ROCm build configuration and neutral-zone rules
+├── amd/                   Required shared-source dependency guard helpers
 └── .claude/docs/          Design documentation
 ```
 
@@ -139,14 +148,14 @@ comms/uniflow/
 
 ### Prerequisites
 
-- devserver or on-demand with GPU access (≥2 GPUs for NVLink tests)
+- approved GPU/RDMA hardware (two GPUs for the Python transfer integration)
 - Buck2
 
 ### Build
 
 ```bash
-buck2 build fbcode//comms/uniflow:uniflow      # core library
-buck2 build fbcode//comms/uniflow:_core        # Python extension
+buck2 build @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow:uniflow      # core library
+buck2 build @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow:_core        # Python extension
 ```
 
 ### Hello World (requires 2 GPUs)
@@ -155,17 +164,17 @@ The Python integration test exercises the full path — agent creation, segment
 registration, connection, transfer, verification:
 
 ```bash
-buck2 test fbcode//comms/uniflow/tests/py:test_uniflow_integration
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/tests/py:test_uniflow_integration
 ```
 
 It creates two `UniflowAgent` instances, registers GPU memory on each,
 establishes a connection via the TCP controller, performs a `get()` from GPU:0
-to GPU:1 over NVLink, and verifies the data.
+to GPU:1 over RDMA on NVIDIA, and verifies the data.
 
 The C++ equivalent:
 
 ```bash
-buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_single_host_test
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/tests/integration:multi_transport_single_host_test
 ```
 
 ---
@@ -174,22 +183,21 @@ buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_single_host_t
 
 ```bash
 # No hardware required
-buck2 test fbcode//comms/uniflow/tests/unit:
-buck2 test fbcode//comms/uniflow/executor/tests:
-buck2 test fbcode//comms/uniflow/controller/tests:
-buck2 test fbcode//comms/uniflow/core/tests:
-buck2 test fbcode//comms/uniflow/drivers/ibverbs/tests:
-buck2 test fbcode//comms/uniflow/drivers/cuda/tests:
-buck2 test fbcode//comms/uniflow/drivers/nvml/tests:
-buck2 test fbcode//comms/uniflow/logging/tests:
-buck2 test fbcode//comms/uniflow/transport/tests:
-buck2 test fbcode//comms/uniflow/transport/rdma/tests:
-buck2 test fbcode//comms/uniflow/transport/nvlink/tests:
-buck2 test fbcode//comms/uniflow/transport/p2p/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/tests/unit:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/executor/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/controller/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/core/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/drivers/ibverbs/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/drivers/cuda/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/drivers/nvml/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/logging/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/transport/tests:
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/transport/rdma/tests:
+buck2 test @fbcode//mode/opt-amd-gpu -m rocm70 fbcode//neteng/network_ai/uniflow_extensions/transport/p2p/tests:
 
 # GPUs required
-buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_single_host_test   # ≥2 GPUs, 1 host
-buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_cross_host_test    # 2 nodes
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/tests/integration:multi_transport_single_host_test   # ≥2 GPUs, 1 host
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/tests/integration:multi_transport_cross_host_test    # 2 nodes
 ```
 
 CMake / OSS builds are supported per module; see `CMakeLists.txt`. **When adding
@@ -204,23 +212,21 @@ and little else.
 
 ### Track 1 — C++ transport microbenchmarks (`uniflow_bench`)
 
-Six benchmarks, registered in `benchmarks/main.cpp`:
+The shared main source registers core and extension benchmark variants:
 
 | Name | Platform | Measures |
 |---|---|---|
 | `rdma_bandwidth` | both | RDMA put/get, multi-NIC, multi-GPU aggregate, Data Direct |
 | `sendrecv_bandwidth` | both (hipified) | Copy-based slab-staged send/recv, fan-out/fan-in |
-| `nvlink_bandwidth` | NVIDIA | NVLink put/get |
-| `connection_setup` | NVIDIA | bind/connect cycle cost |
 | `nccl_sendrecv` | NVIDIA | NCCL baseline for comparison |
-| `xgmi_bandwidth` | AMD | HIP IPC over XGMI |
+| `tcp_bandwidth` | extensions | Frontend TCP data/host staging |
+| `xgmi_bandwidth` | AMD extensions | HIP IPC over XGMI |
 
 ```bash
-buck2 build fbcode//comms/uniflow/benchmarks:uniflow_bench
+buck2 build @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/benchmarks:uniflow_bench
 buck2 run  fbcode//comms/uniflow/benchmarks:uniflow_bench -- --list   # authoritative names
 
 # launcher scripts, from the repo root
-bash fbcode/comms/uniflow/benchmarks/scripts/run_nvlink_benchmark.sh          # local 2-GPU
 bash fbcode/comms/uniflow/benchmarks/scripts/run_sendrecv_benchmark.sh
 bash fbcode/comms/uniflow/benchmarks/scripts/rdma_benchmark.sh --host0 <h0> --host1 <h1>   # vs ib_write_bw
 ```
@@ -239,7 +245,7 @@ Rendezvous uses UniFlow's own `TcpController` — no c10d, folly, or MPI.
 
 **What layer is measured:** no C++ benchmark includes `Uniflow.h`,
 `Connection.h`, or `MultiTransport.h`. They drive `RdmaTransport` /
-`NVLinkTransport` directly, using the `SegmentHelper.h` friend-class hack to
+extension P2pTransport/TcpTransport directly, using the `SegmentHelper.h` friend-class hack to
 build a `RegisteredSegment` outside the agent. The suite measures the transport
 layer in isolation — there is no C++ benchmark of the full user-facing stack.
 
@@ -262,7 +268,7 @@ Undocumented but working flags: `--batch-size`, `--tx-depth`, `--num-nics`,
 KV-cache shape directly and verifies correctness before timing.
 
 ```bash
-buck2 test fbcode//comms/uniflow/benchmarks/py:kv_transfer_bench
+buck2 test @fbcode//mode/opt -c hpc_comms.use_ncclx=stable fbcode//comms/uniflow/benchmarks/py:kv_transfer_bench
 ```
 
 ## Extending the RDMA Backend for New HW
@@ -314,13 +320,12 @@ oss_cpp_library(
     name = "device-adapter",
     exported_deps = [":device-adapter-interface"] + select({
         "DEFAULT": ["//comms/uniflow/drivers/cuda:cuda-device-adapter"],
-        "ovr_config//gpu:mtia": ["//comms/uniflow/fb:mtia-device-adapter"],
+        "ovr_config//gpu:mtia": [],
     }),
 )
 ```
 
-To add a platform: implement `DeviceAdapter` in `drivers/<your_hw>/`, add a
-`select()` entry, and implement `createDeviceAdapter()`.
+MTIA lives in extensions and preserves its existing adapter/discovery functions. Applicable consumers link the extensions default bundle.
 
 ### 3. Testing a new HW integration
 
@@ -334,7 +339,7 @@ To add a platform: implement `DeviceAdapter` in `drivers/<your_hw>/`, add a
 
 ## Adding a New Backend
 
-Create `transport/<backend>/`:
+Create extension data transports under uniflow_extensions/transport/<backend>:
 
 ```
 transport/<backend>/
@@ -387,15 +392,12 @@ class MyTransportFactory : public TransportFactory {
 Then:
 
 1. Add your backend to `transport/TransportType.h`.
-2. In `MultiTransport.cpp`, add a `supported()` check, instantiate your factory
-   in the `MultiTransportFactory` constructor, and add topology
-   serialization to `getTopology()` / `parse()`.
+2. Append factories and support checks in the two extension hooks. Keep the sorted topology format.
 3. Add tests — a mock-based unit test in `transport/<backend>/tests/`, a case in
    `tests/integration/MultiTransportSingleHostTest.cpp`, and a
    `<Backend>BandwidthBenchmark` in `benchmarks/bench/`.
 
-Reference implementations: `transport/nvlink/` (simpler, GPU-only) and
-`transport/rdma/` (full-featured, multi-NIC).
+Reference implementations: core transport/rdma and extension transport/p2p or transport/tcp.
 
 ---
 
