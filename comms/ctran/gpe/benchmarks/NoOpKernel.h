@@ -6,8 +6,10 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 __global__ void NoOpKernel(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);

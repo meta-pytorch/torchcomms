@@ -4,6 +4,7 @@
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/algos/tests/CtranDevWaitUTKernels.cuh"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 namespace ctran::testing {
 
@@ -47,6 +48,7 @@ __device__ void testDeviceWait(int bId, CtranTestDeviceWaitArgs& args) {
 __global__ void ncclKernelTestDeviceWait(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranTestDeviceWaitArgs args) {
   const auto bId = blockIdx.x;
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
