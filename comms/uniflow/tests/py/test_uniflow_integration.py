@@ -8,18 +8,13 @@ Exercises the full path: agent creation → segment registration →
 connection establishment → ctrl message exchange → get() data transfer →
 data correctness verification.
 
-Uses a VMM allocator with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR so
-that NVLink segment registration via cuMemExportToShareableHandle works.
+GPU buffers use the normal PyTorch allocator and transfer over RDMA.
 """
 
-import os
 import threading
 import unittest
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC"] = "1"
-
-import torch  # noqa: E402
+import torch
 
 
 _SKIP_NO_MULTI_GPU: bool = (
@@ -43,8 +38,6 @@ class TestUniflowIntegration(unittest.TestCase):
         )
 
         # Allocate GPU tensors using PyTorch's default allocator.
-        # expandable_segments:True (set via env var) makes PyTorch use
-        # cuMemCreate internally, which is required for NVLink registration.
         server_tensor: torch.Tensor = torch.arange(
             _NUM_ELEMS, dtype=torch.float32, device="cuda:0"
         )

@@ -1,22 +1,15 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/uniflow/MultiTransport.h"
-#include "comms/uniflow/drivers/DeviceAdapter.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/logging/Logger.h"
 
 #ifndef UNIFLOW_CMAKE_BUILD
 #define UNIFLOW_ENABLE_RDMA_TRANSPORT 1
-#ifndef __HIP_PLATFORM_AMD__
-#define UNIFLOW_ENABLE_NVLINK_TRANSPORT 1
-#endif
 #endif
 
 #ifdef UNIFLOW_ENABLE_RDMA_TRANSPORT
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
-#endif
-#if defined(UNIFLOW_ENABLE_NVLINK_TRANSPORT) && !defined(__HIP_PLATFORM_AMD__)
-#include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
 #endif
 
 #include <algorithm>
@@ -105,13 +98,8 @@ Status MultiTransportFactory::supported(TransportType type) {
 #else
       return Err(ErrCode::NotImplemented, "rdma transport is not enabled");
 #endif
-#if defined(UNIFLOW_ENABLE_NVLINK_TRANSPORT) && !defined(__HIP_PLATFORM_AMD__)
-    case TransportType::NVLink:
-      return NVLinkTransportFactory::supported();
-#else
     case TransportType::NVLink:
       return extensionTransportSupported(type);
-#endif
     case TransportType::TCP:
       return extensionTransportSupported(type);
     case TransportType::Mock:
@@ -176,18 +164,6 @@ MultiTransportFactory::MultiTransportFactory(
 
   addExtensionTransportFactories(
       deviceId_, eventBaseThread_->getEventBase(), options_, factories_);
-
-  // Register the intra-node interconnect tier whenever the hardware is present
-  // (NVLink on NVIDIA, P2P/XGMI on AMD). This tier and RDMA are both registered
-  // when available; selectTransport chooses per transfer (intraNodeTransport
-  // can flip the intra-node default -- see selectTransport).
-#if defined(UNIFLOW_ENABLE_NVLINK_TRANSPORT) && !defined(__HIP_PLATFORM_AMD__)
-  if (deviceId_ >= 0 && isNvlinkAvailable()) {
-    auto nvlink = std::make_shared<NVLinkTransportFactory>(
-        deviceId, eventBaseThread_->getEventBase());
-    factories_.emplace_back(std::move(nvlink));
-  }
-#endif
 
 #ifdef UNIFLOW_ENABLE_RDMA_TRANSPORT
   auto nics = selectNics();

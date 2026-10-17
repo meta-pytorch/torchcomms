@@ -83,16 +83,6 @@ _uniflow_resolve_feature_option(
   ${_UNIFLOW_ENABLE_RDMA_DEFAULT})
 unset(_UNIFLOW_ENABLE_RDMA_DEFAULT)
 
-if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  set(_UNIFLOW_ENABLE_NVLINK_DEFAULT ON)
-else()
-  set(_UNIFLOW_ENABLE_NVLINK_DEFAULT OFF)
-endif()
-_uniflow_resolve_feature_option(
-  UNIFLOW_ENABLE_NVLINK "Build the NVLink transport"
-  ${_UNIFLOW_ENABLE_NVLINK_DEFAULT})
-unset(_UNIFLOW_ENABLE_NVLINK_DEFAULT)
-
 set(UNIFLOW_RDMA_TEST_NICS "" CACHE STRING
   "Comma-separated compatible RDMA NIC pair for single-host tests")
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
@@ -120,15 +110,12 @@ option(UNIFLOW_ALLOW_DEPENDENCY_OVERWRITE
   "Allow fetched fmt and spdlog to overwrite files in the install prefix" OFF)
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL NONE AND
-   (UNIFLOW_ENABLE_RDMA OR UNIFLOW_ENABLE_NVLINK OR UNIFLOW_ENABLE_TCP))
+   (UNIFLOW_ENABLE_RDMA OR UNIFLOW_ENABLE_TCP))
   message(FATAL_ERROR
-    "RDMA, NVLink, and TCP require a GPU platform in this release; disable "
+    "RDMA and TCP require a GPU platform in this release; disable "
     "them or choose UNIFLOW_GPU_PLATFORM=CUDA|HIP.")
 endif()
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP AND UNIFLOW_ENABLE_NVLINK)
-  message(FATAL_ERROR
-    "NVLink is available only with UNIFLOW_GPU_PLATFORM=CUDA.")
-endif()
+
 set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
 file(
@@ -476,7 +463,6 @@ target_include_directories(uniflow_build_config INTERFACE
 target_compile_definitions(uniflow_build_config INTERFACE
   UNIFLOW_CMAKE_BUILD=1
   $<$<BOOL:${UNIFLOW_ENABLE_RDMA}>:UNIFLOW_ENABLE_RDMA_TRANSPORT=1>
-  $<$<AND:$<STREQUAL:${UNIFLOW_GPU_PLATFORM},CUDA>,$<BOOL:${UNIFLOW_ENABLE_NVLINK}>>:UNIFLOW_ENABLE_NVLINK_TRANSPORT=1>
   $<$<STREQUAL:${UNIFLOW_GPU_PLATFORM},HIP>:UNIFLOW_ENABLE_P2P_TRANSPORT=1>
   $<$<BOOL:${UNIFLOW_ENABLE_TCP}>:UNIFLOW_ENABLE_TCP_TRANSPORT=1>
 )
@@ -536,12 +522,7 @@ target_link_libraries(uniflow_implementation INTERFACE
     uniflow_transport
 )
 
-if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  target_sources(uniflow_implementation INTERFACE
-    $<TARGET_OBJECTS:uniflow_nvlink_transport>)
-  target_link_libraries(uniflow_implementation INTERFACE
-    uniflow_nvlink_transport)
-elseif(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   target_sources(uniflow_implementation INTERFACE
     $<TARGET_OBJECTS:uniflow_p2p_transport>)
   target_link_libraries(uniflow_implementation INTERFACE

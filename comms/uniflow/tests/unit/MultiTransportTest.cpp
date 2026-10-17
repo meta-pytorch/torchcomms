@@ -942,6 +942,14 @@ TEST_F(MultiTransportTest, TcpCapabilityWithoutHooksReturnsNotImplemented) {
       status.error().message().find("transport not linked"), std::string::npos);
 }
 
+#ifndef UNIFLOW_ENABLE_P2P_TRANSPORT
+TEST_F(MultiTransportTest, NvLinkCapabilityWithoutP2pReturnsNotImplemented) {
+  const auto status = MultiTransportFactory::supported(TransportType::NVLink);
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::NotImplemented);
+}
+#endif
+
 TEST_F(MultiTransportTest, TcpCaseOverridesWithoutHooksDoNotFallBackToRdma) {
   for (const auto memType : {MemoryType::VRAM, MemoryType::DRAM}) {
     const bool intraNode = memType == MemoryType::VRAM;

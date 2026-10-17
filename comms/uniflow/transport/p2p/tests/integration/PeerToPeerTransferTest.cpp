@@ -4,7 +4,7 @@
 // transfers.
 //
 // This test verifies device-to-device P2P transfers over the GPU interconnect
-// (XGMI on AMD, NVLink on NVIDIA) using the platform-agnostic CudaApi
+// (XGMI on AMD) using the platform-agnostic CudaApi
 // abstraction. Buffers are allocated in device memory (cudaMalloc / hipMalloc)
 // and peer access is enabled in both directions, so memcpyPeerAsync actually
 // traverses the GPU-to-GPU interconnect rather than staging through host
@@ -30,17 +30,11 @@ bool isGpuUnavailable(cudaError_t status) {
   if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver) {
     return true;
   }
-#ifndef __HIP_PLATFORM_AMD__
-  if (status == cudaErrorStubLibrary) {
-    return true;
-  }
-#endif
   return false;
 }
 
 // Peer-to-peer GPU transfer test fixture.
-// Tests intra-node GPU-to-GPU transfers over the GPU interconnect (XGMI on AMD,
-// NVLink on NVIDIA) using the platform-agnostic CudaApi abstraction.
+// Tests intra-node GPU-to-GPU transfers over XGMI using CudaApi.
 class PeerToPeerTransferTest : public ::testing::Test {
  protected:
   static constexpr int kDeviceA = 0;
@@ -69,7 +63,7 @@ class PeerToPeerTransferTest : public ::testing::Test {
 
     // deviceCanAccessPeer only reports capability; peer access must actually be
     // enabled or memcpyPeerAsync may stage through host memory instead of going
-    // over the GPU interconnect (XGMI/NVLink) -- which would make this test
+    // over the GPU interconnect (XGMI) -- which would make this test
     // pass without exercising the interconnect it is meant to validate. Enable
     // in both directions, each from its own device context
     // (deviceEnablePeerAccess acts on the current device). The seam treats
@@ -152,7 +146,6 @@ TEST_F(PeerToPeerTransferTest, BasicP2PTransfer) {
 
   // Device-to-device P2P transfer: Device A -> Device B over the interconnect:
   // - On AMD: XGMI via hipMemcpyPeerAsync
-  // - On NVIDIA: NVLink via cudaMemcpyPeerAsync
   auto status = cudaApi_->memcpyPeerAsync(
       devB_, kDeviceB, devA_, kDeviceA, kTransferSize, nullptr);
   ASSERT_TRUE(status.hasValue())
