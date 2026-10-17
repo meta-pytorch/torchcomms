@@ -13,9 +13,9 @@
 #include "comms/uniflow/benchmarks/Stats.h"
 #include "comms/uniflow/drivers/cuda/CudaApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pRegistrationHandle.h"
+#include "comms/uniflow/extensions/transport/p2p/P2pTransport.h"
 #include "comms/uniflow/logging/Logger.h"
-#include "comms/uniflow/transport/p2p/P2pRegistrationHandle.h"
-#include "comms/uniflow/transport/p2p/P2pTransport.h"
 
 namespace uniflow::benchmark {
 
