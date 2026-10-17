@@ -33,7 +33,7 @@ endif()
 
 if(UNIFLOW_ENABLE_TCP)
   uniflow_hipify(_UNIFLOW_TCP_BANDWIDTH_BENCH_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/TcpBandwidthBenchmark.cpp)
+    ${UNIFLOW_EXTENSIONS_DIR}/benchmarks/bench/TcpBandwidthBenchmark.cpp)
   add_library(uniflow_tcp_bandwidth_bench OBJECT
     ${_UNIFLOW_TCP_BANDWIDTH_BENCH_SOURCES})
   target_link_libraries(uniflow_tcp_bandwidth_bench PRIVATE

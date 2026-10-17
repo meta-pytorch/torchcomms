@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
+#include "comms/uniflow/extensions/benchmarks/bench/TcpBandwidthBenchmark.h"
 
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -31,8 +31,8 @@
 #include "comms/uniflow/benchmarks/Stats.h"
 #include "comms/uniflow/controller/TcpController.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
 #include "comms/uniflow/logging/Logger.h"
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
 
 namespace uniflow::benchmark {
 

@@ -2,7 +2,7 @@
 
 #include <limits>
 
-#include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpPinnedSlabPool.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

@@ -536,12 +536,6 @@ if(UNIFLOW_ENABLE_RDMA)
   target_link_libraries(uniflow_implementation INTERFACE
     uniflow_rdma_transport)
 endif()
-if(UNIFLOW_ENABLE_TCP)
-  target_sources(uniflow_implementation INTERFACE
-    $<TARGET_OBJECTS:uniflow_tcp_transport>)
-  target_link_libraries(uniflow_implementation INTERFACE
-    uniflow_tcp_transport)
-endif()
 
 add_library(uniflow ${UNIFLOW_LIB_TYPE})
 add_library(uniflow::uniflow ALIAS uniflow)
@@ -620,6 +614,11 @@ if(UNIFLOW_INSTALL_CPP)
   foreach(_UNIFLOW_PUBLIC_HEADER IN LISTS UNIFLOW_PUBLIC_HEADERS)
     file(RELATIVE_PATH _UNIFLOW_HEADER_PATH
       "${CMAKE_CURRENT_SOURCE_DIR}" "${_UNIFLOW_PUBLIC_HEADER}")
+    if(_UNIFLOW_HEADER_PATH MATCHES "^\\.\\.")
+      file(RELATIVE_PATH _UNIFLOW_HEADER_PATH
+        "${UNIFLOW_EXTENSIONS_DIR}" "${_UNIFLOW_PUBLIC_HEADER}")
+      set(_UNIFLOW_HEADER_PATH "extensions/${_UNIFLOW_HEADER_PATH}")
+    endif()
     list(APPEND UNIFLOW_INSTALLED_PUBLIC_HEADERS
       "${_UNIFLOW_HEADER_PATH}")
     get_filename_component(_UNIFLOW_HEADER_DIRECTORY

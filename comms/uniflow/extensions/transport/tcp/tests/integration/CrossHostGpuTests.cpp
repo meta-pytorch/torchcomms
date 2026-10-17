@@ -6,15 +6,10 @@
 /// transport (D2H on the source, H2D on the destination); TCP never touches
 /// device memory directly. Front-end NIC (eth2) is auto-detected per host.
 ///
-/// Running it for real (2 ranks): standard single-process CI can't form a
-/// 2-rank MPI world, so those lanes skip (see SetUp). Exercise it on two GPU
-/// hosts with the mpirun harness, pointing it at the GPU binary (set env vars):
-///
-///   BUILD_MODE=@mode/opt-amd-gpu
-///   ROCM_MODIFIER=rocm70
-///   BUILD_TARGET=fbcode//comms/uniflow/transport/tcp/tests/integration:cross_host_gpu_test_binary
-///   fbcode/scripts/cppc/run_uniflow_cross_host_tcp.sh rtptest521.maz5
-///   rtptest522.maz5
+/// Single-process runs skip these tests. Run one MPI rank on each GPU host.
+/// For an AMD fbsource build, use `@fbcode//mode/opt-amd-gpu -m rocm70`.
+/// Buck target:
+///   fbcode//neteng/network_ai/uniflow_extensions/transport/tcp/tests/integration:cross_host_gpu_test_binary
 
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -35,7 +30,7 @@
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
 
 using meta::comms::MpiBaseTestFixture;
 using meta::comms::MPIEnvironmentBase;

@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpWireProtocol.h"
 
 #include <gtest/gtest.h>
 

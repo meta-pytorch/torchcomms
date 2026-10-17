@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
 
 #include <gtest/gtest.h>
 
@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpWireProtocol.h"
 
 namespace uniflow {
 

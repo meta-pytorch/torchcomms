@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/uniflow/transport/tcp/TcpTransport.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpTransport.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -22,8 +22,8 @@
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
-#include "comms/uniflow/transport/tcp/TcpRegistrationHandle.h"
-#include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpRegistrationHandle.h"
+#include "comms/uniflow/extensions/transport/tcp/TcpWireProtocol.h"
 
 namespace uniflow {
 
