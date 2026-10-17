@@ -23,12 +23,10 @@
 #endif
 #include "comms/uniflow/logging/Logger.h"
 
-#if defined(UNIFLOW_ENABLE_XGMI_BENCHMARK) || \
-    (!defined(UNIFLOW_CMAKE_BUILD) && defined(__HIP_PLATFORM_AMD__))
-#include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
+#ifdef UNIFLOW_ENABLE_XGMI_BENCHMARK
+#include "comms/uniflow/extensions/benchmarks/bench/XgmiBandwidthBenchmark.h"
 #endif
-#if defined(UNIFLOW_ENABLE_NCCL_BENCHMARK) || \
-    (!defined(UNIFLOW_CMAKE_BUILD) && !defined(__HIP_PLATFORM_AMD__))
+#ifdef UNIFLOW_ENABLE_NCCL_BENCHMARK
 #include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
 #endif
 
@@ -591,13 +589,11 @@ int main(int argc, char** argv) {
           opts.tcpSocketsPerNic,
           tcpBindDevList(opts)));
 #endif
-#if defined(UNIFLOW_ENABLE_XGMI_BENCHMARK) || \
-    (!defined(UNIFLOW_CMAKE_BUILD) && defined(__HIP_PLATFORM_AMD__))
+#ifdef UNIFLOW_ENABLE_XGMI_BENCHMARK
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>());
 #endif
-#if defined(UNIFLOW_ENABLE_NCCL_BENCHMARK) || \
-    (!defined(UNIFLOW_CMAKE_BUILD) && !defined(__HIP_PLATFORM_AMD__))
+#ifdef UNIFLOW_ENABLE_NCCL_BENCHMARK
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
 #endif

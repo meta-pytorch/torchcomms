@@ -82,11 +82,16 @@ _B300_FLAGS = (
     " -m ovr_config//third-party/cuda/constraints:13.0"
 )
 
+CORE_BENCH_TARGET = "fbcode//comms/uniflow/benchmarks:uniflow_bench"
+EXTENSION_BENCH_TARGET = (
+    "fbcode//neteng/network_ai/uniflow_extensions/benchmarks:uniflow_bench"
+)
+
 BUILD_SPECS = {
     "uniflow_bench": {
         "target": "fbcode//comms/uniflow/benchmarks:uniflow_bench",
         "arch_flags": {"b200": _B200_FLAGS, "b300": _B300_FLAGS},
-        "supported_gpus": ("h100", "b200", "b300"),
+        "supported_gpus": ("h100", "b200", "b300", "mi300", "mi350"),
     },
     "ib_write_bw": {
         "target": "fbsource//third-party/perftest/25.07.0-0.104:ib_write_bw",
@@ -118,6 +123,7 @@ echo "GID:${GID:-3}"
 test -x __REMOTE_DIR__/uniflow_bench && echo "HAS:uniflow_bench"
 test -x __REMOTE_DIR__/ib_write_bw && echo "HAS:ib_write_bw"
 echo "LINKAGE:$(cat __REMOTE_DIR__/uniflow_bench.linkage 2>/dev/null)"
+echo "TARGET:$(cat __REMOTE_DIR__/uniflow_bench.target 2>/dev/null)"
 pkill -9 -f uniflow_bench 2>/dev/null
 pkill -9 -f ib_write_bw 2>/dev/null
 mkdir -p __REMOTE_DIR__
@@ -131,6 +137,7 @@ echo "GID:${GID:-3}"
 test -x __REMOTE_DIR__/uniflow_bench && echo "HAS:uniflow_bench"
 test -x __REMOTE_DIR__/ib_write_bw && echo "HAS:ib_write_bw"
 echo "LINKAGE:$(cat __REMOTE_DIR__/uniflow_bench.linkage 2>/dev/null)"
+echo "TARGET:$(cat __REMOTE_DIR__/uniflow_bench.target 2>/dev/null)"
 pkill -9 -f uniflow_bench 2>/dev/null
 pkill -9 -f ib_write_bw 2>/dev/null
 mkdir -p __REMOTE_DIR__
@@ -298,7 +305,7 @@ class RemoteHost:
             timeout=60,
         )
 
-    def verify_and_chmod(self, names, uniflow_linkage=None):
+    def verify_and_chmod(self, names, uniflow_linkage=None, uniflow_target=None):
         checks = " && ".join(
             f"test -f {REMOTE_DIR}/{n} && chmod +x {REMOTE_DIR}/{n}" for n in names
         )
@@ -310,6 +317,8 @@ class RemoteHost:
                 f" && echo {shlex.quote(uniflow_linkage)} >"
                 f" {REMOTE_DIR}/uniflow_bench.linkage"
             )
+        if uniflow_target and "uniflow_bench" in names:
+            cmd += f" && echo {shlex.quote(uniflow_target)} > {REMOTE_DIR}/uniflow_bench.target"
         out = self.run(f"{cmd} && echo OK", timeout=15)
         if "OK" not in (out or ""):
             sys.exit(
@@ -369,19 +378,23 @@ class RemoteHost:
 CACHE_DIR = os.path.expanduser("~/.cache/uniflow_compare")
 
 
-def _cache_subdir(gpu, linkage):
+def _cache_subdir(gpu, linkage, bench_target=CORE_BENCH_TARGET):
     # Keep dynamic-linkage binaries in a separate dir so they never get confused
     # with the default static build for the same GPU.
-    return gpu if linkage == "static" else f"{gpu}-{linkage}"
+    directory = gpu if linkage == "static" else f"{gpu}-{linkage}"
+    return directory if bench_target == CORE_BENCH_TARGET else directory + "-extensions"
 
 
-def get_cached_binary(name, gpu, linkage="static"):
-    path = os.path.join(CACHE_DIR, _cache_subdir(gpu, linkage), name)
+def get_cached_binary(name, gpu, linkage="static", bench_target=CORE_BENCH_TARGET):
+    path = os.path.join(CACHE_DIR, _cache_subdir(gpu, linkage, bench_target), name)
     return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
 
 
-def build_binary(name, gpu, rebuild=False, linkage="static"):
-    cached = get_cached_binary(name, gpu, linkage)
+def build_binary(
+    name, gpu, rebuild=False, linkage="static", bench_target=CORE_BENCH_TARGET
+):
+    cache_target = bench_target if name == "uniflow_bench" else CORE_BENCH_TARGET
+    cached = get_cached_binary(name, gpu, linkage, cache_target)
     if cached and not rebuild:
         print(f"  {name}: {cached} (cached)")
         return cached
@@ -395,9 +408,14 @@ def build_binary(name, gpu, rebuild=False, linkage="static"):
     # Only uniflow_bench honors the rdma_linkage toggle; ib_write_bw ignores it.
     if name == "uniflow_bench" and linkage == "dynamic":
         extra += " -c uniflow.rdma_linkage=dynamic"
-    cmd = f"buck2 build @fbcode//mode/opt{extra} {spec['target']} --show-full-output"
+    target = bench_target if name == "uniflow_bench" else spec["target"]
+    if gpu in ("mi300", "mi350"):
+        mode = ["@fbcode//mode/opt-amd-gpu", "-m", "rocm70"]
+    else:
+        mode = ["@fbcode//mode/opt", "-c", "hpc_comms.use_ncclx=stable"]
+    cmd = ["buck2", "build", *mode, *shlex.split(extra), target, "--show-full-output"]
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         sys.exit(f"ERROR: Build of {name} timed out after 10 minutes")
     if r.returncode != 0:
@@ -409,7 +427,7 @@ def build_binary(name, gpu, rebuild=False, linkage="static"):
     if not built or not os.path.isfile(built):
         sys.exit(f"ERROR: Build of {name} produced no output binary")
 
-    dest_dir = os.path.join(CACHE_DIR, _cache_subdir(gpu, linkage))
+    dest_dir = os.path.join(CACHE_DIR, _cache_subdir(gpu, linkage, cache_target))
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, name)
     shutil.copy2(built, dest)
@@ -819,6 +837,7 @@ def _setup_hosts(args):
     # forces a re-copy (the HAS check can't tell a static build from a dynamic
     # one). Empty when no binary/stamp is present or the hosts disagree.
     remote_linkage = info0.get("LINKAGE", "")
+    remote_target = info0.get("TARGET", "")
 
     if args.host1 != args.host0:
         h1 = RemoteHost(args.host1)
@@ -831,6 +850,8 @@ def _setup_hosts(args):
                 has_bins_all.pop(name, None)
         if info1.get("LINKAGE", "") != remote_linkage:
             remote_linkage = ""  # hosts disagree → re-copy to both
+        if info1.get("TARGET", "") != remote_target:
+            remote_target = ""
     else:
         args.gid1 = args.gid0
 
@@ -842,6 +863,7 @@ def _setup_hosts(args):
     args._hosts = hosts
     args._has_remote_bins = has_bins_all
     args._remote_uniflow_linkage = remote_linkage
+    args._remote_uniflow_target = remote_target
 
 
 def _copy_binaries(args, benchmarks):
@@ -860,6 +882,7 @@ def _copy_binaries(args, benchmarks):
         # from the requested one, so we never silently run a stale build.
         if b.name == "uniflow" and (
             getattr(args, "_remote_uniflow_linkage", "") != args.rdma_linkage
+            or getattr(args, "_remote_uniflow_target", "") != args.bench_target
         ):
             need = True
         if need:
@@ -878,7 +901,9 @@ def _copy_binaries(args, benchmarks):
         for b in to_copy:
             host.copy_to(b.local_binary_path, b.binary_name)
         host.verify_and_chmod(
-            [b.binary_name for b in to_copy], uniflow_linkage=args.rdma_linkage
+            [b.binary_name for b in to_copy],
+            uniflow_linkage=args.rdma_linkage,
+            uniflow_target=args.bench_target,
         )
 
 
@@ -888,6 +913,12 @@ def _parse_args():
         description="Compare uniflow RDMA bandwidth against ib_write_bw (perftest)",
     )
     parser.add_argument(
+        "--bench-target",
+        default=CORE_BENCH_TARGET,
+        choices=[CORE_BENCH_TARGET, EXTENSION_BENCH_TARGET],
+        help="UniFlow benchmark target to build (core or extensions)",
+    )
+    parser.add_argument(
         "--hosts",
         default="",
         help="Comma-separated hostnames (1 = intra-host remote, 2 = inter-host)",
@@ -895,7 +926,7 @@ def _parse_args():
     parser.add_argument(
         "--gpu",
         default="",
-        help="GPU type: h100 | b200 | b300 (default: auto-detect)",
+        help="GPU type: h100 | b200 | b300 | mi300 | mi350 (default: auto-detect)",
     )
     parser.add_argument(
         "--nics",
@@ -1139,7 +1170,11 @@ def _create_benchmarks(args, sizes, host0, rank1_host):
     for name in binary_names:
         linkage = args.rdma_linkage if name == "uniflow_bench" else "static"
         local_bins[name] = build_binary(
-            name, args.gpu, rebuild=args.rebuild, linkage=linkage
+            name,
+            args.gpu,
+            rebuild=args.rebuild,
+            linkage=linkage,
+            bench_target=args.bench_target,
         )
 
     benchmarks = []
