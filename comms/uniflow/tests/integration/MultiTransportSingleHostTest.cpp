@@ -8,6 +8,7 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <string>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -263,6 +264,48 @@ TEST_F(
   configured.enableTcp = true;
   configured.tcpBindHost = "::1";
   EXPECT_NO_THROW(MultiTransportFactory factory(-1, configured));
+}
+
+TEST_F(
+    MultiTransportFactoryTest,
+    ConstructorRejectsTcpBeforeUnavailableRdmaDevice) {
+  struct RestoreTopology {
+    Topology& topology;
+    Topology saved;
+    ~RestoreTopology() {
+      topology = std::move(saved);
+    }
+  } restore{*topo_, *topo_};
+
+  constexpr char kUnavailableNic[] = "uniflow-test/unavailable-rdma";
+  topo_->clear();
+  auto cpuId = topo_->addNode(
+      TopoNode{
+          .type = NodeType::CPU,
+          .name = "cpu:0",
+          .data = TopoNode::CpuData{.numaId = 0},
+      });
+  topo_->registerCpuNode(0, cpuId);
+  auto nicId = topo_->addNode(
+      TopoNode{
+          .type = NodeType::NIC,
+          .name = kUnavailableNic,
+          .data = TopoNode::NicData{.numaNode = 0, .port = 1},
+      });
+  topo_->registerNicNode(0, nicId);
+  topo_->addLink(cpuId, nicId, PathType::PHB, 100000);
+  topo_->recomputePaths();
+  topo_->setStatus(Ok());
+
+  MultiTransportFactoryOptions options;
+  options.cpuNicSelectionPolicy = CpuNicSelectionPolicy::kAll;
+  options.nicFilter = NicFilter("=" + std::string(kUnavailableNic));
+  options.preferredTransport = TransportType::TCP;
+  ASSERT_EQ(
+      topo_->selectCpuNics(options.nicFilter),
+      std::vector<std::string>{kUnavailableNic});
+  EXPECT_THROW(
+      MultiTransportFactory factory(-1, options), std::invalid_argument);
 }
 #else
 TEST_F(MultiTransportFactoryTest, TcpCapabilityIsNotImplemented) {
