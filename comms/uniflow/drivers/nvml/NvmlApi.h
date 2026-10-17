@@ -100,9 +100,11 @@ class NvmlApi {
 
 /// Create the NVML wrapper for the platform this binary was built for. NVIDIA
 /// builds return the real (dlopen-backed) NvmlApi; AMD builds return a no-op
-/// stub that reports every query as unsupported (NVML has no HIP analog). The
-/// definition lives in the build-selected translation unit (NvmlApi.cpp /
-/// NvmlApiStub.cpp), mirroring createCudaApi().
+/// stub that reports every query as unsupported (NVML has no HIP analog).
+/// NVIDIA definitions come from NvmlApi.cpp. AMD definitions come from the
+/// Extensions NvmlApiStub.cpp; final binaries must link the Extensions
+/// default_transports bundle in Buck or set UNIFLOW_BUILD_EXTENSIONS=ON in
+/// CMake.
 std::shared_ptr<NvmlApi> createNvmlApi();
 
 } // namespace uniflow
