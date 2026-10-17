@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/ScopeGuard.h>
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
@@ -14,6 +15,7 @@
 __global__ void ncclKernelAllGatherCtranStreamedRd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);
 
 namespace {

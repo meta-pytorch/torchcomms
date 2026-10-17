@@ -10,6 +10,7 @@
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 using ctran::allgatherp::AlgoImpl;
 using ctran::allgatherp::PersistArgs;
@@ -161,7 +162,8 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 namespace ctran::allgatherp {
 extern __global__ void ncclKernelAllGatherPDirect(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 
 commResult_t AlgoImpl::execDirect(
     const void* sendbuff,
