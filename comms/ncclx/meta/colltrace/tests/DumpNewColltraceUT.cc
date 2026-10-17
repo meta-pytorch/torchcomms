@@ -6,10 +6,10 @@
 #include <folly/json/json.h>
 #include <unordered_map>
 
-#include "comms/utils/colltrace/CPUWaitEvent.h"
-#include "comms/utils/colltrace/CollTrace.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
-#include "comms/utils/colltrace/tests/MockTypes.h"
+#include "comms/utils/colltrace/v1/CPUWaitEvent.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/tests/MockTypes.h"
 #include "meta/commDump.h"
 
 using namespace meta::comms;

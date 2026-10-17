@@ -8,7 +8,7 @@
 #include "device.h"
 
 #include "comms/ctran/colltrace/MapperTrace.h"
-#include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/memtrace/MemoryTrace.h"
 #include "meta/colltrace/ProxyTrace.h"

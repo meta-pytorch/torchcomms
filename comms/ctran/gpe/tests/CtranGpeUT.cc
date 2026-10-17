@@ -18,9 +18,9 @@
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/colltrace/CollTraceEvent.h"
-#include "comms/utils/colltrace/CollTraceHandle.h"
-#include "comms/utils/colltrace/tests/MockTypes.h"
+#include "comms/utils/colltrace/v1/CollTraceEvent.h"
+#include "comms/utils/colltrace/v1/CollTraceHandle.h"
+#include "comms/utils/colltrace/v1/tests/MockTypes.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
 #include <cupti.h> // @manual

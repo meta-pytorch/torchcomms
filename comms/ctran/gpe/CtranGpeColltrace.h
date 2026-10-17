@@ -6,9 +6,8 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
-#include "comms/ctran/algos/common/GpeRing.h" // ctran::gpe::KernelFlagDev
-#include "comms/utils/colltrace/CollTraceHandle.h" // ICollTraceHandle
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h" // ColltraceDeviceHandle
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h" // ColltraceDeviceHandle
+#include "comms/utils/colltrace/v1/CollTraceHandle.h" // ICollTraceHandle
 
 namespace ctran::gpe {
 
@@ -37,8 +36,9 @@ inline bool inKernelColltraceSupported() {
 #endif
 }
 
-// Arm a kernel flag for in-kernel colltrace start/end emission and maintain the
-// cross-submit grouping state (`pendingGroup`) for multi-kernel collectives.
+// Fill the kernel's by-value colltrace handle for in-kernel start/end emission
+// and maintain the cross-submit grouping state (`pendingGroup`) for
+// multi-kernel collectives.
 //
 // A multi-kernel collective (e.g. AllGatherP's PipeStart..PipeSync..PipeEnd)
 // records one CollTrace event: its Begin kernel writes the start and stashes
@@ -47,12 +47,11 @@ inline bool inKernelColltraceSupported() {
 // boundaries on the same kernel; interior kernels emit neither and leave
 // `pendingGroup` untouched.
 //
-// Precondition: the caller has already gated on inKernelColltraceSupported()
-// and a live kernel flag. `colltraceHandle` may be null (no record was
-// created).
+// Precondition: the caller has already gated on inKernelColltraceSupported().
+// `colltraceHandle` may be null (no record was created).
 inline void armInKernelColltrace(
     meta::comms::colltrace::ColltraceDeviceHandle& pendingGroup,
-    KernelFlagDev& flagDev,
+    meta::comms::colltrace::ColltraceDeviceHandle& out,
     meta::comms::colltrace::ICollTraceHandle* colltraceHandle,
     bool emitStart,
     bool emitEnd) {
@@ -71,7 +70,7 @@ inline void armInKernelColltrace(
       // multi-kernel begin hands the end to the group's End kernel below.
       devHandle.emitStart = true;
       devHandle.emitEnd = emitEnd;
-      flagDev.colltraceHdr = devHandle;
+      out = devHandle;
       if (!emitEnd) {
         // Multi-kernel begin: the End kernel reuses the same ring/collId.
         pendingGroup = devHandle;
@@ -83,7 +82,7 @@ inline void armInKernelColltrace(
     // End kernel of a multi-kernel collective: reuse the ring/collId stashed by
     // the Begin and emit only the end.
     if (pendingGroup.valid()) {
-      flagDev.colltraceHdr = pendingGroup;
+      out = pendingGroup;
     }
     // The group is closed once its End is armed; clear it so a later unrelated
     // End (a Begin whose End was dropped, then this collective's End) can never

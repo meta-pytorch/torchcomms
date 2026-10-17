@@ -7,7 +7,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/gpe/CtranGpe.h"
-#include "comms/utils/colltrace/CollTraceHandle.h"
+#include "comms/utils/colltrace/v1/CollTraceHandle.h"
 
 namespace meta::comms::colltrace {
 

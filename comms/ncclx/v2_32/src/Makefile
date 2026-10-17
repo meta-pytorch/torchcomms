@@ -138,14 +138,14 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/*.cc)
 ## Memory tracing
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/memtrace/*.cc)
 ## CollTrace source files
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/v1/*.cc)
 ## HRDWRingBuffer + GpuClockCalibration host sources
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/hrdw_ring_buffer/*.cc)
 ## CollTrace CUDA source files (host-side kernel launchers)
 LIBSRCFILES += ${BASE_DIR}/comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu
-LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/HRDWRingBufferInstantiations.cu
+LIBSRCFILES += ${BASE_DIR}/comms/utils/colltrace/v1/HRDWRingBufferInstantiations.cu
 ## CollTrace plugin source files
-LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/plugins/*.cc)
+LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/utils/colltrace/v1/plugins/*.cc)
 ## Include ibverbx files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/ibverbx/*.cc)
 ## Include cvars files

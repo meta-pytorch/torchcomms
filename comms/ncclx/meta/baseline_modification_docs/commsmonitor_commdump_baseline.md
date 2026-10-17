@@ -134,7 +134,7 @@ The deps the sources use directly (`comms/utils/memtrace:memory_trace`,
 v2_32 target, for allocation tracing, the CTRAN integration and the tuner. The
 row adds `folly:synchronized`, which v2_30 also names, for `CommsMonitor.h`'s
 `folly::Synchronized` registry. The sources also need
-`comms/utils:str_utils` and `comms/utils/colltrace:network_perf_monitor`, which
+`comms/utils:str_utils` and `comms/utils/colltrace/v1:network_perf_monitor`, which
 v2_32's ProxyTrace row already lists. The private-header globs already exist.
 
 **Conda build**: both versions' `src/Makefile` compile the two sources from

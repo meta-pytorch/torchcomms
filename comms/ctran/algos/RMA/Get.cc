@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <memory>
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 #include "Types.h"
 #include "comms/ctran/CtranComm.h"
@@ -17,7 +18,8 @@ using ::meta::comms::colltrace::CollTraceHandleTriggerState;
 
 extern __global__ void ncclKernelGet(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 
 static commResult_t getImpl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
