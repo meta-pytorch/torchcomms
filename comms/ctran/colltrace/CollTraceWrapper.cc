@@ -4,6 +4,7 @@
 
 #include <set>
 
+#include "comms/ctran/gpe/CtranGpeColltrace.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/RankUtils.h"
 #include "comms/utils/colltrace/v1/CPUWaitEvent.h"
@@ -421,6 +422,34 @@ std::shared_ptr<ICollTraceHandle> getCollTraceHandle(
   }
 
   return getNewCollTraceHandle(comm, opGroup, kernelConfig);
+}
+
+std::shared_ptr<ICollTraceHandle> traceKernelSubmit(
+    CtranComm* comm,
+    const std::vector<std::unique_ptr<struct OpElem>>& opGroup,
+    const KernelConfig& kernelConfig,
+    bool isCapturing,
+    bool ifchecksum,
+    KernelGroupState& state,
+    ColltraceDeviceHandle& hdr) {
+  hdr = {};
+  // Only graph tracing on sm_90+ creates the ring consumed by the kernel.
+  const bool inKernel = ctran::gpe::inKernelColltraceSupported() &&
+      isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
+  // Single-kernel collectives emit both boundaries (the KernelConfig defaults);
+  // multi-kernel collectives (the AllGatherP pipeline) set these per kernel.
+  const bool emitStart = inKernel && kernelConfig.colltraceEmitStart;
+  const bool emitEnd = inKernel && kernelConfig.colltraceEmitEnd;
+  // Multi-kernel graph collectives create one record at their start boundary.
+  const bool createsRecord = !isCapturing || emitStart;
+  auto handle = createsRecord
+      ? getCollTraceHandle(comm, opGroup, kernelConfig, ifchecksum)
+      : nullptr;
+  if (inKernel) {
+    ctran::gpe::armInKernelColltrace(
+        state.pendingGroup, hdr, handle.get(), emitStart, emitEnd);
+  }
+  return handle;
 }
 
 bool testOnlyClearCollTraceRecords(CtranComm* comm) {

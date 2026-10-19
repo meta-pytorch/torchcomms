@@ -20,6 +20,7 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/GpeDeviceRing.h"
@@ -311,12 +312,9 @@ class CtranGpe::Impl {
   // In-kernel colltrace grouping: a multi-submit collective (e.g. AllGatherP's
   // PipeStart..PipeSync..PipeEnd) records one CollTrace event whose start is
   // written by the group's Begin kernel and end by its End kernel. Begin
-  // stashes the device handle (ring + collId) here so the following End submit
-  // arms its kernel with the same collId. A default (null-ring, !valid())
-  // handle means no group is open. Written and read only on the submit
-  // (capture) thread, and a group's submits are always contiguous, so a single
-  // pending slot suffices.
-  meta::comms::colltrace::ColltraceDeviceHandle pendingColltraceGroup_{};
+  // keeps the collective's tracing id here so the following End submit arms
+  // its kernel with the same one.
+  meta::comms::colltrace::KernelGroupState kernelColltrace_{};
 
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.
