@@ -28,7 +28,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
-#include "comms/utils/colltrace/CollTrace.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
 
 class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                                    public ::testing::Test {

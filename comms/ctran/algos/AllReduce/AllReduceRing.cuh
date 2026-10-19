@@ -9,7 +9,7 @@
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/algos/localReduce.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 #include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_TCPDM_ENABLE

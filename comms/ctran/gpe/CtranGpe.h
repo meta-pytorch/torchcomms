@@ -28,7 +28,7 @@
 #include "comms/ctran/profiler/IGpeProfilerReporter.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
 #include "comms/ctran/window/CtranWin.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);

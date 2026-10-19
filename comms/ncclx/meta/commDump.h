@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
 
 namespace meta::comms::ncclx {
 

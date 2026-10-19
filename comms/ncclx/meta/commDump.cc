@@ -14,8 +14,8 @@
 
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/StrUtils.h"
-#include "comms/utils/colltrace/CollTraceInterface.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/memtrace/MemoryTrace.h"

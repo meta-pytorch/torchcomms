@@ -11,7 +11,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/window/CtranWin.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 using namespace ctran;
 using ::meta::comms::colltrace::CollTraceHandleTriggerState;

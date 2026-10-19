@@ -49,8 +49,8 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
-#include "comms/utils/colltrace/AlgoStats.h"
-#include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/utils/colltrace/v1/AlgoStats.h"
+#include "comms/utils/colltrace/v1/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
 // Forward declarations of ncclx classes to avoid circular dependencies

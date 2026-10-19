@@ -4,7 +4,7 @@
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/algos/tests/CtranDevWaitUTKernels.cuh"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 namespace ctran::testing {
 

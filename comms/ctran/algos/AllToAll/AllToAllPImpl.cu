@@ -3,7 +3,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/barrier.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 namespace ctran::alltoallp {
 // Sync-only kernel for the host-CE-copy AllToAllP path. The intra-node data is

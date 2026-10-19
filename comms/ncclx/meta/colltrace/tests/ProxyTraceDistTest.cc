@@ -14,7 +14,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/colltrace/ProxyTrace.h"
