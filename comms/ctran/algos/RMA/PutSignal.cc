@@ -15,6 +15,7 @@
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/window/CtranWin.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 using namespace ctran;
 using meta::comms::colltrace::CollTraceHandleTriggerState;
@@ -22,30 +23,36 @@ using meta::comms::colltrace::CollTraceHandleTriggerState;
 extern __global__ void ncclKernelPutNotify(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::rma::KernelPutNotifyArgs args);
 
 extern __global__ void ncclKernelWaitNotify(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::rma::KernelWaitNotifyArgs args);
 
 extern __global__ void ncclKernelPutSignal(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelPutSignalArgs args);
 
 extern __global__ void ncclKernelPut(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 
 extern __global__ void ncclKernelWaitSignal(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelWaitSignalArgs args);
 
 extern __global__ void ncclKernelSignal(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelSignalArgs args);
 
 // Helper function to check if displacement exceeds window bounds

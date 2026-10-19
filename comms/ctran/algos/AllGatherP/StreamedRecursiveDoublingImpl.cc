@@ -19,6 +19,7 @@
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 using ctran::algos::PersistPlanKey;
 using ctran::allgather::ctsrd::createPersistPlan;
@@ -190,18 +191,22 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 namespace ctran::allgatherp {
 extern __global__ void ncclKernelAllGatherPSrdPipeStart(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 extern __global__ void ncclKernelAllGatherPSrdPipeSync(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeSyncKernArgs args);
 extern __global__ void ncclKernelAllGatherPSrdPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeEndKernArgs args);
 extern __global__ void ncclKernelAllGatherPStreamedRd(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 
 commResult_t AlgoImpl::execStreamedRecursiveDoubling(
     const void* sendbuff,
