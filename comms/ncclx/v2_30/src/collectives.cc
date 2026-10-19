@@ -15,6 +15,7 @@
 #include "meta/NcclxConfig.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
+#include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/wrapper/MetaFactory.h"
 
 const char* ncclFuncToString(ncclFunc_t fn) {
@@ -92,6 +93,7 @@ NCCL_API(ncclResult_t, ncclAllGather, const void* sendbuff, void* recvbuff, size
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcount,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   if (sendcount == 0) {
     return ncclSuccess;
   }
@@ -118,6 +120,7 @@ NCCL_API(ncclResult_t, ncclAlltoAll, const void* sendbuff, void* recvbuff, size_
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclAlltoAll(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   if (count == 0) {
     return ncclSuccess;
   }
@@ -153,6 +156,7 @@ NCCL_API(ncclResult_t, ncclAllReduce, const void* sendbuff, void* recvbuff, size
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
 
   auto algo = NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo);
 
@@ -175,6 +179,7 @@ NCCL_API(ncclResult_t, ncclBroadcast, const void* sendbuff, void* recvbuff, size
     ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, int root,
     ncclComm_t comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   if (count == 0) {
     return ncclSuccess;
   }
@@ -206,6 +211,7 @@ NCCL_API(ncclResult_t, ncclGather, const void* sendbuff, void* recvbuff, size_t 
     ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclGather(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, int root,
     ncclComm* comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   NVTX3_FUNC_WITH_PARAMS(Gather, NcclNvtxParamsGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), root));
 
@@ -219,6 +225,7 @@ NCCL_API(ncclResult_t, ncclReduce, const void* sendbuff, void* recvbuff, size_t 
     ncclDataType_t datatype, ncclRedOp_t op, int root, ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclReduce(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, ncclRedOp_t op, int root, ncclComm_t comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   NVTX3_FUNC_WITH_PARAMS(Reduce, NcclNvtxParamsReduce,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), root, op));
 
@@ -232,6 +239,7 @@ NCCL_API(ncclResult_t, ncclReduceScatter, const void* sendbuff, void* recvbuff, 
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recvcount,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
@@ -270,6 +278,7 @@ NCCL_API(ncclResult_t, ncclScatter, const void* sendbuff, void* recvbuff, size_t
     ncclDataType_t datatype, int root, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclScatter(const void* sendbuff, void* recvbuff, size_t count,
     ncclDataType_t datatype, int root, ncclComm* comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   NVTX3_FUNC_WITH_PARAMS(Scatter, NcclNvtxParamsScatter,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), root));
 
@@ -301,6 +310,7 @@ NCCL_API(ncclResult_t, ncclSend, const void* sendbuff, size_t count, ncclDataTyp
     ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer,
     ncclComm_t comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   if (count == 0) {
     return ncclSuccess;
   }
@@ -344,6 +354,7 @@ NCCL_API(ncclResult_t, ncclRecv, void* recvbuff, size_t count, ncclDataType_t da
     ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer,
     ncclComm_t comm, cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   if (count == 0) {
     return ncclSuccess;
   }
@@ -387,6 +398,7 @@ ncclResult_t ncclAllToAllv(
     ncclDataType_t datatype,
     ncclComm_t comm,
     cudaStream_t stream) {
+  ncclx::colltrace::onCollectiveEnqueue(comm); // [META:COLLTRACE_V2]
   SetCudaDevRAII setCudaDev(comm->cudaDev);
   NCCLCHECK(PtrCheck((void*)sendcounts, "sendcounts", "ncclAllToAllv"));
   NCCLCHECK(PtrCheck((void*)recvcounts, "recvcounts", "ncclAllToAllv"));

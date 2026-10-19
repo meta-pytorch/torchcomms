@@ -31,7 +31,8 @@ bool turnsOn(std::string_view mode) {
 } // namespace
 
 bool selected() {
-  return envUint("NCCL_COLLTRACE_VERSION", 1) == 2;
+  static const bool kSelected = envUint("NCCL_COLLTRACE_VERSION", 1) == 2;
+  return kSelected;
 }
 
 bool validMode(std::string_view mode) {
@@ -39,14 +40,17 @@ bool validMode(std::string_view mode) {
 }
 
 bool enabled() {
-  if (!selected()) {
-    return false;
-  }
-  bool on = false;
-  forEachMode(envStr("NCCL_COLLTRACE"), [&on](std::string_view mode) {
-    on = on || turnsOn(mode);
-  });
-  return on;
+  static const bool kEnabled = [] {
+    if (!selected()) {
+      return false;
+    }
+    bool on = false;
+    forEachMode(envStr("NCCL_COLLTRACE"), [&on](std::string_view mode) {
+      on = on || turnsOn(mode);
+    });
+    return on;
+  }();
+  return kEnabled;
 }
 
 CollTraceV2& CollTraceV2::instance() {
