@@ -18,39 +18,23 @@
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
 #endif
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_TCP_TRANSPORT)
-#include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+#include "comms/uniflow/extensions/benchmarks/bench/TcpBandwidthBenchmark.h"
 #endif
 #include "comms/uniflow/logging/Logger.h"
 
-// ConnectionSetup/NVLink/NcclSendRecv benchmarks are NVIDIA-only (they depend
-// on the NVLink transport or NCCL) and are compiled out on AMD. The SendRecv
-// bandwidth benchmark is hipified and built on both platforms.
-#if defined(UNIFLOW_ENABLE_XGMI_BENCHMARK) || \
-    (!defined(UNIFLOW_CMAKE_BUILD) && defined(__HIP_PLATFORM_AMD__))
-// AMD intra-node tier (HIP IPC over XGMI). CMake defines the feature macro
-// when its XGMI target exists; non-CMake builds fall back to the platform
-// macro so the include continues to match the target's dependencies.
-#include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
-#elif !defined(UNIFLOW_CMAKE_BUILD)
-#include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
-#include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
-#include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
-#else
-#ifdef UNIFLOW_ENABLE_NVLINK_TRANSPORT
-#include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
-#include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
+#ifdef UNIFLOW_ENABLE_XGMI_BENCHMARK
+#include "comms/uniflow/extensions/benchmarks/bench/XgmiBandwidthBenchmark.h"
 #endif
 #ifdef UNIFLOW_ENABLE_NCCL_BENCHMARK
 #include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
-#endif
 #endif
 
 namespace {
 
 struct CliOptions {
   std::string benchmark{"all"};
-  std::string transport{"nvlink"};
+  std::string transport{"rdma"};
   std::string direction{"both"};
   std::string format{"table"};
   std::string outputPath;
@@ -184,7 +168,8 @@ void printUsage(const char* prog) {
       << "\n"
       << "Options:\n"
       << "  --benchmark <name>     Benchmark to run (default: all)\n"
-      << "  --transport <type>     Transport backend: nvlink|rdma|tcp (default: nvlink)\n"
+      << "  --transport <label>    Label printed in the report header; it does not\n"
+      << "                         select a transport (use --benchmark) (default: rdma)\n"
       << "  --min-size <bytes>     Minimum message size (default: 1)\n"
       << "  --max-size <bytes>     Maximum message size (default: 1073741824)\n"
       << "  --iterations <n>       Iterations per size (default: 100)\n"
@@ -596,7 +581,7 @@ int main(int argc, char** argv) {
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
 #endif
-#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_TCP_TRANSPORT)
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
           opts.tcpIface,
@@ -604,28 +589,13 @@ int main(int argc, char** argv) {
           opts.tcpSocketsPerNic,
           tcpBindDevList(opts)));
 #endif
-#if defined(UNIFLOW_ENABLE_XGMI_BENCHMARK) || \
-    (!defined(UNIFLOW_CMAKE_BUILD) && defined(__HIP_PLATFORM_AMD__))
+#ifdef UNIFLOW_ENABLE_XGMI_BENCHMARK
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>());
-#elif !defined(UNIFLOW_CMAKE_BUILD)
-  runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
-  runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
-  runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
-#else
-#ifdef UNIFLOW_ENABLE_NVLINK_TRANSPORT
-  runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
-  runner.registerBenchmark(
-      std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
 #endif
 #ifdef UNIFLOW_ENABLE_NCCL_BENCHMARK
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
-#endif
 #endif
 #if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
   runner.registerBenchmark(

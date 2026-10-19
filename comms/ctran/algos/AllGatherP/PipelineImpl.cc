@@ -10,6 +10,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 using ctran::allgatherp::AlgoImpl;
 using ctran::allgatherp::PersistArgs;
@@ -171,18 +172,22 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
 namespace ctran::allgatherp {
 extern __global__ void ncclKernelAllGatherPPipeStart(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 extern __global__ void ncclKernelAllGatherPPipeSync(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeSyncKernArgs args);
 extern __global__ void ncclKernelAllGatherPPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeEndKernArgs args);
 extern __global__ void ncclKernelAllGatherPRing(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 
 commResult_t AlgoImpl::execPipeline(
     const void* sendbuff,

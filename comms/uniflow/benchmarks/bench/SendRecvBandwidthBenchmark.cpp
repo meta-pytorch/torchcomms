@@ -17,7 +17,7 @@
 #include "comms/uniflow/benchmarks/Stats.h"
 #include "comms/uniflow/drivers/TopologyDiscovery.h"
 #include "comms/uniflow/drivers/cuda/CudaDriverApi.h"
-#include "comms/uniflow/drivers/ibverbs/IbvApi.h"
+#include "comms/uniflow/drivers/ibverbs/IbvApi.h" // @manual=//comms/uniflow/drivers/ibverbs:uniflow-rdma-deps
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"

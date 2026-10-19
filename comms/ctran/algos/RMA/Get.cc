@@ -11,13 +11,15 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/ctran/window/CtranWin.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 using namespace ctran;
 using ::meta::comms::colltrace::CollTraceHandleTriggerState;
 
 extern __global__ void ncclKernelGet(
     ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr);
 
 static commResult_t getImpl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {

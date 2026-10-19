@@ -8,6 +8,7 @@
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 template <typename T>
 __device__ __forceinline__ void sendImpl(
@@ -138,8 +139,9 @@ template <typename T>
 __global__ void ncclKernelAllToAllv(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::alltoallv::KernelArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
@@ -200,8 +202,9 @@ __global__ void ncclKernelAllToAllv(
   }
 }
 
-#define DECL_CTRAN_ALLTOALLV_KERN(T)               \
-  template __global__ void ncclKernelAllToAllv<T>( \
-      ctran::gpe::KernelFlagDev * flag,            \
-      CtranAlgoDeviceState * devState,             \
+#define DECL_CTRAN_ALLTOALLV_KERN(T)                              \
+  template __global__ void ncclKernelAllToAllv<T>(                \
+      ctran::gpe::KernelFlagDev * flag,                           \
+      CtranAlgoDeviceState * devState,                            \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr, \
       ctran::alltoallv::KernelArgs args)

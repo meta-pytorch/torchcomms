@@ -10,6 +10,7 @@ set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/Uniflow.h
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/controller/Controller.h
+    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/controller/TcpController.h
 
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/core/Func.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/core/MpscQueue.h
@@ -28,13 +29,5 @@ set(UNIFLOW_PUBLIC_HEADERS
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/Transport.h
     ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/TransportType.h
 )
-
-if(UNIFLOW_ENABLE_TCP)
-  list(APPEND UNIFLOW_PUBLIC_HEADERS
-    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/controller/TcpController.h
-    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/tcp/TcpPinnedSlabPool.h
-    ${_UNIFLOW_PUBLIC_HEADER_ROOT}/transport/tcp/TcpTransport.h
-  )
-endif()
 
 unset(_UNIFLOW_PUBLIC_HEADER_ROOT)

@@ -2,4 +2,4 @@
 
 uniflow_add_test(
   uniflow_multi_transport_single_host_test MultiTransportSingleHostTest.cpp
-  "cuda;nvlink;rdma;multi_gpu")
+  "cuda;rdma;multi_gpu")

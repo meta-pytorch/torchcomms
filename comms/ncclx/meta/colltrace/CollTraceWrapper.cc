@@ -10,17 +10,17 @@
 #include <folly/Synchronized.h>
 #include <folly/Unit.h>
 #include "comms/utils/RankUtils.h"
-#include "comms/utils/colltrace/CollMetadataImpl.h"
-#include "comms/utils/colltrace/CollTrace.h"
+#include "comms/utils/colltrace/v1/CollMetadataImpl.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
 #include "meta/logger/DebugExt.h"
 
-#include "comms/utils/colltrace/CudaWaitEvent.h"
-#include "comms/utils/colltrace/DummyCollTraceHandle.h"
-#include "comms/utils/colltrace/GenericMetadata.h"
-#include "comms/utils/colltrace/GraphCudaWaitEvent.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
-#include "comms/utils/colltrace/plugins/LifecycleEventFeedPlugin.h"
-#include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
+#include "comms/utils/colltrace/v1/CudaWaitEvent.h"
+#include "comms/utils/colltrace/v1/DummyCollTraceHandle.h"
+#include "comms/utils/colltrace/v1/GenericMetadata.h"
+#include "comms/utils/colltrace/v1/GraphCudaWaitEvent.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/plugins/LifecycleEventFeedPlugin.h"
+#include "comms/utils/colltrace/v1/plugins/WatchdogPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/NcclxChecks.h"
 #include "meta/NcclxLogger.h"
@@ -31,7 +31,7 @@
 #include "nccl.h"
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/utils/colltrace/AlgoStats.h"
+#include "comms/utils/colltrace/v1/AlgoStats.h"
 
 #include <fmt/core.h>
 

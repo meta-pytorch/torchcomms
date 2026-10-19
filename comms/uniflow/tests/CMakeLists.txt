@@ -5,8 +5,7 @@ find_package(GTest REQUIRED)
 set(_UNIFLOW_TESTS_REQUIRE_GMOCK OFF)
 if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA OR UNIFLOW_ENABLE_TCP OR
    UNIFLOW_ENABLE_RDMA OR
-   UNIFLOW_GPU_PLATFORM STREQUAL HIP OR
-   (UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA))
+   UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   set(_UNIFLOW_TESTS_REQUIRE_GMOCK ON)
 endif()
 
@@ -71,27 +70,21 @@ if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
   add_subdirectory(../drivers/nvml/tests nvml_driver_tests)
   add_subdirectory(../transport/tests/unit transport_unit_tests)
 endif()
-if(UNIFLOW_ENABLE_TCP)
-  add_subdirectory(../transport/tcp/tests/unit tcp_unit_tests)
-  add_subdirectory(../transport/tcp/tests/integration tcp_integration_tests)
-endif()
 if(UNIFLOW_ENABLE_RDMA)
   add_subdirectory(../drivers/ibverbs/tests ibverbs_driver_tests)
 endif()
-if(UNIFLOW_ENABLE_RDMA)
+if(UNIFLOW_ENABLE_RDMA AND NOT UNIFLOW_GPU_PLATFORM STREQUAL HIP)
   add_subdirectory(../transport/rdma/tests rdma_tests)
 endif()
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  add_subdirectory(../transport/p2p/tests p2p_tests)
-endif()
-if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  add_subdirectory(../transport/nvlink/tests nvlink_tests)
-endif()
-if(UNIFLOW_ENABLE_RDMA AND UNIFLOW_ENABLE_NVLINK AND
-   UNIFLOW_GPU_PLATFORM STREQUAL CUDA AND UNIFLOW_ENABLE_TCP)
+
+if(UNIFLOW_ENABLE_RDMA AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
   add_subdirectory(integration)
 endif()
-if(UNIFLOW_ENABLE_RDMA AND UNIFLOW_ENABLE_NVLINK AND
-   UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
+if(UNIFLOW_ENABLE_RDMA AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
   add_subdirectory(../transport/tests/integration topology_integration_tests)
+endif()
+
+
+if(UNIFLOW_BUILD_EXTENSIONS)
+  add_subdirectory("${UNIFLOW_EXTENSIONS_DIR}/tests" extension_tests)
 endif()

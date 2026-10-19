@@ -81,10 +81,38 @@ TEST(CudaDeviceAdapterTest, ExportDmaBuffPopulatesFdOffsetAndIova) {
   auto cudaApi = std::make_shared<NiceMock<MockCudaApi>>();
   auto driverApi = std::make_shared<NiceMock<MockCudaDriverApi>>();
   constexpr int kFakeFd = 42;
+  CudaDeviceAdapter adapter(cudaApi, driverApi);
+
+  // Use a real heap-aligned allocation as the base, then offset into it to
+  // get a non-page-aligned pointer. posix_memalign + free keeps the
+  // allocate/free pair symmetric (mixing aligned `new[]` with default
+  // `delete[]` would be UB).
+  const size_t pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  void* backingRaw = nullptr;
+  ASSERT_EQ(::posix_memalign(&backingRaw, pageSize, pageSize * 4), 0);
+  std::unique_ptr<void, decltype(&::free)> backing(backingRaw, &::free);
+  void* ptr = static_cast<std::byte*>(backing.get()) + pageSize + 128;
+
+#if defined(__HIP_PLATFORM_AMD__)
+  const CUdeviceptr exportBase = reinterpret_cast<CUdeviceptr>(backing.get());
+  const size_t exportSize = pageSize * 4;
+  const size_t offset = pageSize + 128;
+  EXPECT_CALL(*driverApi, cuMemGetAddressRange_v2(_, _, ptr))
+      .WillOnce([&](CUdeviceptr* base, size_t* size, CUdeviceptr) {
+        *base = exportBase;
+        *size = exportSize;
+        return Ok();
+      });
+#else
+  const CUdeviceptr exportBase =
+      reinterpret_cast<uint64_t>(backing.get()) + pageSize;
+  const size_t exportSize = pageSize * 2;
+  const size_t offset = 128;
+#endif
   EXPECT_CALL(
       *driverApi,
       memGetHandleForAddressRange(
-          _, _, _, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0))
+          _, exportBase, exportSize, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0))
       .WillOnce([&](void* handle,
                     CUdeviceptr,
                     size_t,
@@ -94,24 +122,13 @@ TEST(CudaDeviceAdapterTest, ExportDmaBuffPopulatesFdOffsetAndIova) {
         return Ok();
       });
 
-  CudaDeviceAdapter adapter(cudaApi, driverApi);
-
-  // Use a real heap-aligned allocation as the base, then offset into it to
-  // get a non-page-aligned pointer. posix_memalign + free keeps the
-  // allocate/free pair symmetric (mixing aligned `new[]` with default
-  // `delete[]` would be UB).
-  const size_t pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
-  void* backingRaw = nullptr;
-  ASSERT_EQ(::posix_memalign(&backingRaw, pageSize, pageSize * 2), 0);
-  std::unique_ptr<void, decltype(&::free)> backing(backingRaw, &::free);
-  void* ptr = static_cast<std::byte*>(backing.get()) + 128;
-
-  auto res = adapter.exportDmaBuff(/*deviceId=*/0, ptr, /*len=*/4096);
+  auto res = adapter.exportDmaBuff(/*deviceId=*/0, ptr, /*len=*/pageSize);
   ASSERT_FALSE(res.hasError());
   EXPECT_EQ(res->fd, kFakeFd);
-  EXPECT_EQ(res->offset, 128u);
-  EXPECT_EQ(res->len, 4096u);
+  EXPECT_EQ(res->offset, offset);
+  EXPECT_EQ(res->len, pageSize);
   EXPECT_EQ(res->iova, reinterpret_cast<uint64_t>(ptr));
+  EXPECT_EQ(res->dmaBufLen, exportSize);
 }
 
 TEST(CudaDeviceAdapterTest, ExportDmaBuffDataDirectSelectsPcieMapping) {

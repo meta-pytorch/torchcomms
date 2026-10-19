@@ -4,6 +4,7 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 // Enumerate functions to test
 enum class FnName {
@@ -40,4 +41,5 @@ struct CtranTestDeviceWaitArgs {
 extern __global__ void ncclKernelTestDeviceWait(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranTestDeviceWaitArgs args);

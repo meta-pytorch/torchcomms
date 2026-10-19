@@ -41,12 +41,20 @@ set(UNIFLOW_HIPIFY_DIR ${CMAKE_CURRENT_BINARY_DIR}/hipified)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+option(UNIFLOW_BUILD_EXTENSIONS
+  "Build UniFlow extensions in tree; fbsource builds must set UNIFLOW_EXTENSIONS_DIR" OFF)
+set(UNIFLOW_EXTENSIONS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extensions" CACHE PATH
+    "UniFlow extensions source directory (fbsource: <fbsource>/fbcode/neteng/network_ai/uniflow_extensions)")
+
 option(UNIFLOW_BUILD_PYTHON "Build the UniFlow Python extension" OFF)
 option(UNIFLOW_BUILD_TESTS "Build UniFlow tests" OFF)
 option(UNIFLOW_BUILD_BENCHMARKS "Build UniFlow benchmarks" OFF)
 
 set(UNIFLOW_MINIMUM_CUDA_VERSION 12.8)
 include(UniflowGpuPlatform)
+if(UNIFLOW_GPU_PLATFORM STREQUAL HIP AND NOT UNIFLOW_BUILD_EXTENSIONS)
+  message(FATAL_ERROR "AMD builds require UNIFLOW_BUILD_EXTENSIONS=ON.")
+endif()
 
 function(_uniflow_resolve_feature_option name description default_value)
   if(DEFINED ${name})
@@ -83,16 +91,6 @@ _uniflow_resolve_feature_option(
   ${_UNIFLOW_ENABLE_RDMA_DEFAULT})
 unset(_UNIFLOW_ENABLE_RDMA_DEFAULT)
 
-if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  set(_UNIFLOW_ENABLE_NVLINK_DEFAULT ON)
-else()
-  set(_UNIFLOW_ENABLE_NVLINK_DEFAULT OFF)
-endif()
-_uniflow_resolve_feature_option(
-  UNIFLOW_ENABLE_NVLINK "Build the NVLink transport"
-  ${_UNIFLOW_ENABLE_NVLINK_DEFAULT})
-unset(_UNIFLOW_ENABLE_NVLINK_DEFAULT)
-
 set(UNIFLOW_RDMA_TEST_NICS "" CACHE STRING
   "Comma-separated compatible RDMA NIC pair for single-host tests")
 if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
@@ -104,6 +102,9 @@ _uniflow_resolve_feature_option(
   UNIFLOW_ENABLE_TCP "Build the TCP transport"
   ${_UNIFLOW_ENABLE_TCP_DEFAULT})
 unset(_UNIFLOW_ENABLE_TCP_DEFAULT)
+if(UNIFLOW_ENABLE_TCP AND NOT UNIFLOW_BUILD_EXTENSIONS)
+  message(FATAL_ERROR "TCP data requires UNIFLOW_BUILD_EXTENSIONS=ON.")
+endif()
 option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog and fmt" ON)
 if(UNIFLOW_STANDALONE AND
    NOT UNIFLOW_BUILD_PYTHON AND
@@ -120,15 +121,12 @@ option(UNIFLOW_ALLOW_DEPENDENCY_OVERWRITE
   "Allow fetched fmt and spdlog to overwrite files in the install prefix" OFF)
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL NONE AND
-   (UNIFLOW_ENABLE_RDMA OR UNIFLOW_ENABLE_NVLINK OR UNIFLOW_ENABLE_TCP))
+   (UNIFLOW_ENABLE_RDMA OR UNIFLOW_ENABLE_TCP))
   message(FATAL_ERROR
-    "RDMA, NVLink, and TCP require a GPU platform in this release; disable "
+    "RDMA and TCP require a GPU platform in this release; disable "
     "them or choose UNIFLOW_GPU_PLATFORM=CUDA|HIP.")
 endif()
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP AND UNIFLOW_ENABLE_NVLINK)
-  message(FATAL_ERROR
-    "NVLink is available only with UNIFLOW_GPU_PLATFORM=CUDA.")
-endif()
+
 set(UNIFLOW_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 file(MAKE_DIRECTORY "${UNIFLOW_BUILD_INCLUDE_DIR}/comms")
 file(
@@ -476,7 +474,6 @@ target_include_directories(uniflow_build_config INTERFACE
 target_compile_definitions(uniflow_build_config INTERFACE
   UNIFLOW_CMAKE_BUILD=1
   $<$<BOOL:${UNIFLOW_ENABLE_RDMA}>:UNIFLOW_ENABLE_RDMA_TRANSPORT=1>
-  $<$<AND:$<STREQUAL:${UNIFLOW_GPU_PLATFORM},CUDA>,$<BOOL:${UNIFLOW_ENABLE_NVLINK}>>:UNIFLOW_ENABLE_NVLINK_TRANSPORT=1>
   $<$<STREQUAL:${UNIFLOW_GPU_PLATFORM},HIP>:UNIFLOW_ENABLE_P2P_TRANSPORT=1>
   $<$<BOOL:${UNIFLOW_ENABLE_TCP}>:UNIFLOW_ENABLE_TCP_TRANSPORT=1>
 )
@@ -532,28 +529,12 @@ target_link_libraries(uniflow_implementation INTERFACE
     uniflow_transport
 )
 
-if(UNIFLOW_ENABLE_NVLINK AND UNIFLOW_GPU_PLATFORM STREQUAL CUDA)
-  target_sources(uniflow_implementation INTERFACE
-    $<TARGET_OBJECTS:uniflow_nvlink_transport>)
-  target_link_libraries(uniflow_implementation INTERFACE
-    uniflow_nvlink_transport)
-elseif(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  target_sources(uniflow_implementation INTERFACE
-    $<TARGET_OBJECTS:uniflow_p2p_transport>)
-  target_link_libraries(uniflow_implementation INTERFACE
-    uniflow_p2p_transport)
-endif()
+
 if(UNIFLOW_ENABLE_RDMA)
   target_sources(uniflow_implementation INTERFACE
     $<TARGET_OBJECTS:uniflow_rdma_transport>)
   target_link_libraries(uniflow_implementation INTERFACE
     uniflow_rdma_transport)
-endif()
-if(UNIFLOW_ENABLE_TCP)
-  target_sources(uniflow_implementation INTERFACE
-    $<TARGET_OBJECTS:uniflow_tcp_transport>)
-  target_link_libraries(uniflow_implementation INTERFACE
-    uniflow_tcp_transport)
 endif()
 
 add_library(uniflow ${UNIFLOW_LIB_TYPE})
@@ -590,6 +571,10 @@ target_link_libraries(uniflow PRIVATE ${CMAKE_DL_LIBS})
 
 if(UNIFLOW_LIB_TYPE STREQUAL SHARED)
   target_link_options(uniflow PRIVATE "LINKER:--no-undefined")
+endif()
+
+if(UNIFLOW_BUILD_EXTENSIONS)
+  add_subdirectory("${UNIFLOW_EXTENSIONS_DIR}" extensions)
 endif()
 
 if(UNIFLOW_BUILD_PYTHON)
@@ -629,6 +614,11 @@ if(UNIFLOW_INSTALL_CPP)
   foreach(_UNIFLOW_PUBLIC_HEADER IN LISTS UNIFLOW_PUBLIC_HEADERS)
     file(RELATIVE_PATH _UNIFLOW_HEADER_PATH
       "${CMAKE_CURRENT_SOURCE_DIR}" "${_UNIFLOW_PUBLIC_HEADER}")
+    if(_UNIFLOW_HEADER_PATH MATCHES "^\\.\\.")
+      file(RELATIVE_PATH _UNIFLOW_HEADER_PATH
+        "${UNIFLOW_EXTENSIONS_DIR}" "${_UNIFLOW_PUBLIC_HEADER}")
+      set(_UNIFLOW_HEADER_PATH "extensions/${_UNIFLOW_HEADER_PATH}")
+    endif()
     list(APPEND UNIFLOW_INSTALLED_PUBLIC_HEADERS
       "${_UNIFLOW_HEADER_PATH}")
     get_filename_component(_UNIFLOW_HEADER_DIRECTORY

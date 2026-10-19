@@ -31,50 +31,8 @@ if(UNIFLOW_ENABLE_RDMA)
     $<TARGET_OBJECTS:uniflow_rdma_bandwidth_bench>)
 endif()
 
-if(UNIFLOW_ENABLE_TCP)
-  uniflow_hipify(_UNIFLOW_TCP_BANDWIDTH_BENCH_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/TcpBandwidthBenchmark.cpp)
-  add_library(uniflow_tcp_bandwidth_bench OBJECT
-    ${_UNIFLOW_TCP_BANDWIDTH_BENCH_SOURCES})
-  target_link_libraries(uniflow_tcp_bandwidth_bench PRIVATE
-    uniflow_build_config
-    uniflow
-  )
-  uniflow_target_hipified(uniflow_tcp_bandwidth_bench)
-  list(APPEND _UNIFLOW_BENCH_OBJECTS
-    $<TARGET_OBJECTS:uniflow_tcp_bandwidth_bench>)
-endif()
-
-if(UNIFLOW_ENABLE_NVLINK)
-  add_library(uniflow_connection_setup_bench OBJECT
-    bench/ConnectionSetupBenchmark.cpp)
-  add_library(uniflow_nvlink_bandwidth_bench OBJECT
-    bench/NVLinkBandwidthBenchmark.cpp)
-  foreach(_UNIFLOW_NVLINK_BENCH_TARGET IN ITEMS
-      uniflow_connection_setup_bench
-      uniflow_nvlink_bandwidth_bench)
-    target_link_libraries(${_UNIFLOW_NVLINK_BENCH_TARGET} PRIVATE
-      uniflow_build_config
-      uniflow
-    )
-    list(APPEND _UNIFLOW_BENCH_OBJECTS
-      $<TARGET_OBJECTS:${_UNIFLOW_NVLINK_BENCH_TARGET}>)
-  endforeach()
-  unset(_UNIFLOW_NVLINK_BENCH_TARGET)
-endif()
-
-if(UNIFLOW_GPU_PLATFORM STREQUAL HIP)
-  uniflow_hipify(_UNIFLOW_XGMI_BANDWIDTH_BENCH_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/bench/XgmiBandwidthBenchmark.cpp)
-  add_library(uniflow_xgmi_bandwidth_bench OBJECT
-    ${_UNIFLOW_XGMI_BANDWIDTH_BENCH_SOURCES})
-  target_link_libraries(uniflow_xgmi_bandwidth_bench PRIVATE
-    uniflow_build_config
-    uniflow
-  )
-  uniflow_target_hipified(uniflow_xgmi_bandwidth_bench)
-  list(APPEND _UNIFLOW_BENCH_OBJECTS
-    $<TARGET_OBJECTS:uniflow_xgmi_bandwidth_bench>)
+if(UNIFLOW_BUILD_EXTENSIONS)
+  add_subdirectory("${UNIFLOW_EXTENSIONS_DIR}/benchmarks" extensions_benchmarks)
 endif()
 
 if(UNIFLOW_GPU_PLATFORM STREQUAL CUDA)

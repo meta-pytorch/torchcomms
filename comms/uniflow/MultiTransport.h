@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 namespace uniflow {
 
@@ -31,11 +32,10 @@ struct MultiTransportFactoryOptions {
       CpuNicSelectionPolicy::kNumaLocalBounded};
   size_t maxCpuNics{2};
   // Runtime intra-node transport selection. Intra-node VRAM<->VRAM defaults to
-  // the on-host interconnect tier (NVLink on NVIDIA, P2P/XGMI on AMD). Set this
+  // P2P/XGMI on AMD when linked, otherwise RDMA. Set this
   // to flip that choice -- e.g. TransportType::RDMA to route intra-node traffic
-  // over RDMA instead. Both tiers stay registered, so this is a selection
-  // override, not a kill-switch. Caller-owned (no transport-internal
-  // config-system dependency).
+  // over RDMA instead. Available transports stay registered; this option only
+  // changes selection. The caller owns this option.
   std::optional<TransportType> intraNodeTransport;
   // preferredTransport: global force, checked first in selectTransport --
   // applies to both intra- and inter-node. interNodeTransport: inter-node
@@ -76,6 +76,19 @@ struct MultiTransportFactoryOptions {
   // RDMA ignoring RequestOptions::timeout.
   std::optional<std::chrono::milliseconds> rdmaRequestTimeout;
 };
+
+void addExtensionTransportFactories(
+    int deviceId,
+    EventBase* evb,
+    const MultiTransportFactoryOptions& options,
+    std::vector<std::shared_ptr<TransportFactory>>& factories);
+
+Status extensionTransportSupported(TransportType type);
+
+namespace detail {
+extern decltype(&addExtensionTransportFactories) extensionTransportFactories;
+extern decltype(&extensionTransportSupported) extensionTransportSupport;
+} // namespace detail
 
 class MultiTransport {
  public:

@@ -8,18 +8,18 @@ Exercises the full path: agent creation → segment registration →
 connection establishment → ctrl message exchange → get() data transfer →
 data correctness verification.
 
-Uses a VMM allocator with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR so
-that NVLink segment registration via cuMemExportToShareableHandle works.
+GPU buffers use the normal PyTorch allocator. The agent test uses default
+transport selection; the transport tests verify each backend explicitly.
 """
 
-import os
+from __future__ import annotations
+
 import threading
 import unittest
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC"] = "1"
-
-import torch  # noqa: E402
+import torch
+from comms.uniflow.tests.py.transfer_test_utils import MultiTransportTransferTest
+from uniflow._core import TransportType
 
 
 _SKIP_NO_MULTI_GPU: bool = (
@@ -43,8 +43,6 @@ class TestUniflowIntegration(unittest.TestCase):
         )
 
         # Allocate GPU tensors using PyTorch's default allocator.
-        # expandable_segments:True (set via env var) makes PyTorch use
-        # cuMemCreate internally, which is required for NVLink registration.
         server_tensor: torch.Tensor = torch.arange(
             _NUM_ELEMS, dtype=torch.float32, device="cuda:0"
         )
@@ -203,3 +201,14 @@ class TestUniflowIntegration(unittest.TestCase):
             _NUM_ELEMS, dtype=torch.float32, device="cuda:1"
         )
         torch.testing.assert_close(client_tensor, expected)
+
+
+class MultiTransportIntegrationTest(MultiTransportTransferTest):
+    def test_tcp_vram_put_get(self) -> None:
+        self._put_get(TransportType.TCP, gpu_buffers=True)
+
+    def test_p2p_vram_put_get(self) -> None:
+        self._put_get(TransportType.NVLink, gpu_buffers=True)
+
+    def test_rdma_vram_put_get(self) -> None:
+        self._put_get(TransportType.RDMA, gpu_buffers=True)

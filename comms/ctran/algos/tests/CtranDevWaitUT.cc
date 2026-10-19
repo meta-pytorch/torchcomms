@@ -91,10 +91,12 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
         sizeof(bool),
         cudaMemcpyHostToDevice));
 
-    std::array<void*, 3> kernelArgs;
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr{};
+    std::array<void*, 4> kernelArgs;
     kernelArgs.at(0) = (void*)&kfd_;
     kernelArgs.at(1) = (void*)&devState_;
-    kernelArgs.at(2) = (void*)&args_;
+    kernelArgs.at(2) = (void*)&colltraceHdr;
+    kernelArgs.at(3) = (void*)&args_;
     dim3 grid = {kNBlocks, 1, 1};
     dim3 block = {kNThreads, 1, 1};
     const void* kernel = (void*)&ncclKernelTestDeviceWait;

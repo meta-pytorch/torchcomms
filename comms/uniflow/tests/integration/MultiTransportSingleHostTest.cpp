@@ -8,6 +8,8 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -93,6 +95,7 @@ class MultiTransportFactoryTest : public ::testing::Test {
 
 // --- selectNics tests ---
 
+#ifndef UNIFLOW_TEST_MTIA
 TEST_F(MultiTransportFactoryTest, SelectNicsGpuH100) {
   NicFilter filter(
       "mlx5_0:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_9:1,mlx5_10:1,mlx5_11:1");
@@ -145,6 +148,8 @@ TEST_F(MultiTransportFactoryTest, SelectNicsGpuGB200) {
   }
 }
 
+#endif
+
 // --- Constructor integration tests ---
 #ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
 TEST_F(MultiTransportFactoryTest, ConstructorCpuCreatesTcpAndOptionalRdma) {
@@ -190,7 +195,7 @@ TEST_F(MultiTransportFactoryTest, ConstructorRegistersTcpWhenRoutable) {
   EXPECT_TRUE(hasTcp);
 }
 
-TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndOptionalRdma) {
+TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesEnabledTransports) {
   if (topo_->gpuCount() == 0) {
     GTEST_SKIP() << "No GPUs available";
   }
@@ -222,12 +227,11 @@ TEST_F(MultiTransportFactoryTest, ConstructorGpuCreatesNvlinkAndOptionalRdma) {
     ASSERT_GT(factoryCount(factory), idx);
     EXPECT_EQ(factoryTransportType(factory, idx++), TransportType::RDMA);
   }
+  EXPECT_EQ(factoryCount(factory), idx + 1);
 #else
-  if (factoryCount(factory) > 1) {
-    EXPECT_EQ(factoryTransportType(factory, 0), TransportType::NVLink);
-  }
-  if (factoryCount(factory) > 2) {
-    EXPECT_EQ(factoryTransportType(factory, 1), TransportType::RDMA);
+  if (isPlatformSupported("").hasValue()) {
+    EXPECT_EQ(factoryCount(factory), 2u);
+    EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
   }
 #endif
 }
@@ -264,6 +268,48 @@ TEST_F(
   configured.tcpBindHost = "::1";
   EXPECT_NO_THROW(MultiTransportFactory factory(-1, configured));
 }
+
+TEST_F(
+    MultiTransportFactoryTest,
+    ConstructorRejectsTcpBeforeUnavailableRdmaDevice) {
+  struct RestoreTopology {
+    Topology& topology;
+    Topology saved;
+    ~RestoreTopology() {
+      topology = std::move(saved);
+    }
+  } restore{*topo_, *topo_};
+
+  constexpr char kUnavailableNic[] = "uniflow-test/unavailable-rdma";
+  topo_->clear();
+  auto cpuId = topo_->addNode(
+      TopoNode{
+          .type = NodeType::CPU,
+          .name = "cpu:0",
+          .data = TopoNode::CpuData{.numaId = 0},
+      });
+  topo_->registerCpuNode(0, cpuId);
+  auto nicId = topo_->addNode(
+      TopoNode{
+          .type = NodeType::NIC,
+          .name = kUnavailableNic,
+          .data = TopoNode::NicData{.numaNode = 0, .port = 1},
+      });
+  topo_->registerNicNode(0, nicId);
+  topo_->addLink(cpuId, nicId, PathType::PHB, 100000);
+  topo_->recomputePaths();
+  topo_->setStatus(Ok());
+
+  MultiTransportFactoryOptions options;
+  options.cpuNicSelectionPolicy = CpuNicSelectionPolicy::kAll;
+  options.nicFilter = NicFilter("=" + std::string(kUnavailableNic));
+  options.preferredTransport = TransportType::TCP;
+  ASSERT_EQ(
+      topo_->selectCpuNics(options.nicFilter),
+      std::vector<std::string>{kUnavailableNic});
+  EXPECT_THROW(
+      MultiTransportFactory factory(-1, options), std::invalid_argument);
+}
 #else
 TEST_F(MultiTransportFactoryTest, TcpCapabilityIsNotImplemented) {
   auto status = MultiTransportFactory::supported(TransportType::TCP);
@@ -281,6 +327,54 @@ TEST_F(MultiTransportFactoryTest, ConstructorNeverRegistersTcp) {
     EXPECT_NE(factoryTransportType(factory, i), TransportType::TCP);
   }
 }
+
+#ifndef UNIFLOW_TEST_MTIA
+#if defined(__HIP_PLATFORM_AMD__)
+TEST_F(
+    MultiTransportFactoryTest,
+    ConstructorGpuRegistersEnabledTransportsWithoutTcp) {
+  if (topo_->gpuCount() == 0) {
+    GTEST_SKIP() << "No GPUs available";
+  }
+
+  const MultiTransportFactoryOptions options;
+  std::vector<TransportType> expectedTypes;
+  if (MultiTransportFactory::supported(TransportType::NVLink).hasValue()) {
+    expectedTypes.push_back(TransportType::NVLink);
+  }
+#if !defined(UNIFLOW_CMAKE_BUILD) || defined(UNIFLOW_ENABLE_RDMA_TRANSPORT)
+  if (!topo_->selectGpuNics(0, options.nicFilter, options.netdevPrefix)
+           .empty()) {
+    expectedTypes.push_back(TransportType::RDMA);
+  }
+#endif
+
+  MultiTransportFactory factory(0, options);
+  std::vector<TransportType> actualTypes;
+  for (size_t i = 0; i < factoryCount(factory); ++i) {
+    actualTypes.push_back(factoryTransportType(factory, i));
+  }
+  EXPECT_EQ(actualTypes, expectedTypes);
+}
+#else
+TEST_F(MultiTransportFactoryTest, ConstructorGpuRegistersOnlyRdma) {
+  if (topo_->gpuCount() == 0) {
+    GTEST_SKIP() << "No GPUs available";
+  }
+  const auto status = isPlatformSupported("");
+  if (!status) {
+    GTEST_SKIP() << status.error().message();
+  }
+  MultiTransportFactory factory(0);
+
+  ASSERT_EQ(factoryCount(factory), 1u);
+  EXPECT_EQ(factoryTransportType(factory, 0), TransportType::RDMA);
+  const auto nvlink = MultiTransportFactory::supported(TransportType::NVLink);
+  ASSERT_TRUE(nvlink.hasError());
+  EXPECT_EQ(nvlink.error().code(), ErrCode::NotImplemented);
+}
+#endif
+#endif
 #endif
 
 } // namespace uniflow
