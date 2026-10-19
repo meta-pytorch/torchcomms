@@ -9,16 +9,19 @@
 
 namespace torch::comms {
 
-#define CUDA_CHECK(cuda_api, call, err_str)                               \
+#define CUDA_CHECK_THROW(cuda_api, call, err_str, exception_type)         \
   do {                                                                    \
     cudaError_t status = call;                                            \
     if (status != cudaSuccess) {                                          \
       std::stringstream ss;                                               \
       ss << err_str << ": " << cuda_api->getErrorString(status) << " at " \
          << __FILE__ << ":" << __LINE__;                                  \
-      throw std::runtime_error(ss.str());                                 \
+      throw exception_type(ss.str());                                     \
     }                                                                     \
   } while (0)
+
+#define CUDA_CHECK(cuda_api, call, err_str) \
+  CUDA_CHECK_THROW(cuda_api, call, err_str, std::runtime_error)
 
 // Ignore variant for use in destructors - logs errors instead of throwing
 #define CUDA_CHECK_IGNORE(cuda_api, call, err_str)                         \

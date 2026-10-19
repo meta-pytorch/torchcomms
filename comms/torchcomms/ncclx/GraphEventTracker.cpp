@@ -47,7 +47,7 @@ void GraphEventTracker::initOnGraphStart(cudaStream_t stream) {
   cudaStreamCaptureStatus capture_status;
   unsigned long long graph_id;
   cudaGraph_t graph;
-  CUDA_CHECK(
+  NCCLX_CUDA_CHECK(
       api,
       api->streamGetCaptureInfo_v2(
           stream, &capture_status, &graph_id, &graph, nullptr, nullptr),
@@ -85,7 +85,7 @@ void GraphEventTracker::maybeInitGraphState(
   // Only installed when timeout monitoring is enabled; the cleanup callback
   // is always installed for GraphState lifecycle management.
   if (isGraphTimeoutMonitoringEnabled()) {
-    CUDA_CHECK(
+    NCCLX_CUDA_CHECK(
         api,
         acquireCounter(state.replay_counter),
         "Failed to acquire replay counter");
@@ -99,7 +99,7 @@ void GraphEventTracker::maybeInitGraphState(
   // destroyed, the callback sets the released flag; the watchdog's next
   // checkAll() will destroy the owned events.
   cudaUserObject_t user_object;
-  CUDA_CHECK(
+  NCCLX_CUDA_CHECK(
       api,
       api->userObjectCreate(
           &user_object,
@@ -112,7 +112,7 @@ void GraphEventTracker::maybeInitGraphState(
   auto user_obj_guard = folly::makeGuard(
       [api, user_object] { (void)api->userObjectRelease(user_object, 1); });
 
-  CUDA_CHECK(
+  NCCLX_CUDA_CHECK(
       api,
       api->graphRetainUserObject(
           graph, user_object, 1, cudaGraphUserObjectMove),

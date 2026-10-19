@@ -138,7 +138,7 @@ void TorchWorkNCCLX::recordExternalEventViaSideStream(
       record_err = comm_->getCudaApi()->eventRecordWithFlags(
           event, s, cudaEventRecordExternal);
     });
-    CUDA_CHECK(
+    NCCLX_CUDA_CHECK(
         comm_->getCudaApi(),
         fork_err,
         fmt::format(

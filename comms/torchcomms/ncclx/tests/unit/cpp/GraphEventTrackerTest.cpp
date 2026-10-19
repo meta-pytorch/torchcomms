@@ -482,7 +482,7 @@ TEST_F(GraphEventTrackerTest, UserObjectCreateFailureCleanup) {
   auto tensor = createTestTensor({10, 10});
 
   // send() should throw because userObjectCreate fails during graph init
-  EXPECT_THROW(comm->send(tensor, 1, true), std::runtime_error);
+  EXPECT_THROW(comm->send(tensor, 1, true), AssertionError);
 
   switchToReplayMode();
 
@@ -518,7 +518,7 @@ TEST_F(GraphEventTrackerTest, GraphRetainUserObjectFailureCleanup) {
 
   auto tensor = createTestTensor({10, 10});
 
-  EXPECT_THROW(comm->send(tensor, 1, true), std::runtime_error);
+  EXPECT_THROW(comm->send(tensor, 1, true), AssertionError);
 
   switchToReplayMode();
 

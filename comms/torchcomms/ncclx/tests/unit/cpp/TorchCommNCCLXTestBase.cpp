@@ -159,15 +159,17 @@ void TorchCommNCCLXTest::setupWorkToError(WorkEvent& work_event) {
       .WillOnce(Return(cudaErrorInvalidValue)); // end event fails
 
   // Second send operation should detect error and call commAbort
+  EXPECT_CALL(*nccl_mock_, commAbort(reinterpret_cast<ncclComm_t>(0x3000)))
+      .WillOnce(Return(ncclSuccess));
+}
+
+void TorchCommNCCLXTest::setupCommAsyncError() {
   EXPECT_CALL(*nccl_mock_, commGetAsyncError(_, _))
       .WillRepeatedly(
           DoAll(SetArgPointee<1>(ncclInternalError), Return(ncclSuccess)));
 
   EXPECT_CALL(*nccl_mock_, getErrorString(ncclInternalError))
       .WillRepeatedly(Return("internal error"));
-
-  EXPECT_CALL(*nccl_mock_, commAbort(reinterpret_cast<ncclComm_t>(0x3000)))
-      .WillOnce(Return(ncclSuccess));
 }
 
 c10::cuda::CUDACachingAllocator::TraceEntry
