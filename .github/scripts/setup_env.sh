@@ -90,3 +90,7 @@ else
 fi
 
 pip install -r requirements.txt
+
+# Compiler cache for the CMake builds. Never fails the job: if the cache is
+# unreachable it disables itself and the build runs uncached.
+source "$(dirname "${BASH_SOURCE[0]}")/setup_sccache.sh"
