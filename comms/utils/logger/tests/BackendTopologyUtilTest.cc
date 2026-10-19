@@ -3,6 +3,8 @@
 #include <folly/testing/TestUtil.h>
 #include <gtest/gtest.h>
 
+#include <fstream>
+
 #include "comms/utils/logger/BackendTopologyUtil.h"
 
 TEST(BackendTopologyUtilTest, GetBackendTopology) {
