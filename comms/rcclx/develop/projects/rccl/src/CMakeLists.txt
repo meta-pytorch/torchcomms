@@ -763,6 +763,13 @@ set(COMMON_FILES
   comms/utils/colltrace/v1/GenericMetadata.cc
   comms/utils/colltrace/v1/GenericMetadata.h
   comms/utils/colltrace/common/GraphCollTraceEvent.h
+  comms/utils/colltrace/v2/CollTraceV2.cc
+  comms/utils/colltrace/v2/CollTraceV2.h
+  comms/utils/colltrace/v2/CommState.h
+  comms/utils/colltrace/v2/CollEvents.cc
+  comms/utils/colltrace/v2/CollEvents.h
+  comms/utils/colltrace/v2/Env.h
+  comms/utils/colltrace/v2/Log.h
   comms/utils/colltrace/v1/GraphCollTraceHandle.h
   comms/utils/colltrace/v1/GraphCollTraceState.h
   comms/utils/colltrace/v1/GraphCudaWaitEvent.cc
