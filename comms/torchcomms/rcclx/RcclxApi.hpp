@@ -11,14 +11,10 @@
 
 namespace torch::comms {
 
-// Hints type for persistent collective operations
-using RcclxHints = std::unordered_map<std::string, std::string>;
-
 // Plan for one relay forward. Mirrors `ncclRelayPlanInfo` field for field
 // without naming it, because this header is also compiled against the frozen
-// rcclx-stable snapshots where that type does not exist -- the same reason
-// RcclxHints exists rather than `ncclx::Hints`. The conversion happens in
-// RcclxApiShardedRelay.cpp, which is only linked under rcclx-dev.
+// rcclx-stable snapshots where that type does not exist. The conversion happens
+// in RcclxApiShardedRelay.cpp, which is only linked under rcclx-dev.
 struct RcclxRelayPlan {
   uint32_t nCalls{0};
   uint32_t opCode{0};
@@ -286,24 +282,6 @@ class RcclxApi {
   [[nodiscard]] virtual ncclResult_t redOpDestroy(
       ncclRedOp_t op,
       ncclComm_t comm) = 0;
-
-  // Persistent AllGather operations (ncclx namespace)
-  virtual ncclResult_t allGatherInit(
-      void* recvbuff,
-      size_t maxRecvCount,
-      const RcclxHints& hints,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      hipStream_t stream,
-      void** request) = 0;
-
-  virtual ncclResult_t allGatherExec(
-      const void* sendbuff,
-      size_t count,
-      ncclDataType_t datatype,
-      void* request) = 0;
-
-  virtual ncclResult_t pFree(void* request) = 0;
 
   // Registered AllReduce lifecycle operations (public RCCLX ABI)
   virtual int registeredAllReduceAbiVersion() = 0;
@@ -651,24 +629,6 @@ class DefaultRcclxApi : public RcclxApi {
 
   [[nodiscard]] ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm)
       override;
-
-  // Persistent AllGather operations (ncclx namespace)
-  ncclResult_t allGatherInit(
-      void* recvbuff,
-      size_t maxRecvCount,
-      const RcclxHints& hints,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      hipStream_t stream,
-      void** request) override;
-
-  ncclResult_t allGatherExec(
-      const void* sendbuff,
-      size_t count,
-      ncclDataType_t datatype,
-      void* request) override;
-
-  ncclResult_t pFree(void* request) override;
 
   // Registered AllReduce lifecycle operations (public RCCLX ABI)
   int registeredAllReduceAbiVersion() override;

@@ -1,8 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 //
 // Stub implementation of the RcclxApi methods that depend on rcclx-dev-only
-// symbols (`ncclx::Hints`, `ncclx::allGatherInit`, `ncclx::allGatherExec`,
-// `ncclx::pFree`, `ncclShardedRelayMultiGroupAllReduce`). These symbols are
+// symbols (e.g. `ncclShardedRelayMultiGroupAllReduce`). These symbols are
 // not yet present in the frozen rcclx-stable / rcclx-last-stable snapshots
 // under `comms/rcclx/snapshots/`, so this translation unit provides
 // compilable no-op overrides that return `ncclInternalError` at runtime.
@@ -18,29 +17,6 @@
 #include "comms/torchcomms/rcclx/RcclxApi.hpp"
 
 namespace torch::comms {
-
-ncclResult_t DefaultRcclxApi::allGatherInit(
-    void* /*recvbuff*/,
-    size_t /*maxRecvCount*/,
-    const RcclxHints& /*hints*/,
-    ncclDataType_t /*datatype*/,
-    ncclComm_t /*comm*/,
-    hipStream_t /*stream*/,
-    void** /*request*/) {
-  return ncclInternalError;
-}
-
-ncclResult_t DefaultRcclxApi::allGatherExec(
-    const void* /*sendbuff*/,
-    size_t /*count*/,
-    ncclDataType_t /*datatype*/,
-    void* /*request*/) {
-  return ncclInternalError;
-}
-
-ncclResult_t DefaultRcclxApi::pFree(void* /*request*/) {
-  return ncclInternalError;
-}
 
 int DefaultRcclxApi::registeredAllReduceAbiVersion() {
   return 0;

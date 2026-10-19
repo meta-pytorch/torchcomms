@@ -2,8 +2,7 @@
 //
 // rcclx-dev implementation of the RcclxApi methods that depend on symbols
 // only present in rcclx-dev (the live trunk of comms/rcclx/develop). These
-// symbols (`ncclx::Hints`, `ncclx::allGatherInit`, `ncclx::allGatherExec`,
-// `ncclx::pFree`, `ncclShardedRelayMultiGroupAllReduce`) are not yet in the
+// symbols (e.g. `ncclShardedRelayMultiGroupAllReduce`) are not yet in the
 // frozen rcclx-stable / rcclx-last-stable snapshots under
 // `comms/rcclx/snapshots/`, so this translation unit must NOT be linked
 // into binaries that build against those snapshots.
@@ -19,35 +18,6 @@
 #include <cstddef>
 
 namespace torch::comms {
-
-ncclResult_t DefaultRcclxApi::allGatherInit(
-    void* recvbuff,
-    size_t maxRecvCount,
-    const RcclxHints& hints,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    hipStream_t stream,
-    void** request) {
-  // Convert RcclxHints to ncclx::Hints
-  ncclx::Hints ncclxHints;
-  for (const auto& [key, value] : hints) {
-    ncclxHints.set(key, value);
-  }
-  return ncclx::allGatherInit(
-      recvbuff, maxRecvCount, ncclxHints, datatype, comm, stream, request);
-}
-
-ncclResult_t DefaultRcclxApi::allGatherExec(
-    const void* sendbuff,
-    size_t count,
-    ncclDataType_t datatype,
-    void* request) {
-  return ncclx::allGatherExec(sendbuff, count, datatype, request);
-}
-
-ncclResult_t DefaultRcclxApi::pFree(void* request) {
-  return ncclx::pFree(request);
-}
 
 int DefaultRcclxApi::registeredAllReduceAbiVersion() {
   return ncclRegisteredAllReduceAbiVersion();
