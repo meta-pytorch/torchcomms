@@ -15,7 +15,6 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
-#include "comms/ctran/gpe/CtranGpeColltrace.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -172,18 +171,6 @@ commResult_t CtranGpe::Impl::submit(
           kernelConfig.stream, streamCaptureInfo));
   bool isCapturing = streamCaptureInfo.status == cudaStreamCaptureStatusActive;
 
-  // Only graph tracing on sm_90+ creates the ring consumed by the kernel.
-  const bool useInKernelColltrace = ctran::gpe::inKernelColltraceSupported() &&
-      isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
-  // Single-kernel collectives emit both boundaries (the KernelConfig defaults);
-  // multi-kernel collectives (the AllGatherP pipeline) set these per kernel.
-  const bool colltraceEmitStart =
-      useInKernelColltrace && kernelConfig.colltraceEmitStart;
-  const bool colltraceEmitEnd =
-      useInKernelColltrace && kernelConfig.colltraceEmitEnd;
-  // Multi-kernel graph collectives create one record at their start boundary.
-  const bool colltraceCreatesRecord = !isCapturing || colltraceEmitStart;
-
   // For eager (non-capture) submits with empty opGroup but a
   // postKernelCleanup, we still need a cmd + kernelFlag so the GPE thread
   // can synchronize with the kernel before running cleanup. During graph
@@ -236,27 +223,22 @@ commResult_t CtranGpe::Impl::submit(
     kernelArgs.at(3) = (void*)&kernelConfig.args.collective;
   }
 
-  // Record CollTrace event. Must be called before moving opGroup to cmd
+  // Record the collective and arm the kernel's colltrace argument. Must be
+  // called before moving opGroup to cmd.
   std::shared_ptr<meta::comms::colltrace::ICollTraceHandle> colltraceHandle =
-      colltraceCreatesRecord ? meta::comms::colltrace::getCollTraceHandle(
-                                   comm, opGroup, kernelConfig, ifchecksum)
-                             : nullptr;
+      meta::comms::colltrace::traceKernelSubmit(
+          comm,
+          opGroup,
+          kernelConfig,
+          isCapturing,
+          ifchecksum,
+          kernelColltrace_,
+          colltraceHdr);
   // Every exit below this point -- early return, or goto fail -- must release
   // the record it just took out, or the next collective inherits a stale
   // pending trace.
   meta::comms::colltrace::CollTraceEnqueueGuard colltraceEnqueueGuard{
       colltraceHandle};
-
-  // Arm the collective kernel to publish its own start/end timestamps into the
-  // colltrace ring. A default handle means the kernel emits nothing.
-  if (useInKernelColltrace) {
-    ctran::gpe::armInKernelColltrace(
-        pendingColltraceGroup_,
-        colltraceHdr,
-        colltraceHandle.get(),
-        colltraceEmitStart,
-        colltraceEmitEnd);
-  }
 
   cudaStream_t launchStream = kernelConfig.stream;
   std::optional<ctran::algos::OrderedWorkStreamGuard::Scope> wsScope;
@@ -540,7 +522,7 @@ fail:
   // A failure after arming a Begin would leave an open colltrace group whose
   // End never submits; clear it so a later collective's End can't consume this
   // collective's stale collId.
-  pendingColltraceGroup_ = {};
+  kernelColltrace_ = {};
   return res;
 }
 
