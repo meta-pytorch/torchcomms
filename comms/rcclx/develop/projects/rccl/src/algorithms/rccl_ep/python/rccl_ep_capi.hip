@@ -1096,7 +1096,7 @@ int ep_configure_v2(void* handle, int num_experts, int num_topk, int grouped_onl
   }
   nr = ncclCommWindowRegister(h->lsa, h->win_buf, h->win_bytes, &h->win, NCCL_WIN_COLL_SYMMETRIC);
   if (nr != ncclSuccess) {
-    fprintf(stderr, "[rccl_ep] WindowRegister: %s (NCCL_CUMEM_ENABLE=1?)\n", ncclGetErrorString(nr));
+    fprintf(stderr, "[rccl_ep] WindowRegister: %s (needs NCCL_WIN_ENABLE=1 and NCCL_CUMEM_ENABLE=1)\n", ncclGetErrorString(nr));
     release_window(h, false);
     return -1;
   }
