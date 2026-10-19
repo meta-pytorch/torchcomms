@@ -12,10 +12,12 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/RMA/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 __global__ void ncclKernelPutNotify(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::rma::KernelPutNotifyArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -48,6 +50,7 @@ __global__ void ncclKernelPutNotify(
 __global__ void ncclKernelWaitNotify(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::rma::KernelWaitNotifyArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -79,8 +82,9 @@ __global__ void ncclKernelWaitNotify(
 __global__ void ncclKernelPutSignal(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelPutSignalArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
@@ -106,8 +110,9 @@ __global__ void ncclKernelPutSignal(
 
 __global__ void ncclKernelPut(
     ctran::gpe::KernelFlagDev* f,
-    CtranAlgoDeviceState* devState) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr) {
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
@@ -120,8 +125,9 @@ __global__ void ncclKernelPut(
 __global__ void ncclKernelWaitSignal(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelWaitSignalArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
@@ -149,8 +155,9 @@ __global__ void ncclKernelWaitSignal(
 __global__ void ncclKernelSignal(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelSignalArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {

@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 using namespace ctran::algos;
 namespace ctran::allgatherp {
@@ -24,8 +25,9 @@ namespace ctran::allgatherp {
 // moves rather than being added.
 __global__ void ncclKernelAllGatherPPipeStart(
     ctran::gpe::KernelFlagDev* f,
-    CtranAlgoDeviceState* devState) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr) {
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     // Kick GPE first: barriering before this would let a rank that is late to
@@ -48,8 +50,9 @@ __global__ void ncclKernelAllGatherPPipeStart(
 __global__ void ncclKernelAllGatherPPipeSync(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeSyncKernArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   ctran::device::devLoadAbortFlags(flag, devState);
   // wait till GPE thread post the current stepId
@@ -61,8 +64,9 @@ __global__ void ncclKernelAllGatherPPipeSync(
 // Ring = ctpipeline nLocalRanks==1.
 __global__ void ncclKernelAllGatherPRing(
     ctran::gpe::KernelFlagDev* f,
-    CtranAlgoDeviceState* devState) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr) {
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);
@@ -75,8 +79,9 @@ __global__ void ncclKernelAllGatherPRing(
 // variant at nLocalRanks==1. StreamedRd = ctsrdpipeline nLocalRanks==1.
 __global__ void ncclKernelAllGatherPStreamedRd(
     ctran::gpe::KernelFlagDev* f,
-    CtranAlgoDeviceState* devState) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr) {
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::devLoadAbortFlags(flag, devState);
@@ -91,8 +96,9 @@ __global__ void ncclKernelAllGatherPStreamedRd(
 __global__ void ncclKernelAllGatherPPipeEnd(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeEndKernArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* const flag = f ? const_cast<int*>(f->flag_) : nullptr;
   // waitPost reads device globals that only this sets.
   ctran::device::devLoadAbortFlags(flag, devState);
@@ -120,8 +126,9 @@ __global__ void ncclKernelAllGatherPPipeEnd(
 // above; they exist as separate symbols so each variant owns its own kernels.
 __global__ void ncclKernelAllGatherPSrdPipeStart(
     ctran::gpe::KernelFlagDev* f,
-    CtranAlgoDeviceState* devState) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+    CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr) {
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   if (flag) {
     ctran::device::KernelStartGpeAndExit(f);
@@ -137,8 +144,9 @@ __global__ void ncclKernelAllGatherPSrdPipeStart(
 __global__ void ncclKernelAllGatherPSrdPipeSync(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeSyncKernArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   ctran::device::devLoadAbortFlags(flag, devState);
   // wait till GPE thread post the current stepId
@@ -148,8 +156,9 @@ __global__ void ncclKernelAllGatherPSrdPipeSync(
 __global__ void ncclKernelAllGatherPSrdPipeEnd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     PipeEndKernArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(flag);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* const abortFlag = flag ? const_cast<int*>(flag->flag_) : nullptr;
   // waitPost reads device globals that only this sets.
   ctran::device::devLoadAbortFlags(abortFlag, devState);

@@ -10,10 +10,12 @@
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 __global__ void ncclKernelAllGatherCtranStreamedRd(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args);
 
 namespace {
