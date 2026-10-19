@@ -13,6 +13,7 @@
 #include "comms/utils/colltrace/v1/DummyCollTraceHandle.h"
 #include "comms/utils/colltrace/v1/GraphCudaWaitEvent.h"
 #include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v2/CollTraceV2.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace meta::comms::colltrace {
@@ -424,6 +425,9 @@ std::shared_ptr<ICollTraceHandle> getCollTraceHandle(
   return getNewCollTraceHandle(comm, opGroup, kernelConfig);
 }
 
+KernelGroupState::KernelGroupState()
+    : v2CollId(colltracev2::COLLTRACE_INVALID_COLLID) {}
+
 std::shared_ptr<ICollTraceHandle> traceKernelSubmit(
     CtranComm* comm,
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup,
@@ -433,9 +437,28 @@ std::shared_ptr<ICollTraceHandle> traceKernelSubmit(
     KernelGroupState& state,
     ColltraceDeviceHandle& hdr) {
   hdr = {};
-  // Only graph tracing on sm_90+ creates the ring consumed by the kernel.
-  const bool inKernel = ctran::gpe::inKernelColltraceSupported() &&
-      isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
+  // The ring's 128b atomic device write needs sm_90+ for either colltrace.
+  const bool supported = ctran::gpe::inKernelColltraceSupported();
+
+  if (colltracev2::enabled() && supported) {
+    auto& v2 = colltracev2::CollTraceV2::instance();
+    // The id was minted at the NCCL API entry; a collective's first kernel
+    // picks it up and later kernels reuse it. Standalone ctran (no NCCL entry
+    // point) mints its own.
+    if (kernelConfig.colltraceEmitStart) {
+      const auto& commDesc = comm->logMetaData_.commDesc;
+      state.v2CollId = v2.getLatestCollId(commDesc);
+      if (state.v2CollId == colltracev2::COLLTRACE_INVALID_COLLID) {
+        state.v2CollId = v2.newCollId(commDesc);
+      }
+    }
+    hdr = v2.getKernelHandle(state.v2CollId);
+    return std::make_unique<DummyCollTraceHandle>();
+  }
+
+  // Only graph tracing creates the ring consumed by the kernel.
+  const bool inKernel =
+      supported && isCapturing && NCCL_COLLTRACE_TRACE_CUDA_GRAPH;
   // Single-kernel collectives emit both boundaries (the KernelConfig defaults);
   // multi-kernel collectives (the AllGatherP pipeline) set these per kernel.
   const bool emitStart = inKernel && kernelConfig.colltraceEmitStart;

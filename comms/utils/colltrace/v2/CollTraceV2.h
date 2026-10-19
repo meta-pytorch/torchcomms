@@ -91,11 +91,12 @@ struct Event {
 };
 
 // NCCL_COLLTRACE_VERSION == 2: v2 is the implementation behind NCCL_COLLTRACE,
-// whatever modes that holds.
+// whatever modes that holds. Read from the environment once per process.
 COLLTRACEV2_API bool selected();
 // A token NCCL_COLLTRACE may hold under v2: "none", "all" or "collevents".
 COLLTRACEV2_API bool validMode(std::string_view mode);
 // selected() and NCCL_COLLTRACE turns the events on ("all" or "collevents").
+// Read from the environment once per process.
 COLLTRACEV2_API bool enabled();
 
 struct CommState;
