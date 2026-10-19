@@ -22,6 +22,16 @@ cudaError_t launchDeviceSetAbortWithContext(
     int* observedWinner,
     cudaStream_t stream);
 
+// Records a reason with an explicit origin, so the host side can assert that
+// `site` and `originPeer` survive a device-originated abort -- the fields that
+// exist because a device `context` cannot.
+cudaError_t launchDeviceSetAbortWithOrigin(
+    AbortDevice abort,
+    AbortReason reason,
+    AbortSite site,
+    int originPeer,
+    cudaStream_t stream);
+
 // Records a terminal reason through `AbortFlag`, the poll-state-free handle the
 // IBRC transport stores in device memory, rather than through `AbortDevice`.
 // The two are separate writers of the same shared reason and must produce the

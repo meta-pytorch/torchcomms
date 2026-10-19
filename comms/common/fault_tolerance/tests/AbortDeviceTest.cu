@@ -17,6 +17,16 @@ __global__ void deviceSetAbortKernel(AbortDevice abort, AbortReason reason) {
   }
 }
 
+__global__ void deviceSetAbortWithOriginKernel(
+    AbortDevice abort,
+    AbortReason reason,
+    AbortSite site,
+    int originPeer) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    abort.setAbort(reason, /*context=*/nullptr, site, originPeer);
+  }
+}
+
 __global__ void deviceSetAbortWithContextKernel(
     AbortDevice abort,
     AbortReason reason,
@@ -266,6 +276,17 @@ cudaError_t launchDeviceSetAbort(
     AbortReason reason,
     cudaStream_t stream) {
   deviceSetAbortKernel<<<1, 1, 0, stream>>>(abort, reason);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceSetAbortWithOrigin(
+    AbortDevice abort,
+    AbortReason reason,
+    AbortSite site,
+    int originPeer,
+    cudaStream_t stream) {
+  deviceSetAbortWithOriginKernel<<<1, 1, 0, stream>>>(
+      abort, reason, site, originPeer);
   return cudaGetLastError();
 }
 

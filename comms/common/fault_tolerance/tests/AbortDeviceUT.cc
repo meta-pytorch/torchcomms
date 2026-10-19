@@ -103,9 +103,13 @@ DeviceCapture captureDeviceStdoutWithStatus(Launch&& launch) {
 // left a stale expectation that still compiled.
 std::string expectedDeviceFirstWriterLine(
     AbortReason reason,
-    std::string_view context) {
+    std::string_view context,
+    AbortSite site = AbortSite::DEVICE,
+    int originPeer = kNoAbortPeer) {
   return std::string{kFirstWriterMarker} +
       "device reason=" + std::to_string(static_cast<int>(reason)) +
+      " site=" + std::to_string(static_cast<int>(site)) +
+      " peer=" + std::to_string(originPeer) +
       " context=" + std::string{context};
 }
 
@@ -670,6 +674,30 @@ TEST(AbortDeviceTest, hostWinnerPreservesContextAgainstDeviceAbort) {
       }));
 }
 
+// The reason a device abort carries origin at all. `context` is a `const
+// char*` consumed at the winning callsite and never persisted, so before
+// `site` and `originPeer` a device-originated abort reached the host as a
+// reason and nothing else.
+TEST(AbortDeviceTest, deviceSetAbortPersistsSiteAndPeer) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_EQ(
+      launchDeviceSetAbortWithOrigin(
+          abort.getDeviceHandle(),
+          AbortReason::NETWORK_ERROR,
+          AbortSite::DEVICE,
+          /*originPeer=*/4217,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  const auto info = abort.getAbortInfo();
+  ASSERT_TRUE(info.has_value());
+  EXPECT_EQ(info->reason, AbortReason::NETWORK_ERROR);
+  EXPECT_EQ(info->site, AbortSite::DEVICE);
+  EXPECT_EQ(info->originPeer, 4217);
+}
+
 TEST(AbortDeviceTest, hostDeviceRaceNeverMismatchesContext) {
   constexpr int kIterations = 100;
   for (int i = 0; i < kIterations; ++i) {
@@ -803,6 +831,7 @@ TEST(AbortDeviceTest, deviceTimeoutProducerHostAndDeviceConsumer) {
   EXPECT_EQ(
       abort.getAbortInfo(),
       (AbortInfo{.reason = AbortReason::TIMED_OUT, .context = ""}));
+  EXPECT_EQ(abort.getAbortInfo().value().site, AbortSite::DEVICE_DEADLINE);
 }
 
 TEST(AbortDeviceTest, hostAbortWinsOverDeviceTimeout) {
@@ -949,7 +978,9 @@ TEST(AbortDeviceTest, directTimeoutViaIsAbortedEmitsTheMarker) {
   EXPECT_THAT(
       out,
       ::testing::HasSubstr(expectedDeviceFirstWriterLine(
-          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+          AbortReason::TIMED_OUT,
+          kDeadlineExpiredContext,
+          AbortSite::DEVICE_DEADLINE)))
       << "captured: " << out;
   // Exactly one, even though the kernel polls in a loop: the line is gated on
   // the CAS, and only one iteration can perform the transition.
@@ -980,7 +1011,9 @@ TEST(AbortDeviceTest, directTimeoutViaCheckExpiredEmitsTheMarker) {
   EXPECT_THAT(
       out,
       ::testing::HasSubstr(expectedDeviceFirstWriterLine(
-          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+          AbortReason::TIMED_OUT,
+          kDeadlineExpiredContext,
+          AbortSite::DEVICE_DEADLINE)))
       << "captured: " << out;
   EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
 }
@@ -1516,7 +1549,9 @@ TEST(AbortMacrosTest, TimeoutFirstWriterEmitsTheMarker) {
   EXPECT_THAT(
       out,
       ::testing::HasSubstr(expectedDeviceFirstWriterLine(
-          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+          AbortReason::TIMED_OUT,
+          kDeadlineExpiredContext,
+          AbortSite::DEVICE_DEADLINE)))
       << "captured: " << out;
   // The observation, carrying what only the callsite knows.
   EXPECT_THAT(
