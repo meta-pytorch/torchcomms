@@ -11,7 +11,7 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/cudagraph/CtranCudaGraphTestBase.h"
 #include "comms/utils/CudaRAII.h"
-#include "comms/utils/colltrace/CollTrace.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
 
 namespace {
 

@@ -17,7 +17,7 @@ and `ICollTraceHandle::getColltraceDeviceHandle()` returns a ring-backed
 the **device-side write** and arming the per-launch handle were missing; no
 `CollTrace.cc` handle or poll changes were needed. The writer is the shared
 `meta::comms::colltrace::ColltraceDeviceEventScope`
-(`comms/utils/colltrace/ColltraceDeviceEventScope.cuh`), which ctran's
+(`comms/utils/colltrace/common/ColltraceDeviceEventScope.cuh`), which ctran's
 `ColltraceEventScope` subclasses.
 
 ## Versions Affected
@@ -39,7 +39,7 @@ v2.30 and v2.32 apart from clang-format wrapping.
    #define NCCLX_INKERNEL_COLLTRACE 1
    #endif
    #ifdef NCCLX_INKERNEL_COLLTRACE
-   #include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+   #include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
    #endif
    ...
    struct alignas(16) ncclDevKernelArgs {

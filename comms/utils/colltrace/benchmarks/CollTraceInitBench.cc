@@ -28,8 +28,8 @@
 #include <folly/init/Init.h>
 
 #include "comms/utils/checks.h"
-#include "comms/utils/colltrace/CollTrace.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 

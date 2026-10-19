@@ -6,12 +6,12 @@
 
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/RankUtils.h"
-#include "comms/utils/colltrace/CPUWaitEvent.h"
-#include "comms/utils/colltrace/CollMetadataImpl.h"
-#include "comms/utils/colltrace/CudaWaitEvent.h"
-#include "comms/utils/colltrace/DummyCollTraceHandle.h"
-#include "comms/utils/colltrace/GraphCudaWaitEvent.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/CPUWaitEvent.h"
+#include "comms/utils/colltrace/v1/CollMetadataImpl.h"
+#include "comms/utils/colltrace/v1/CudaWaitEvent.h"
+#include "comms/utils/colltrace/v1/DummyCollTraceHandle.h"
+#include "comms/utils/colltrace/v1/GraphCudaWaitEvent.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace meta::comms::colltrace {

@@ -5,7 +5,7 @@
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/DevUtils.cuh"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 __global__ void ncclKernelAllGatherCtranBrucks(
     ctran::gpe::KernelFlagDev* flag,

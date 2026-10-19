@@ -16,7 +16,7 @@
 // [META] in-kernel colltrace emit in ncclKernelMain below; gate defined in
 // device.h, included above.
 #ifdef NCCLX_INKERNEL_COLLTRACE
-#include "comms/utils/colltrace/ColltraceDeviceEventScope.cuh"
+#include "comms/utils/colltrace/common/ColltraceDeviceEventScope.cuh"
 #endif
 
 #define COLL_UNROLL (ncclCollUnroll())

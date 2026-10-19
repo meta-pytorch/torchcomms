@@ -217,7 +217,7 @@ no test enabled on v2_32 does. Anything asserting on ProxyTrace opCount or
 
 Both versions compile the shared sources through the `meta/colltrace/*.cc` glob
 in `def_build.bzl`, with `comms/ctran/utils:checks`, `comms/utils:str_utils` and
-`comms/utils/colltrace:network_perf_monitor` as deps. v2_30's OSS `src/Makefile`
+`comms/utils/colltrace/v1:network_perf_monitor` as deps. v2_30's OSS `src/Makefile`
 globs `meta/colltrace/*.cc`; v2_32's lists the sources in its `meta/` allowlist,
 which mirrors `def_build.bzl`.
 

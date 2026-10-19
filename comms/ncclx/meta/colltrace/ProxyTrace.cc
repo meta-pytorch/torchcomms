@@ -12,7 +12,7 @@
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
-#include "comms/utils/colltrace/NetworkPerfMonitor.h"
+#include "comms/utils/colltrace/v1/NetworkPerfMonitor.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 static std::map<ProxyOpStepStatus, std::string> proxySendStepStatusStrMap = {

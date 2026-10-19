@@ -17,7 +17,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/colltrace/CollTrace.h"
+#include "comms/utils/colltrace/v1/CollTrace.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
 

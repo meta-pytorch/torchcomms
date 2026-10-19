@@ -23,7 +23,7 @@
 #endif
 
 #ifdef NCCLX_INKERNEL_COLLTRACE
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 #endif
 #include <algorithm>
 #include <stdint.h>

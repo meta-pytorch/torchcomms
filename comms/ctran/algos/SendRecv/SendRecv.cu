@@ -6,7 +6,7 @@
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 #ifndef CTRAN_DISABLE_TCPDM
 #include "comms/tcp_devmem/unpack/batch_unpack_kernel.cuh"

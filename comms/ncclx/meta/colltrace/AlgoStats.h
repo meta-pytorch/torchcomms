@@ -4,7 +4,7 @@
 #include "nccl.h"
 
 // Re-export AlgoStats from common location
-#include "comms/utils/colltrace/AlgoStats.h"
+#include "comms/utils/colltrace/v1/AlgoStats.h"
 
 namespace ncclx::colltrace {
 

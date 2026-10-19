@@ -6,7 +6,7 @@
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 using namespace ctran::algos;
 namespace ctran::allgatherp {
