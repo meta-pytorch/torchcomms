@@ -6,10 +6,12 @@
 #include "comms/ctran/algos/common/GpeKernelDev.cuh"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 
 __global__ void CtranGpeTestKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   int* a = const_cast<int*>(reinterpret_cast<const int*>(args.sendbuff));
@@ -33,6 +35,7 @@ __global__ void CtranGpeTestKernel(
 __global__ void CtranGpeTestCustomArgsKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelCustomArgs args) {
   const auto gtId = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -55,6 +58,7 @@ __global__ void CtranGpeTestStartAndExitKernel(ctran::gpe::KernelFlagDev* f) {
 __global__ void CtranGpeTestKElemsKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args) {
   KernelElem* elemList = const_cast<KernelElem*>(
       reinterpret_cast<const KernelElem*>(args.sendbuff));
@@ -71,6 +75,7 @@ __global__ void CtranGpeTestKElemsKernel(
 __global__ void CtranGpeTestOneFlagKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   auto gtIdx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -88,6 +93,7 @@ __global__ void CtranGpeTestOneFlagKernel(
 __global__ void CtranGpeTestPerBlockFlagKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allgather::KernelArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   auto tId = threadIdx.x;
@@ -107,6 +113,7 @@ __global__ void CtranGpeTestPerBlockFlagKernel(
 __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
@@ -129,6 +136,7 @@ __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
 __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
@@ -156,6 +164,7 @@ __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
 __global__ void CtranGpeTestFtBaseKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
@@ -178,6 +187,7 @@ __global__ void CtranGpeTestFtBaseKernel(
 __global__ void CtranGpeTestFtShmAbortKernel(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState_d,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     CtranKernelFtArgs args) {
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;

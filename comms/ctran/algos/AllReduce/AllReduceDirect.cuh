@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/localReduce.cuh"
 #include "comms/ctran/commstate/CommStateXDev.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
 #include "comms/utils/commSpecs.h"
 
 #define KERNEL_ABORT()                                         \
@@ -158,8 +159,9 @@ template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
     ctran::gpe::KernelFlagDev* f,
     CtranAlgoDeviceState* devState,
+    meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,
     ctran::allreduce::KernelArgs args) {
-  ctran::device::ColltraceEventScope colltraceScope(f);
+  ctran::device::ColltraceEventScope colltraceScope(colltraceHdr);
   int* flag = f ? const_cast<int*>(f->flag_) : nullptr;
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
@@ -185,6 +187,7 @@ __global__ void ncclKernelAllReduceCtranDirect(
   template __global__ void ncclKernelAllReduceCtranDirect<T, RedOp>( \
       ctran::gpe::KernelFlagDev * flag,                              \
       CtranAlgoDeviceState * devState,                               \
+      meta::comms::colltrace::ColltraceDeviceHandle colltraceHdr,    \
       ctran::allreduce::KernelArgs args);
 
 #endif

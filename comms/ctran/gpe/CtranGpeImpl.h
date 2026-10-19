@@ -43,10 +43,9 @@ struct alignas(128) KernelFlagItem {
     for (int i = 0; i < numGroups_; i++) {
       dev.flag_[i] = KERNEL_UNSET;
     }
-    // Clear the full ring + colltrace headers (not just enabled) so a stale
-    // ring/cmdId/collId can never be published; submit() re-arms them per-cmd.
+    // Clear the full ring header (not just enabled) so a stale ring/cmdId can
+    // never be published; submit() re-arms it per-cmd.
     dev.gpeHdr = {};
-    dev.colltraceHdr = {};
   }
 
   bool inUse() {
@@ -66,10 +65,9 @@ struct alignas(128) KernelFlagItem {
       dev.flag_[i] = KERNEL_SCHEDULED;
     }
     numGroups_ = 1;
-    // Clear the full ring + colltrace headers (not just enabled) so a stale
-    // ring/cmdId/collId can never be published; submit() re-arms them per-cmd.
+    // Clear the full ring header (not just enabled) so a stale ring/cmdId can
+    // never be published; submit() re-arms it per-cmd.
     dev.gpeHdr = {};
-    dev.colltraceHdr = {};
   }
 
   bool testFlagAllGroups(int flag) {
