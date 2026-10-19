@@ -216,6 +216,12 @@ class IpcExportClient {
   // The implementer should look up the regElem in its own export cache,
   // send release to the appropriate peers, and clean up.
   virtual commResult_t remReleaseMem(RegElem* regElem) = 0;
+
+  // Forget an export without notifying its remote peers. It may be called
+  // repeatedly, including for registrations this client never exported, so it
+  // must be idempotent. It must not call back into the IpcRegCache
+  // export-client registry.
+  virtual void removeExportedMem(RegElem* regElem) = 0;
 };
 
 } // namespace regcache
