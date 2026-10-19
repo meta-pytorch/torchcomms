@@ -3,8 +3,8 @@
 #pragma once
 
 #include "comms/ctran/CtranComm.h"
-#include "comms/utils/colltrace/CollMetadata.h"
-#include "comms/utils/colltrace/CollTraceHandle.h"
+#include "comms/utils/colltrace/v1/CollMetadata.h"
+#include "comms/utils/colltrace/v1/CollTraceHandle.h"
 
 #include "comm.h"
 #include "nccl.h"

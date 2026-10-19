@@ -6,8 +6,8 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
-#include "comms/utils/colltrace/CollTraceHandle.h" // ICollTraceHandle
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h" // ColltraceDeviceHandle
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h" // ColltraceDeviceHandle
+#include "comms/utils/colltrace/v1/CollTraceHandle.h" // ICollTraceHandle
 
 namespace ctran::gpe {
 

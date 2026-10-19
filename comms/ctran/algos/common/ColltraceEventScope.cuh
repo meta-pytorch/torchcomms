@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "comms/utils/colltrace/ColltraceDeviceEventScope.cuh"
+#include "comms/utils/colltrace/common/ColltraceDeviceEventScope.cuh"
 
 // In-kernel colltrace timestamp emission for ctran GPE kernels. The device
 // writer (single-writer election + RAII start/end) is shared with the baseline

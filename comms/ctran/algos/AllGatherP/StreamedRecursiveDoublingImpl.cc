@@ -19,7 +19,7 @@
 #include "comms/ctran/utils/DevUtils.cuh"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/MathUtils.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 using ctran::algos::PersistPlanKey;
 using ctran::allgather::ctsrd::createPersistPlan;

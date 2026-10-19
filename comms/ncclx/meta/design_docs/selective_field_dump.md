@@ -94,4 +94,4 @@ at the entry point and threaded through the entire call chain. Helper functions:
 | `meta/commDump.cc` | Parsing, per-key gating in all dump functions, `commDumpByMonitorInfo` |
 | `meta/comms-monitor/CommsMonitor.cc` | `commDumpAllImpl` with GlobalInfo key gating |
 | `meta/tests/CommDumpTest.cc` | Integration tests for selective dump |
-| `comms/utils/colltrace/plugins/CommDumpPlugin.cc` | `commDumpToMap(dump, requestFields)` with per-key filtering |
+| `comms/utils/colltrace/v1/plugins/CommDumpPlugin.cc` | `commDumpToMap(dump, requestFields)` with per-key filtering |

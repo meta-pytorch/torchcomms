@@ -736,45 +736,45 @@ set(COMMON_FILES
   comms/common/fault_tolerance/Abort.cc
   comms/common/fault_tolerance/Abort.h
   comms/utils/checks.h
-  comms/utils/colltrace/AlgoStats.cc
-  comms/utils/colltrace/AlgoStats.h
-  comms/utils/colltrace/CollMetadata.h
-  comms/utils/colltrace/CollMetadataImpl.cc
-  comms/utils/colltrace/CollMetadataImpl.h
-  comms/utils/colltrace/CollRecord.cc
-  comms/utils/colltrace/CollRecord.h
-  comms/utils/colltrace/CollTrace.cc
-  comms/utils/colltrace/CollTraceEvent.h
-  comms/utils/colltrace/CollTrace.h
-  comms/utils/colltrace/CollTraceHandle.cc
-  comms/utils/colltrace/CollTraceHandle.h
-  comms/utils/colltrace/CollTraceInterface.h
-  comms/utils/colltrace/CollTracePlugin.h
-  comms/utils/colltrace/CollWaitEvent.h
-  comms/utils/colltrace/CommLogDataSerialize.cc
-  comms/utils/colltrace/CommLogDataSerialize.h
-  comms/utils/colltrace/CPUWaitEvent.cc
-  comms/utils/colltrace/CPUWaitEvent.h
-  comms/utils/colltrace/CudaEventPool.cc
-  comms/utils/colltrace/CudaEventPool.h
-  comms/utils/colltrace/CudaWaitEvent.cc
-  comms/utils/colltrace/CudaWaitEvent.h
-  comms/utils/colltrace/DummyCollTraceHandle.h
-  comms/utils/colltrace/GenericMetadata.cc
-  comms/utils/colltrace/GenericMetadata.h
-  comms/utils/colltrace/GraphCollTraceEvent.h
-  comms/utils/colltrace/GraphCollTraceHandle.h
-  comms/utils/colltrace/GraphCollTraceState.h
-  comms/utils/colltrace/GraphCudaWaitEvent.cc
-  comms/utils/colltrace/GraphCudaWaitEvent.h
-  comms/utils/colltrace/HRDWRingBufferInstantiations.cu
-  comms/utils/colltrace/HRDWRingBufferInstantiations.cuh
-  comms/utils/colltrace/NetworkPerfMonitor.cc
-  comms/utils/colltrace/NetworkPerfMonitor.h
-  comms/utils/colltrace/plugins/CommDumpPlugin.cc
-  comms/utils/colltrace/plugins/CommDumpPlugin.h
-  comms/utils/colltrace/plugins/WatchdogPlugin.cc
-  comms/utils/colltrace/plugins/WatchdogPlugin.h
+  comms/utils/colltrace/v1/AlgoStats.cc
+  comms/utils/colltrace/v1/AlgoStats.h
+  comms/utils/colltrace/v1/CollMetadata.h
+  comms/utils/colltrace/v1/CollMetadataImpl.cc
+  comms/utils/colltrace/v1/CollMetadataImpl.h
+  comms/utils/colltrace/v1/CollRecord.cc
+  comms/utils/colltrace/v1/CollRecord.h
+  comms/utils/colltrace/v1/CollTrace.cc
+  comms/utils/colltrace/v1/CollTraceEvent.h
+  comms/utils/colltrace/v1/CollTrace.h
+  comms/utils/colltrace/v1/CollTraceHandle.cc
+  comms/utils/colltrace/v1/CollTraceHandle.h
+  comms/utils/colltrace/v1/CollTraceInterface.h
+  comms/utils/colltrace/v1/CollTracePlugin.h
+  comms/utils/colltrace/v1/CollWaitEvent.h
+  comms/utils/colltrace/v1/CommLogDataSerialize.cc
+  comms/utils/colltrace/v1/CommLogDataSerialize.h
+  comms/utils/colltrace/v1/CPUWaitEvent.cc
+  comms/utils/colltrace/v1/CPUWaitEvent.h
+  comms/utils/colltrace/v1/CudaEventPool.cc
+  comms/utils/colltrace/v1/CudaEventPool.h
+  comms/utils/colltrace/v1/CudaWaitEvent.cc
+  comms/utils/colltrace/v1/CudaWaitEvent.h
+  comms/utils/colltrace/v1/DummyCollTraceHandle.h
+  comms/utils/colltrace/v1/GenericMetadata.cc
+  comms/utils/colltrace/v1/GenericMetadata.h
+  comms/utils/colltrace/common/GraphCollTraceEvent.h
+  comms/utils/colltrace/v1/GraphCollTraceHandle.h
+  comms/utils/colltrace/v1/GraphCollTraceState.h
+  comms/utils/colltrace/v1/GraphCudaWaitEvent.cc
+  comms/utils/colltrace/v1/GraphCudaWaitEvent.h
+  comms/utils/colltrace/v1/HRDWRingBufferInstantiations.cu
+  comms/utils/colltrace/v1/HRDWRingBufferInstantiations.cuh
+  comms/utils/colltrace/v1/NetworkPerfMonitor.cc
+  comms/utils/colltrace/v1/NetworkPerfMonitor.h
+  comms/utils/colltrace/v1/plugins/CommDumpPlugin.cc
+  comms/utils/colltrace/v1/plugins/CommDumpPlugin.h
+  comms/utils/colltrace/v1/plugins/WatchdogPlugin.cc
+  comms/utils/colltrace/v1/plugins/WatchdogPlugin.h
   comms/utils/CommsMaybeChecks.h
   comms/utils/commSpecs.cc
   comms/utils/commSpecs.h
@@ -1334,7 +1334,7 @@ if(ENABLE_DEVICE_LINKER)
     comms/rcclx/develop/meta/relay/registered_alltoall_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.cu.cpp
-    comms/utils/colltrace/HRDWRingBufferInstantiations.cu.cpp
+    comms/utils/colltrace/v1/HRDWRingBufferInstantiations.cu.cpp
     comms/utils/hrdw_ring_buffer/GpuClockCalibration.cu.cpp
   )
   foreach(_meta_rel IN LISTS META_DEVICE_SOURCES)

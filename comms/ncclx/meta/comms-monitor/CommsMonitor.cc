@@ -8,8 +8,8 @@
 
 #include "comms/ctran/Ctran.h" // access to incomplete type
 
-#include "comms/utils/colltrace/NetworkPerfMonitor.h"
-#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
+#include "comms/utils/colltrace/v1/NetworkPerfMonitor.h"
+#include "comms/utils/colltrace/v1/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
 

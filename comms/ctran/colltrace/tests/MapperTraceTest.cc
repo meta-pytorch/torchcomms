@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "comms/utils/colltrace/CollRecord.h"
+#include "comms/utils/colltrace/v1/CollRecord.h"
 
 using namespace testing;
 using namespace ncclx::colltrace;

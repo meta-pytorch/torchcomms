@@ -12,7 +12,7 @@
 #include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
-#include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
+#include "comms/utils/colltrace/v1/tests/nvidia-only/CPUControlledKernel.h"
 #include "meta/NcclxLogger.h"
 
 namespace {

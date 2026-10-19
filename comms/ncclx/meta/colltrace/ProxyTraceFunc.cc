@@ -2,7 +2,7 @@
 
 #include "meta/colltrace/ProxyTraceFunc.h"
 
-#include "comms/utils/colltrace/NetworkPerfMonitor.h"
+#include "comms/utils/colltrace/v1/NetworkPerfMonitor.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/ProxyTrace.h"
 

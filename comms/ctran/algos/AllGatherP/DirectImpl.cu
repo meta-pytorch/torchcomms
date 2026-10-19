@@ -4,7 +4,7 @@
 #include "comms/ctran/algos/barrier.cuh"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/utils/colltrace/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 namespace ctran::allgatherp {
 __global__ void ncclKernelAllGatherPDirect(
