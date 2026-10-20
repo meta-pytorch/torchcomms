@@ -634,8 +634,8 @@ set(CTRAN_FILES
   ${CTRAN_SOURCES}
   comms/common/bootstrap/IBootstrap.h
   comms/ctran/bootstrap/ICtranBootstrap.h
+  comms/ctran/utils/MemUtils.h # extra requirement
   comms/tcp_devmem/transport.h # extra requirement
-  comms/utils/MemUtils.h # extra requirement
 )
 
 # TODO: Add back comms/common/ files
@@ -678,6 +678,8 @@ set(COMMON_FILES
   comms/common/bootstrap/IBootstrap.h
   comms/common/fault_tolerance/Abort.cc
   comms/common/fault_tolerance/Abort.h
+  comms/ctran/utils/MemUtils.cc
+  comms/ctran/utils/MemUtils.h
   comms/utils/checks.h
   comms/utils/colltrace/v1/AlgoStats.cc
   comms/utils/colltrace/v1/AlgoStats.h
@@ -718,6 +720,13 @@ set(COMMON_FILES
   comms/utils/colltrace/v1/plugins/CommDumpPlugin.h
   comms/utils/colltrace/v1/plugins/WatchdogPlugin.cc
   comms/utils/colltrace/v1/plugins/WatchdogPlugin.h
+  comms/utils/colltrace/v2/CollEvents.cc
+  comms/utils/colltrace/v2/CollEvents.h
+  comms/utils/colltrace/v2/CollTraceV2.cc
+  comms/utils/colltrace/v2/CollTraceV2.h
+  comms/utils/colltrace/v2/CommState.h
+  comms/utils/colltrace/v2/Env.h
+  comms/utils/colltrace/v2/Log.h
   comms/utils/CommsMaybeChecks.h
   comms/utils/commSpecs.cc
   comms/utils/commSpecs.h
@@ -737,7 +746,8 @@ set(COMMON_FILES
   comms/utils/EnvUtils.h
   comms/utils/GraphCaptureSideStream.cc
   comms/utils/GraphCaptureSideStream.h
-  comms/utils/InitFolly.cc
+  comms/utils/InitCommsUtils.cc
+  comms/utils/InitCommsUtils.h
   comms/utils/InitFolly.h
   comms/utils/kernels/rng/philox_rng.cuh
   comms/utils/kernels/stochastic_rounding/stochastic_rounding.cuh
@@ -784,8 +794,10 @@ set(COMMON_FILES
   comms/utils/logger/ScubaLogger.h
   comms/utils/logger/SpdlogLogger.cc
   comms/utils/logger/SpdlogLogger.h
-  comms/utils/MemUtils.cc
-  comms/utils/MemUtils.h
+  comms/utils/memtrace/GpuMemoryTracker.cc
+  comms/utils/memtrace/GpuMemoryTracker.h
+  comms/utils/memtrace/McclCudaMemory.cc
+  comms/utils/memtrace/McclCudaMemory.h
   comms/utils/memtrace/MemoryTrace.cc
   comms/utils/memtrace/MemoryTrace.h
   comms/utils/PrecisionClock.cc
