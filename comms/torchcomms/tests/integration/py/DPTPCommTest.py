@@ -88,7 +88,6 @@ class MLPStack(nn.Sequential):
             if isinstance(module, nn.LayerNorm):
                 continue
             if use_activation_checkpointing:
-                # pyrefly: ignore [invalid-param-spec]
                 checkpoint(module)
             fully_shard(module, mesh=dp_mesh, **fsdp_kwargs)
         fully_shard(self, mesh=dp_mesh, **fsdp_kwargs)

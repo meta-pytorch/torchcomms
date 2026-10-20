@@ -364,7 +364,7 @@ class TestWindowGraphCapture(CudaGraphTestBase):
             if has_device_api:
                 self.assertIsInstance(dev_win_ptr, int)  # pyre-ignore[61]
                 self.assertNotEqual(
-                    dev_win_ptr,  # pyre-ignore[61]
+                    dev_win_ptr,
                     0,
                     "Device window pointer should be non-zero",
                 )

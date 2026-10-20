@@ -318,12 +318,9 @@ def split_group(  # noqa: C901
             # NCCL options, we set split_share=0 on them. If the user passes
             # non-NCCL options (e.g., Gloo), we pass them through unchanged.
             #
-            # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
             if hasattr(dist, "ProcessGroupNCCL"):
                 if pg_options is None:
-                    # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
                     pg_options = dist.ProcessGroupNCCL.Options()
-                # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
                 if isinstance(pg_options, dist.ProcessGroupNCCL.Options):
                     if hasattr(pg_options, "config") and hasattr(
                         pg_options.config, "split_share"

@@ -58,6 +58,7 @@ class NewGroupTest(unittest.TestCase):
         device = get_device(rank)
 
         input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
+        # pyrefly: ignore [bad-argument-type]
         dist.all_reduce(input_tensor, dist.ReduceOp.SUM, group=pg, async_op=False)
 
         expected = num_ranks * (num_ranks + 1) // 2

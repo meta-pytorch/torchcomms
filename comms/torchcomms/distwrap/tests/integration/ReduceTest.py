@@ -47,6 +47,7 @@ class ReduceTest(unittest.TestCase):
 
         input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
 
+        # pyrefly: ignore [bad-argument-type]
         dist.reduce(input_tensor, dst=0, op=dist.ReduceOp.SUM, async_op=False)
 
         if rank == 0:
@@ -62,6 +63,7 @@ class ReduceTest(unittest.TestCase):
 
         input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
 
+        # pyrefly: ignore [bad-argument-type]
         work = dist.reduce(input_tensor, dst=0, op=dist.ReduceOp.SUM, async_op=True)
         if work is None:
             raise AssertionError("work is None")
