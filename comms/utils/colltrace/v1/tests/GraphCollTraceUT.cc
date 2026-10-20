@@ -656,6 +656,52 @@ TEST_F(GraphColltraceProgressingTest, SyncGraphWarmupPublishesRingInCtor) {
           .expired());
 }
 
+// Destruction that lands after the poll loop's cancellation check but before
+// it drains the pending queue must not wait out the check interval: the drain
+// consumes the destructor's wakeup sentinel. The sweep hook runs in that
+// window.
+TEST_F(
+    GraphColltraceProgressingTest,
+    DestructionBeforePendingDrainDoesNotWaitForCheckInterval) {
+  // Publish the ring in the constructor so every poll iteration runs the hook.
+  EnvRAII<bool> asyncWarmup(NCCL_COLLTRACE_ASYNC_GRAPH_WARMUP, false);
+  constexpr auto kCheckInterval = std::chrono::seconds{20};
+  std::atomic<bool> armed{false};
+  std::promise<void> inDrainWindow;
+  std::promise<void> destructionStarted;
+  auto destructionStartedFuture = destructionStarted.get_future();
+
+  auto trace = std::make_unique<CollTrace>(
+      CollTraceConfig{
+          .maxCheckCancelInterval = kCheckInterval,
+          .afterGraphSweepHook =
+              [&]() {
+                if (!armed.exchange(false)) {
+                  return;
+                }
+                inDrainWindow.set_value();
+                destructionStartedFuture.wait();
+                // Give the destructor time to raise cancellation and post its
+                // wakeup before this poll iteration drains the queue.
+                std::this_thread::sleep_for(std::chrono::milliseconds{200});
+              },
+      },
+      CommLogData{},
+      setDeviceAndThreadLocalCapture,
+      std::vector<std::unique_ptr<ICollTracePlugin>>{});
+
+  armed = true;
+  // The flush sentinel wakes the idle poll thread into a new iteration.
+  trace->requestFlush();
+  inDrainWindow.get_future().wait();
+
+  destructionStarted.set_value();
+  const auto start = std::chrono::steady_clock::now();
+  trace.reset();
+
+  EXPECT_LT(std::chrono::steady_clock::now() - start, kCheckInterval / 4);
+}
+
 TEST_F(GraphColltraceProgressingTest, CancelledCaptureIgnoresReplayEvents) {
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   ASSERT_EQ(

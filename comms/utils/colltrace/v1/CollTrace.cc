@@ -1366,6 +1366,14 @@ void CollTrace::collTraceThread(
       initialized = true;
     }
 
+    // The destructor sets the cancellation flag before posting its wakeup
+    // sentinel, and the drain in pollEagerEvents() discards sentinels. Recheck
+    // the flag so a consumed wakeup cannot leave this thread blocked for the
+    // whole check interval while the destructor waits to join it.
+    if (isThreadCancelled()) {
+      break;
+    }
+
     if (actions.empty() &&
         flushState_.requested.load(std::memory_order_acquire) == flushGen) {
       // No active events and no new flush request arrived during this cycle.
