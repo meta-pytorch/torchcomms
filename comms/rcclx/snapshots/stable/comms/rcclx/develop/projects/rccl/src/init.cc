@@ -91,8 +91,7 @@
 #include "dda_all_reduce_ipc.h"
 #include "ipc_init.h"
 #include  <cpuid.h>
-#include "comms/ctran/utils/SkipDestroyUtil.h"
-#include "MetaFactory.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 #ifndef STR2
   #define STR2(v) #v
@@ -2820,12 +2819,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
        comm->initCompleteWallclock / 1e9);
 
 
-  // Ctran Specific Initialization
-  if(NCCL_CTRAN_ENABLE) {
-      NCCLCHECKGOTO(metaCommToNccl(initNcclCommCtran(comm)), res, fail);
-  }
-
-
   // Trace this call for replay tool
   if (job->parent) {
     /* unlink child abort flag. */
@@ -3597,17 +3590,6 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
 
-  if(comm->ctranComm_) {
-    NCCLCHECKGOTO(metaCommToNccl(ctranFinalize(comm->ctranComm_.get())), ret, fail);
-    try {
-      comm->ctranComm_->destroy();
-      comm->ctranComm_.reset();
-    } catch (std::exception& e) {
-      WARN("CtranComm destruction failed: %s", e.what());
-      goto fail;
-    }
-  }
-
   NCCLCHECKGOTO(latency_profiler::collTraceDestroy(comm), ret, fail);
   TRACE(NCCL_DESTROY, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank, *comm->abortFlag, comm->asyncResult);
 
@@ -3991,10 +3973,9 @@ ncclResult_t ncclCommAbort_impl(ncclComm_t comm) {
   NCCLCHECK(Recorder::instance().record(rrCommAbort, comm));
   NVTX3_RANGE(NcclNvtxParamsCommAbort);
 
-  // Ctran - Force abort logic.
+  // Force abort logic.
   if (NCCL_COMM_ABORT_SCOPE != NCCL_COMM_ABORT_SCOPE::comm) {
     skipDestroyFlag = true;
-    ctran::utils::setSkipDestroyCtran(skipDestroyFlag);
   }
   if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::none) {
     commAbortLog(comm, "SKIP");
@@ -4437,16 +4418,6 @@ ncclResult_t ncclCommGetAsyncError_impl(ncclComm_t comm, ncclResult_t *asyncErro
   if (*asyncError == ncclSuccess && comm->groupJob) {
     NCCLCHECK(ncclGroupJobComplete(comm->groupJob));
     comm->groupJob = NULL;
-  }
-
-  // Check Ctran asyncError if no error happens in the baseline path
-  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get()) &&
-      (*asyncError == ncclSuccess || *asyncError == ncclInProgress)) {
-    auto ctranAsyncError = metaCommToNccl(comm->ctranComm_->getAsyncResult());
-    // Overwrite if ctranAsyncError is inProgress or error
-    if (ctranAsyncError != ncclSuccess) {
-      *asyncError = ctranAsyncError;
-    }
   }
 
   return ncclSuccess;

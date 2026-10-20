@@ -448,47 +448,10 @@ set(SRC_FILES
 set(RCCLX_FILES
   meta/algorithms/AlgoInit.h
   meta/algorithms/AlgoUtils.h
-  meta/ctran/BaselineBootstrap.cc
-  meta/ctran/BaselineBootstrap.h
-  meta/ctran/Hints.cc
-  meta/ctran/MetaFactory.cc
-  meta/ctran/MetaFactory.h
-  meta/ctran/PersistentCollectives.cc
+  meta/algorithms/BaselineBootstrap.cc
+  meta/algorithms/BaselineBootstrap.h
 )
 
-# Automatically collect all ctran source files. Glob paths must be absolute
-# because the directory lives outside CMAKE_SOURCE_DIR.
-file(GLOB_RECURSE CTRAN_SOURCES_ABS
-    "${FBCODE_DIR}/comms/ctran/*.cc"
-    "${FBCODE_DIR}/comms/ctran/*.cu"
-    "${FBCODE_DIR}/comms/ctran/*.h"
-    "${FBCODE_DIR}/comms/ctran/*.cuh"
-)
-
-# Convert absolute paths to fbcode-relative paths (e.g. "comms/ctran/Ctran.cc")
-# so they work with the hipify pipeline which resolves via ${FBCODE_DIR}/${SRC_FILE}.
-set(CTRAN_SOURCES "")
-foreach(ABS_PATH ${CTRAN_SOURCES_ABS})
-    file(RELATIVE_PATH REL_PATH "${FBCODE_DIR}" "${ABS_PATH}")
-    list(APPEND CTRAN_SOURCES "${REL_PATH}")
-endforeach()
-
-
-
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/tests/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/benchmarks/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/examples/.*")
-# Also exclude nested tests/benchmarks/examples dirs (e.g. comms/ctran/algos/tests/, comms/ctran/gpe/tests/)
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/tests/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/benchmarks/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/examples/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/issues/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/issues/.*")
-list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/ibverbx/ib_injection/.*")
-if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
-    add_compile_definitions(CTRAN_DISABLE_TCPDM)
-    list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/backends/tcpdevmem/.*")
-endif()
 # Set path where CMake will look for header files
 
 # Set path where CMake will look for library files
@@ -530,14 +493,6 @@ set(thrift_group_list
 
 # Set non-FB infra preprocessor flags
 # Prevent glog macro conflicts with HIP/AMD headers that define ERROR
-# Undefine __HIPCC__ for host-only .cc files that need types guarded by
-# #if !defined(__CUDACC__) (hipified to __HIPCC__) in AllReduce/Types.h.
-set_source_files_properties(
-  ${PROJECT_BINARY_DIR}/hipify/comms/ctran/gpe/CtranGpe.cc
-  ${PROJECT_BINARY_DIR}/hipify/comms/ctran/algos/AllReduce/AllReduceRing.cc
-  PROPERTIES COMPILE_OPTIONS "-U__HIPCC__"
-)
-
 # Files in fbcode/comms/rcclx/develop/meta/ are imported using just their file name
 # We will include their parent directories so they are found by CMake
 # target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/colltrace)  # disabled: meta/colltrace excluded due to namespace incompatibility
@@ -629,15 +584,6 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/relay/sharded_relay_route.h
 )
 
-# find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
-set(CTRAN_FILES
-  ${CTRAN_SOURCES}
-  comms/common/bootstrap/IBootstrap.h
-  comms/ctran/bootstrap/ICtranBootstrap.h
-  comms/ctran/utils/MemUtils.h # extra requirement
-  comms/tcp_devmem/transport.h # extra requirement
-)
-
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
 # find comms/utils/ comms/common -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
@@ -678,8 +624,6 @@ set(COMMON_FILES
   comms/common/bootstrap/IBootstrap.h
   comms/common/fault_tolerance/Abort.cc
   comms/common/fault_tolerance/Abort.h
-  comms/ctran/utils/MemUtils.cc
-  comms/ctran/utils/MemUtils.h
   comms/utils/checks.h
   comms/utils/colltrace/v1/AlgoStats.cc
   comms/utils/colltrace/v1/AlgoStats.h
@@ -846,7 +790,7 @@ set(HIPIFY_DIR "${PROJECT_BINARY_DIR}/hipify")
 set(NCCL_DEVICE_HIP_FILES "")
 
 # Meta hipify blocks, relocated here: they need hipify-perl_executable and
-# HIPIFY_DIR (set just above) plus RCCLX_LIB_FILES/COMMON_FILES/CTRAN_FILES.
+# HIPIFY_DIR (set just above) plus RCCLX_LIB_FILES/COMMON_FILES.
 # All append to HIP_SOURCES, consumed later by add_library(rccl).
 # Hipify RCCLX_FILES (relative to develop/)
 set(RCCLX_DEV_DIR "${CMAKE_SOURCE_DIR}/../..")
@@ -871,7 +815,7 @@ foreach(SRC_FILE ${RCCLX_FILES})
 endforeach()
 # Different build rules for files that we want to import with their full path.
 # They will be stored in fbcode/comms/rcclx/develop/build/release/hipify/<path/from/fbcode>
-foreach(SRC_FILE ${RCCLX_LIB_FILES} ${COMMON_FILES} ${CTRAN_FILES})
+foreach(SRC_FILE ${RCCLX_LIB_FILES} ${COMMON_FILES})
   # Check that file exists
   if (NOT EXISTS ${FBCODE_DIR}/${SRC_FILE})
     message(FATAL_ERROR "Unable to find file listed in CMakeLists.txt: ${FBCODE_DIR}/${SRC_FILE}")
@@ -1095,61 +1039,10 @@ endforeach()
 # duplicate symbols with the aggregate per-collective .cpp files.
 list(FILTER HIP_SOURCES EXCLUDE REGEX "/gensrc/specialized/")
 
-# Generate ctran kernel instantiation files
-#==================================================================================================
-# These files instantiate the kernel templates defined in .cuh files for each data type.
-# Without these, the kernel symbols would be undefined at link time.
-set(CTRAN_GEN_DIR "${HIPIFY_DIR}/ctran_gensrc")
-message(STATUS "Generating ctran kernel instantiation files in ${CTRAN_GEN_DIR}")
-
-execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${FBCODE_DIR}/comms/ctran/algos/genctran.py ${CTRAN_GEN_DIR}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    RESULT_VARIABLE gen_ctran_result
-    ERROR_VARIABLE gen_ctran_error
-)
-if (gen_ctran_result)
-  message(SEND_ERROR "Error: ${gen_ctran_error}")
-  message(FATAL_ERROR "${FBCODE_DIR}/comms/ctran/algos/genctran.py failed")
-endif()
-
-# Find and hipify the generated ctran kernel files
-file(GLOB CTRAN_GENERATED_CU_FILES "${CTRAN_GEN_DIR}/*.cu")
-list(LENGTH CTRAN_GENERATED_CU_FILES CTRAN_GEN_COUNT)
-message(STATUS "Device Linker: ${CTRAN_GEN_COUNT} ctran kernel instantiation files")
-
-foreach(GEN_CU_FILE ${CTRAN_GENERATED_CU_FILES})
-  get_filename_component(GEN_CU_FILENAME ${GEN_CU_FILE} NAME)
-  # Convert .cu to .cu.cpp for HIP compilation
-  string(REPLACE ".cu" ".cu.cpp" HIP_GEN_FILENAME ${GEN_CU_FILENAME})
-  set(HIP_GEN_FILE "${CTRAN_GEN_DIR}/${HIP_GEN_FILENAME}")
-
-  # Create a custom command to hipify the generated file
-  add_custom_command(
-    OUTPUT ${HIP_GEN_FILE}
-    COMMAND ${hipify-perl_executable} -quiet-warnings ${GEN_CU_FILE} -o ${HIP_GEN_FILE}
-    DEPENDS ${GEN_CU_FILE}
-    COMMENT "Hipifying generated ctran kernel: ${GEN_CU_FILENAME} -> ${HIP_GEN_FILENAME}"
-  )
-  # These TUs exist only to emit __global__ template instantiations, so they
-  # cannot go through the host-only rccl target -- the kernel bodies would be
-  # stripped and every ncclKernel* symbol would be left undefined. Hand them to
-  # the device pipeline instead, which compiles them monolithically. Unlike
-  # META_DEVICE_SOURCES this needs no explicit list: genctran.py emits them into
-  # a directory of its own, so the glob above is an exact predicate.
-  if(ENABLE_DEVICE_LINKER)
-    list(APPEND CTRAN_GEN_HIP_FILES ${HIP_GEN_FILE})
-  else()
-    list(APPEND HIP_SOURCES ${HIP_GEN_FILE})
-  endif()
-endforeach()
-
 # Device Linker: filter out device sources that are built by the pipeline
 #==================================================================================================
 if(ENABLE_DEVICE_LINKER)
   # Remove per-collective .cpp files from gensrc/ and any subdirs (replaced by specialized/symmetric pipelines)
-  # Leading slash matters: without it this also matches comms/ctran's
-  # ctran_gensrc/, whose kernel instantiations are not part of this pipeline.
   list(FILTER HIP_SOURCES EXCLUDE REGEX "/gensrc/.*\\.cpp$")
   # Add back host-only generated files
   list(APPEND HIP_SOURCES "${GEN_DIR}/host_table.cpp")
@@ -1179,7 +1072,7 @@ if(ENABLE_DEVICE_LINKER)
   #
   # This set cannot be derived: some entries contain no literal __global__
   # (they instantiate kernel templates from .cuh headers) and some arrive via
-  # CTRAN_FILES rather than the explicit source list above. Nothing enforces
+  # COMMON_FILES rather than the explicit source list above. Nothing enforces
   # it -- a missing entry links cleanly and only surfaces as an undefined
   # __hip_fatbin_* when librccl.so is dlopen'd.
   set(META_DEVICE_SOURCES
@@ -1187,18 +1080,6 @@ if(ENABLE_DEVICE_LINKER)
     comms/common/algorithms/all_reduce/AlgoAllReduce.cu.cpp
     comms/common/algorithms/all_to_all/AlgoAllToAll.cu.cpp
     comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu.cpp
-    comms/ctran/algos/AllGather/AllGatherBrucksFF.cu.cpp
-    comms/ctran/algos/AllGather/AllGatherRing.cu.cpp
-    comms/ctran/algos/AllGather/StreamedRd/Impl.cu.cpp
-    comms/ctran/algos/AllGatherP/DirectImpl.cu.cpp
-    comms/ctran/algos/AllGatherP/PipelineImpl.cu.cpp
-    comms/ctran/algos/AllToAll/AllToAllPImpl.cu.cpp
-    comms/ctran/algos/Barrier.cu.cpp
-    comms/ctran/algos/Broadcast/Broadcast.cu.cpp
-    comms/ctran/algos/Checksum.cu.cpp
-    comms/ctran/algos/RMA/Get.cu.cpp
-    comms/ctran/algos/RMA/PutSignal.cu.cpp
-    comms/ctran/algos/SendRecv/SendRecv.cu.cpp
     comms/rcclx/develop/meta/lpcoll/low_precision_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.cu.cpp
     comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.cu.cpp
@@ -1283,7 +1164,6 @@ target_compile_definitions(rccl PRIVATE USE_ROCM)
 target_compile_definitions(rccl PRIVATE __HIPCC__)
 target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
 target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba logging in comms/utils/logger.
-target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
 target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
 # comms/utils/PrecisionClock.cc finds time/fbclock/fbclock.h via the `-I fbcode`
 # in env CXXFLAGS, but this build does not link fbclock_c. Opt out so PrecisionClock
@@ -1291,7 +1171,6 @@ target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating c
 # fbclock_gettime_utc undefined in librccl.so (which breaks PyTorch's dlopen).
 target_compile_definitions(rccl PRIVATE COMMS_NO_FBCLOCK)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/algorithms)
-target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/ctran)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR})
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop)
 
@@ -1321,9 +1200,6 @@ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/gensrc)
 target_include_directories(rccl PRIVATE ${HSA_INCLUDE_PATH})
 target_include_directories(rccl PRIVATE ${SMI_INCLUDE_DIR})
 target_include_directories(rccl PRIVATE ${ROCMCORE_PATH}/include)
-target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop/meta/ctran)
-target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran/utils)
-target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran)
 
 if(DEMANGLE_DIR)
   target_include_directories(rccl PRIVATE ${DEMANGLE_DIR})

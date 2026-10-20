@@ -96,7 +96,6 @@ Buck2 resolves:
 
 Buck2 builds from:
   snapshots/stable/comms/rcclx/BUCK (frozen rcclx source)
-    ├── //comms/ctran:...        (from HEAD)
     ├── //comms/utils:...        (from HEAD)
     ├── //comms/common:...       (from HEAD)
     └── //folly:..., //scribe:.. (from HEAD)
@@ -112,7 +111,7 @@ The previous "bundled dependencies" approach precompiled internal dependencies (
 
 With pre-extracted sources:
 - **rcclx sources** are frozen at snapshot time
-- **Internal deps** (ctran, utils, logger) compile from HEAD
+- **Internal deps** (utils, common, logger) compile from HEAD
 - **External deps** (folly, scribe, thrift) compile from HEAD
 - **All code uses the same headers** at compile time = No ABI mismatch
 

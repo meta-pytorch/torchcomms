@@ -32,8 +32,6 @@
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
-#include "comms/ctran/Ctran.h"
-#include "MetaFactory.h"
 
 #ifdef ENABLE_ROCSHMEM
 #include <rocshmem/rocshmem.hpp>
