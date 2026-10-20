@@ -77,6 +77,106 @@ cvars:
      floor(log2(bytes)). Only takes effect when MCCL_GPU_COLLSTATS_ENABLE is
      set.
 
+ - name        : NICSTATS_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Reads local NIC counters for every NIC ctran gives each communicator's GPU
+     when its collective trace asks for them, and queues one reading per read
+     for the log to drain. Each communicator reads each of its NICs on a thread
+     of its own, so it never waits behind another communicator's read, and a
+     firmware call that hangs stalls only that thread, never the caller. The
+     mechanisms in NICSTATS_SOURCE are read at once rather than one after
+     another. Off by default.
+
+ - name        : NICSTATS_SOURCE
+   type        : stringlist
+   default     : "doca_adp_retx,devx,fwctl"
+   description : |-
+     Which mechanism or mechanisms to read the counters through: doca_adp_retx,
+     doca_diag, fwctl or devx.
+
+     Several may be named, comma separated, because no single mechanism reaches
+     every counter: doca_adp_retx returns only the retransmission histogram,
+     devx only traffic, and a run naming one of them reports the other's
+     counters unsupported. Each mechanism named contributes the counters no earlier one
+     in the list covers, and they are read as one source. A counter two of them
+     can both produce is read from the earlier one, so the list is a priority
+     order rather than a set.
+
+     Only what is named here is ever opened, and never a substitute: a request
+     naming its own list is narrowed to the mechanisms named here, so it can
+     narrow and reorder this list but never add to it. A mechanism that
+     produces nothing when the rail opens is left out and the rest are read; it
+     is not tried again while they produce. When none produces, nothing is read
+     on the rail, and any reading of it reports every counter unsupported.
+
+     An unrecognised name turns reading off for the run and logs an error
+     naming it. Reading the rest would produce a log that looks complete and
+     is not.
+
+     Each reading records which mechanism read each counter, and the NICSTATS
+     line's src= lists every mechanism that read one.
+
+     An evaluation instrument rather than a user-facing knob: it exists so the
+     mechanisms can be measured against each other.
+
+     doca_adp_retx is the adaptive-retransmission histogram, and produces
+     nothing on hardware that does not support the API.
+
+     fwctl reads the port's PPCNT counters -- the port's traffic, as
+     port_tx_bytes and the rest, pause frames sent and received, transmit
+     discards, transmit wait, link-down events and symbol errors -- and needs
+     read access to /dev/fwctl, which by default only root has, and firmware new
+     enough to serve PPCNT to it. devx reads the function's own traffic, as
+     tx_bytes and the rest, unprivileged. doca_diag reaches the PCIe,
+     host-buffer and congestion counters no other mechanism does, but a card's
+     DIAG context has one owner per host, so only one process reads them.
+
+     The default reads the retransmission histogram through doca_adp_retx,
+     traffic through devx, so its meaning is the same on every host, and pause
+     through fwctl. Where fwctl cannot be opened, pause is reported unsupported;
+     where DOCA is absent, so is the histogram. Add port_tx_bytes,
+     port_rx_bytes, port_tx_packets and port_rx_packets to NICSTATS_COUNTERS to
+     read the port's traffic through fwctl in the same command as pause, and
+     with NICSTATS_PRIORITY, that priority's alone.
+
+ - name        : NICSTATS_COUNTERS
+   type        : stringlist
+   default     : "adp_retx_bin0,adp_retx_bin1,adp_retx_bin2,adp_retx_bin3,adp_retx_bin4,adp_retx_bin5,adp_retx_bin6,adp_retx_bin7,adp_retx_bin8,adp_retx_bin9,adp_retx_bin10,adp_retx_bin11,adp_retx_bin12,adp_retx_bin13,adp_retx_bin14,adp_retx_bin15,tx_bytes,rx_bytes,tx_packets,rx_packets,pause_tx,pause_rx"
+   description : |-
+     Which counters each reading carries. A counter the selected mechanism
+     cannot produce is reported unsupported rather than zero -- never as zero,
+     which is what an idle link legitimately reports. An unrecognised name
+     turns reading off for the run and logs an error naming it.
+
+     The default is the retransmission histogram, the function's bytes and
+     packets each way to normalise it against, and the pause frames sent and
+     received. Through doca_diag the pause counters need NICSTATS_PRIORITY and
+     are reported unsupported without it; fwctl reads link-level PAUSE frames
+     without one, which a fabric running PFC does not send, and that priority's
+     PFC pause with one.
+
+ - name        : NICSTATS_PRIORITY
+   type        : int
+   default     : -1
+   description : |-
+     The RoCE priority, 0 to 7, at which per-priority counters are read. Through
+     fwctl, the port's traffic and pause count only this priority's frames, and
+     pause_tx_duration and pause_rx_duration become available; without one,
+     fwctl reads the port's totals, and its pause counters count link-level
+     PAUSE frames only, never PFC frames. Per-priority pause counts only where
+     the priority runs PFC.
+
+     Through doca_diag it is the priority pause_tx and pause_rx are read at.
+     DIAG counts pause frames per priority and has no port-wide total, so
+     without a priority it reports them unsupported.
+
+     A guessed priority reads another priority's counters, which on an idle
+     class are a plausible zero, so the default of -1 reads none per
+     priority. A value above 7 is treated the same and logs an error. One
+     priority per process; each reading records the one it was read at.
+
  - name        : NCCL_HPC_JOB_IDS
    type        : stringlist
    default     : ""
