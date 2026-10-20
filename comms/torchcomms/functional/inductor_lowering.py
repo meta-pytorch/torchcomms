@@ -5,6 +5,7 @@
 import logging
 
 import torch
+from packaging import version
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,23 @@ def _unpack_process_kernel(result):
     )
 
 
+def _disable_simple_overlap_on_torch_2_14(torch_version: str) -> None:
+    """Disable Inductor's ``simple_overlap`` scheduler pass on PyTorch 2.14
+
+    2.14 runs the pass by default but drops the ``with_effects`` ordering edge
+    between ops lowered to different kernel types, so the pass can hoist
+    ``torchcomm_recv`` above a preceding ``torchcomm_send`` and deadlock. Fixed
+    in 2.15 by pytorch/pytorch#188301; earlier versions do not run the pass by
+    default.
+    """
+    if version.parse(torch_version).release[:2] != (2, 14):
+        return
+    from torch._inductor import config as inductor_config
+
+    inductor_config.aten_distributed_optimizations.enable_simple_overlap = False
+    logger.info("Disabled Inductor simple_overlap pass on PyTorch 2.14")
+
+
 try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
@@ -42,6 +60,8 @@ try:  # noqa: C901
         if collectives is None:
             logger.warning("torchcomms.functional.collectives not available")
             return
+
+        _disable_simple_overlap_on_torch_2_14(torch.__version__)
 
         try:
             from torchcomms.functional.registry import _REGISTERED_COLLECTIVES
