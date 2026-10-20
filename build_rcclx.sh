@@ -283,6 +283,44 @@ function build_comms_tracing_service {
   popd
 }
 
+# A snapshot's CMake finds the fbcode root a fixed number of directories above
+# itself, which only resolves from comms/rcclx/develop. Recreate that layout
+# next to the build dir: the snapshot's comms/rcclx, and the rest of fbcode
+# from this checkout.
+function stage_snapshot_tree {
+  local fbcode_dir="$PWD"
+  local snapshot_dir="${fbcode_dir}/comms/rcclx/snapshots/${RCCLX_SNAPSHOT}/comms/rcclx"
+  local stage_dir
+  stage_dir="$(dirname "$BUILDDIR")/rcclx-${RCCLX_SNAPSHOT}-src"
+
+  if [ ! -d "$snapshot_dir" ]; then
+    echo "ERROR: no RCCLX snapshot at $snapshot_dir"
+    exit 1
+  fi
+
+  rm -rf "$stage_dir"
+  mkdir -p "$stage_dir/fbcode"
+  ln -s "$fbcode_dir"/* "$stage_dir/fbcode/"
+  rm "$stage_dir/fbcode/comms"
+  mkdir "$stage_dir/fbcode/comms"
+  ln -s "$fbcode_dir"/comms/* "$stage_dir/fbcode/comms/"
+  rm "$stage_dir/fbcode/comms/rcclx"
+  cp -a "$snapshot_dir" "$stage_dir/fbcode/comms/rcclx"
+  # Copy rather than link the trees the CMake walks: hipify_external_headers.sh
+  # uses `find -type f`, which skips symlinks, and comms/ctran is globbed.
+  local dir
+  for dir in common utils torchcomms observatory ctran; do
+    [ -d "${fbcode_dir}/comms/${dir}" ] || continue
+    rm "$stage_dir/fbcode/comms/${dir}"
+    cp -a "${fbcode_dir}/comms/${dir}" "$stage_dir/fbcode/comms/"
+  done
+  if [ -d "$(dirname "$fbcode_dir")/third-party" ]; then
+    ln -s "$(dirname "$fbcode_dir")/third-party" "$stage_dir/third-party"
+  fi
+
+  cd "$stage_dir/fbcode"
+}
+
 if [ -z "$DEV_SIGNATURE" ]; then
     is_git=$(git rev-parse --is-inside-work-tree)
     if [ $is_git ]; then
@@ -313,7 +351,37 @@ CLEAN_BUILD=${CLEAN_BUILD:=0}
 LIB_SUFFIX=${LIB_SUFFIX:-lib}
 CONDA_INCLUDE_DIR="${CONDA_PREFIX}/include"
 CONDA_LIB_DIR="${CONDA_PREFIX}/lib"
-NCCL_HOME=${NCCL_HOME:="${PWD}/comms/rcclx/develop/projects/rccl"}
+
+# The RCCLX tree to build: dev is comms/rcclx/develop; stable and last-stable
+# are the snapshots of those names under comms/rcclx/snapshots/. Snapshot
+# builds ignore a preset NCCL_HOME or BASE_DIR, which can't point into the
+# staged tree.
+RCCLX_SNAPSHOT=${RCCLX_SNAPSHOT:-dev}
+case "$RCCLX_SNAPSHOT" in
+  dev)
+    NCCL_HOME=${NCCL_HOME:="${PWD}/comms/rcclx/develop/projects/rccl"}
+    RCCL_INSTALL_FLAGS=(--disable-warp-speed)
+    ;;
+  stable)
+    stage_snapshot_tree
+    NCCL_HOME="${PWD}/comms/rcclx/develop/projects/rccl"
+    BASE_DIR="$PWD"
+    RCCL_INSTALL_FLAGS=(--disable-warp-speed)
+    ;;
+  last-stable)
+    stage_snapshot_tree
+    # Pre-June drop layout: install.sh sits at the top of develop/, has no
+    # --disable-warp-speed, and still has the COLLTRACE and MSCCL kernel
+    # options that the June drop removed.
+    NCCL_HOME="${PWD}/comms/rcclx/develop"
+    BASE_DIR="$PWD"
+    RCCL_INSTALL_FLAGS=(--disable-colltrace --disable-msccl-kernel)
+    ;;
+  *)
+    echo "ERROR: RCCLX_SNAPSHOT must be dev, stable or last-stable, got '$RCCLX_SNAPSHOT'"
+    exit 1
+    ;;
+esac
 BASE_DIR=${BASE_DIR:="${PWD}"}
 THIRD_PARTY_LDFLAGS=""
 
@@ -453,13 +521,10 @@ esac
 
 
 function build_rccl {
-  # --disable-colltrace / --disable-msccl-kernel were dropped from install.sh:
-  # the June drop removed the CMake options they set (COLLTRACE,
-  # ENABLE_MSCCL_KERNEL) along with the device-side kernel trace and MSCCL.
   ./install.sh \
     --prefix "$BUILDDIR" \
     --amdgpu_targets "$AMDGPU_TARGETS" \
-    --disable-warp-speed
+    "${RCCL_INSTALL_FLAGS[@]}"
 }
 
 build_rccl
