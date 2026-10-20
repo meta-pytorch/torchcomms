@@ -11,7 +11,7 @@ torchcomms provides:
 - **Simplified Object-Oriented API**: A clean, intuitive interface for communication operations
 - **Support for Multiple Backends**, including:
   - **NCCL**: Standard NCCL backend for NVIDIA GPUs
-  - **NCCLX** (deprecated): NVIDIA Collective Communications Library (extended). No longer included in wheels or tested in CI. Use [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html) instead; all torchcomms features have been upstreamed in PyTorch 2.15.
+  - **NCCLX** (deprecated): NVIDIA Collective Communications Library (extended). No longer included in wheels or tested in CI. Use [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html) instead; torchcomms features have been upstreamed into PyTorch Distributed (c10d) as of PyTorch 2.15. NCCLX itself is not upstreamed.
   - **GLOO**: CPU-based backend for CPU tensors and metadata transfer
   - **RCCL**: AMD ROCm Collective Communications Library for AMD GPUs
 - **Synchronous and Asynchronous Operations**: Flexible execution modes for different performance needs
@@ -82,7 +82,7 @@ No build needed - uses the library provided by PyTorch
 
 :::{tab-item} NCCLX Backend (deprecated)
 
-NCCLX is deprecated and must be explicitly enabled with `USE_NCCLX=ON`. Use [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html) instead; all torchcomms features have been upstreamed in PyTorch 2.15.
+NCCLX is deprecated and must be explicitly enabled with `USE_NCCLX=ON`. Use [PyTorch Distributed](https://docs.pytorch.org/docs/stable/distributed.html) instead; torchcomms features have been upstreamed into PyTorch Distributed (c10d) as of PyTorch 2.15. NCCLX itself is not upstreamed.
 
 If you want to install the third-party dependencies directly from conda, run the following command:
 ```bash

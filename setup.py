@@ -84,8 +84,9 @@ USE_NCCL = flag_enabled("USE_NCCL", not IS_ROCM)
 USE_NCCLX = flag_enabled("USE_NCCLX", False)
 if USE_NCCLX:
     print(
-        "WARNING: NCCLX is deprecated. Use PyTorch Distributed instead; all "
-        "torchcomms features have been upstreamed in PyTorch 2.15.",
+        "WARNING: NCCLX is deprecated. Use PyTorch Distributed instead; "
+        "torchcomms features have been upstreamed into PyTorch Distributed "
+        "(c10d) as of PyTorch 2.15. NCCLX itself is not upstreamed.",
         file=sys.stderr,
     )
 USE_GLOO = flag_enabled("USE_GLOO", True)
