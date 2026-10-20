@@ -83,13 +83,14 @@ empty build.
 
 ## Runtime contract
 
-Three things are not discoverable and must be set by the caller; the fourth row
+Four things are not discoverable and must be set by the caller; the fifth row
 is an optional override:
 
 | Variable | Why |
 | --- | --- |
 | `RCCL_EP_LIBRCCL` | Absolute path to the EP-capable `librccl.so.1`. Loaded `RTLD_GLOBAL` before the extension so that it and torch resolve to one library rather than two copies contending for one SONAME. Unset, the loader silently binds to whichever `librccl` arrived first -- usually torch's, which predates the device API this path needs. |
 | `NCCL_CUMEM_ENABLE=1` | Short-circuits RCCL's auto-detect, which is a ROCm version gate that torch's bundled HIP fails. |
+| `NCCL_WIN_ENABLE=1` | Symmetric windows are opt-in in RCCL, and the EP window is one; without it `ep_configure` fails at window registration. RCCL reads it once per process, at the first single-node communicator, which is usually torch's, so it belongs in the process environment from the start. |
 | `HSA_NO_SCRATCH_RECLAIM=1` | Required by the kernels' scratch usage. |
 | `RCCL_EP_LIB` | Optional. Overrides the co-located `librccl_ep.so`; unnecessary after `cmake --install`, and unused when RCCL was built with `ENABLE_RCCL_EP_IN_LIBRCCL`. |
 
