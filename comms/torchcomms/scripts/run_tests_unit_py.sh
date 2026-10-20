@@ -37,9 +37,12 @@ run_tests () {
 export TEST_BACKEND=nccl
 run_tests
 
-# NCCLX
-export TEST_BACKEND=ncclx
-run_tests
+# NCCLX (deprecated; skip unless built with USE_NCCLX=1)
+HAS_NCCLX=$(python -c "import importlib.util; print(int(importlib.util.find_spec('torchcomms._comms_ncclx') is not None))")
+if [ "${HAS_NCCLX}" = "1" ]; then
+    export TEST_BACKEND=ncclx
+    run_tests
+fi
 
 # Gloo with CPU
 export TEST_BACKEND=gloo

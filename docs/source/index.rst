@@ -5,7 +5,7 @@ torchcomms
 
 **torchcomms** is an experimental, lightweight communication API for PyTorch Distributed (PTD).
 It provides a simplified, object-oriented interface for distributed collective operations with multiple
-out-of-the-box backends, including Meta's production-tested **NCCLX** backend that powers all generative AI services.
+out-of-the-box backends.
 
 .. raw:: html
 
@@ -63,8 +63,7 @@ Why torchcomms?
 torchcomms addresses several key challenges in distributed PyTorch training:
 
 * **Simplified API**: Clean, object-oriented interface that abstracts away low-level communication details
-* **Backend Flexibility**: Easily switch between different communication backends (NCCLX, RCCLX, NCCL, RCCL, Gloo) without changing your code
-* **Production-Ready**: NCCLX backend is battle-tested in Meta's production environments powering large-scale AI workloads
+* **Backend Flexibility**: Easily switch between different communication backends (NCCL, RCCL, Gloo, NCCLX, RCCLX) without changing your code
 * **Type Safety**: Full type hints and validation for better development experience
 * **Performance**: Optimized implementations with support for GPU-accelerated communication
 
@@ -76,12 +75,12 @@ Multiple Backends
 
 torchcomms supports several communication backends out of the box:
 
-* **NCCLX**: Meta's enhanced NCCL implementation with additional optimizations
 * **RCCLX**: Meta's enhanced RCCL implementation with additional optimizations
 * **NCCL**: NVIDIA's Collective Communications Library for multi-GPU communication
 * **RCCL**: AMD ROCm Collective Communications Library for AMD GPUs
 * **XCCL**: Intel's Collective Communications Library for Intel GPUs
 * **Gloo**: Facebook's collective communications library for both CPU and GPU
+* **NCCLX** (deprecated): Meta's enhanced NCCL implementation. Not included in wheels; use PyTorch Distributed instead.
 
 Comprehensive Collective Operations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
