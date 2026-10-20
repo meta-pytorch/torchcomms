@@ -406,8 +406,7 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
 }
 
 // NOTE: The following methods that depend on rcclx-dev-only symbols
-// (`ncclx::Hints`, `ncclx::allGatherInit`, `ncclx::allGatherExec`,
-// `ncclx::pFree`, `ncclShardedRelayMultiGroupAllReduce`) are intentionally
+// (e.g. `ncclShardedRelayMultiGroupAllReduce`) are intentionally
 // NOT defined here. Their definitions live in two parallel translation
 // units selected at BUCK level via `select()` on the active rccl
 // constraint (see `comms/torchcomms/rcclx/BUCK`):
@@ -420,9 +419,6 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
 //                                    snapshots don't yet expose the new
 //                                    sharded-relay APIs)
 //
-//     - DefaultRcclxApi::allGatherInit
-//     - DefaultRcclxApi::allGatherExec
-//     - DefaultRcclxApi::pFree
 //     - DefaultRcclxApi::registeredAllReduceAbiVersion
 //     - DefaultRcclxApi::registeredAllReduceInit
 //     - DefaultRcclxApi::registeredAllReduceExec
