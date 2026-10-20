@@ -465,6 +465,11 @@ set(SRC_FILES
   src/device/reduce_kernel.h
   src/device/reduce_scatter.h
   src/device/sendrecv.h
+  src/device/symmetric/all_gather.h
+  src/device/symmetric/all_reduce.h
+  src/device/symmetric/kernel.h
+  src/device/symmetric/primitives.h
+  src/device/symmetric/reduce_scatter.h
   src/enhcompat.cc
   src/enqueue.cc
   src/graph/connect.cc
@@ -511,6 +516,9 @@ set(SRC_FILES
   src/include/ibvwrap.h
   src/include/info.h
   src/include/ipcsocket.h
+  src/include/mlx5/mlx5dvcore.h
+  src/include/mlx5/mlx5dvsymbols.h
+  src/include/mlx5/mlx5dvwrap.h
   src/include/mnnvl.h
   src/include/msccl/msccl_kernel.h
   src/include/msccl/msccl_lifecycle.h
@@ -521,9 +529,6 @@ set(SRC_FILES
   src/include/msccl/msccl_struct.h
   src/include/mscclpp/mscclpp_nccl.h
   src/include/nccl_common.h
-  src/include/nccl_net.h
-  src/include/nccl_profiler.h
-  src/include/nccl_tuner.h
   src/include/net_device.h
   src/include/net.h
   src/include/npkit/npkit_event.h
@@ -569,14 +574,35 @@ set(SRC_FILES
   src/include/nvtx_stub.h
   src/include/p2p.h
   src/include/param.h
+  src/include/plugin/nccl_net.h
+  src/include/plugin/nccl_profiler.h
+  src/include/plugin/nccl_tuner.h
+  src/include/plugin/net/net_v10.h
+  src/include/plugin/net/net_v6.h
+  src/include/plugin/net/net_v7.h
+  src/include/plugin/net/net_v8.h
+  src/include/plugin/net/net_v9.h
+  src/include/plugin/plugin.h
+  src/include/plugin/profiler/net_ib.h
+  src/include/plugin/profiler/net_ib_v1.h
+  src/include/plugin/profiler/net_socket.h
+  src/include/plugin/profiler/net_socket_v1.h
+  src/include/plugin/profiler/profiler_v1.h
+  src/include/plugin/profiler/profiler_v2.h
+  src/include/plugin/profiler/profiler_v3.h
+  src/include/plugin/tuner/tuner_v2.h
+  src/include/plugin/tuner/tuner_v3.h
+  src/include/plugin/tuner/tuner_v4.h
   src/include/profiler.h
   src/include/proxy.h
+  src/include/proxy_trace/proxy_trace.h
   src/include/ras.h
   src/include/rccl_common.h
   src/include/rccl_float8.h
   src/include/rccl_vars.h
   src/include/recorder.h
   src/include/register.h
+  src/include/register_inline.h
   src/include/rocm_smi_wrap.h
   src/include/rocmwrap.h
   src/include/roctx.h
@@ -585,6 +611,7 @@ set(SRC_FILES
   src/include/signals.h
   src/include/socket.h
   src/include/strongstream.h
+  src/include/symmetric.h
   src/include/timer.h
   src/include/plugin/profiler/profiler_v4.h
   src/include/transport.h
@@ -602,6 +629,8 @@ set(SRC_FILES
   src/misc/ibvsymbols.cc
   src/misc/ibvwrap.cc
   src/misc/ipcsocket.cc
+  src/misc/mlx5dvsymbols.cc
+  src/misc/mlx5dvwrap.cc
   src/misc/msccl/msccl_lifecycle.cc
   src/misc/msccl/msccl_parser.cc
   src/misc/msccl/msccl_setup.cc
@@ -611,7 +640,7 @@ set(SRC_FILES
 # src/misc/nvmlwrap.cc
   src/misc/nvmlwrap_stub.cc
   src/misc/param.cc
-  src/misc/profiler.cc
+  src/misc/proxy_trace/proxy_trace.cc
   src/misc/recorder.cc
   src/misc/rocm_smi_wrap.cc
   src/misc/rocmwrap.cc
@@ -624,9 +653,24 @@ set(SRC_FILES
   src/mnnvl.cc
   src/msccl.cc
   src/nccl.h
-  src/net.cc
+  src/plugin/net.cc
+  src/plugin/net/net_v10.cc
+  src/plugin/net/net_v6.cc
+  src/plugin/net/net_v7.cc
+  src/plugin/net/net_v8.cc
+  src/plugin/net/net_v9.cc
+  src/plugin/plugin_open.cc
+  src/plugin/profiler.cc
+  src/plugin/profiler/profiler_v1.cc
+  src/plugin/profiler/profiler_v2.cc
+  src/plugin/profiler/profiler_v3.cc
+  src/plugin/profiler/profiler_v4.cc
+  src/plugin/tuner.cc
+  src/plugin/tuner/tuner_v2.cc
+  src/plugin/tuner/tuner_v3.cc
+  src/plugin/tuner/tuner_v4.cc
   src/proxy.cc
-# src/ras/client.cc
+src/ras/client.cc
   src/ras/client_support.cc
   src/ras/collectives.cc
   src/ras/peers.cc
@@ -638,6 +682,7 @@ set(SRC_FILES
   src/register/coll_reg.cc
   src/register/register.cc
   src/register/sendrecv_reg.cc
+  src/symmetric.cc
   src/transport.cc
   src/transport/coll_net.cc
   src/transport/generic.cc
@@ -716,16 +761,32 @@ set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cuh
   comms/common/algorithms/AlgoUtils.cc
   comms/common/algorithms/AlgoUtils.h
+  comms/common/algorithms/all_gather/AlgoAllGather.cu
+  comms/common/algorithms/all_gather/AlgoAllGather.cuh
+  comms/common/algorithms/all_gather/AllGatherAlgoManager.cu
+  comms/common/algorithms/all_gather/AllGatherAlgoManager.h
+  comms/common/algorithms/all_gather/all_gather_dda.cuh
   comms/common/algorithms/all_reduce/AlgoAllReduce.cu
   comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
   comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
   comms/common/algorithms/all_reduce/AllReduceAlgoManager.h
   comms/common/algorithms/all_reduce/all_reduce_dda.cuh
+  comms/common/algorithms/all_to_all/AlgoAllToAll.cu
+  comms/common/algorithms/all_to_all/AlgoAllToAll.cuh
+  comms/common/algorithms/all_to_all/AllToAllAlgoManager.cu
+  comms/common/algorithms/all_to_all/AllToAllAlgoManager.h
+  comms/common/algorithms/all_to_all/all_to_all_dda.cuh
+  comms/common/algorithms/CollCommon.cuh
+  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu
+  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cuh
+  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.cu
+  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h
+  comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
+  comms/common/bootstrap/IBootstrap.h
   comms/common/IpcGpuBarrier.cu
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
-  comms/ctran/interfaces/IBootstrap.h
   comms/utils/checks.h
   comms/utils/CommsMaybeChecks.h
   comms/utils/commSpecs.cc
@@ -744,11 +805,17 @@ set(COMMON_FILES
   comms/utils/logger/alloc.h
   comms/utils/logger/BackendTopologyUtil.cc
   comms/utils/logger/BackendTopologyUtil.h
+  comms/utils/logger/CommsLogFormatter.cc
+  comms/utils/logger/CommsLogFormatter.h
+  comms/utils/logger/CudaLog.cc
+  comms/utils/logger/CudaLog.h
   comms/utils/logger/DataSink.h
   comms/utils/logger/DataTable.cc
   comms/utils/logger/DataTable.h
   comms/utils/logger/DataTableWrapper.cc
   comms/utils/logger/DataTableWrapper.h
+  comms/utils/logger/ErrorStackUtil.cc
+  comms/utils/logger/ErrorStackUtil.h
   comms/utils/logger/EventMgr.cc
   comms/utils/logger/EventMgr.h
   comms/utils/logger/EventMgrHelperTypes.cc
@@ -759,16 +826,29 @@ set(COMMON_FILES
   comms/utils/logger/Logger.h
   comms/utils/logger/CommsLogging.cc
   comms/utils/logger/CommsLogging.h
+  comms/utils/logger/LoggerRuntime.cc
+  comms/utils/logger/LoggerRuntime.h
   comms/utils/logger/LoggingFormat.cc
   comms/utils/logger/LoggingFormat.h
+  comms/utils/logger/LogTypes.cc
+  comms/utils/logger/LogTypes.h
   comms/utils/logger/LogUtils.cc
   comms/utils/logger/LogUtils.h
   comms/utils/logger/NcclScubaSample.cc
   comms/utils/logger/NcclScubaSample.h
   comms/utils/logger/NcclWriterWrapper.cc
   comms/utils/logger/NcclWriterWrapper.h
+  comms/utils/logger/RateLimit.h
+  comms/utils/logger/ScubaFileUtils.cc
+  comms/utils/logger/ScubaFileUtils.h
   comms/utils/logger/ScubaLogger.cc
   comms/utils/logger/ScubaLogger.h
+  comms/utils/logger/SpdlogLogger.cc
+  comms/utils/logger/SpdlogLogger.h
+  comms/utils/memtrace/GpuMemoryTracker.cc
+  comms/utils/memtrace/GpuMemoryTracker.h
+  comms/utils/memtrace/McclCudaMemory.cc
+  comms/utils/memtrace/McclCudaMemory.h
   comms/utils/RankUtils.cc
   comms/utils/RankUtils.h
   comms/utils/StrUtils.h
@@ -936,6 +1016,13 @@ endif()
 
 # Find the generated files in the output directory
 file(GLOB_RECURSE GENERATED_FILES "${GEN_DIR}/*")
+# Exclude the per-function "specialized" kernel files (gensrc/specialized/*.cpp
+# and gensrc/specialized_files.txt). They are an alternative parallel-build code
+# path that re-emits DEFINE_ncclDevFunc for the same ncclDevFunc_* symbols
+# already defined by the grouped impl files above; compiling both causes
+# "duplicate symbol" errors at device (amdgcn) link time. The grouped impl
+# files plus device_table.cpp are the complete, referenced set.
+list(FILTER GENERATED_FILES EXCLUDE REGEX "/specialized")
 
 # Append all found generated files to the list
 foreach(file ${GENERATED_FILES})
@@ -958,10 +1045,35 @@ add_custom_target(update_git_version
 
 list(APPEND HIP_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/git_version.cpp)
 
+find_package(spdlog 1.16.0 CONFIG QUIET)
+if(NOT spdlog_FOUND)
+  include(FetchContent)
+  set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_PIC ON CACHE BOOL "" FORCE)
+  set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    spdlog
+    SOURCE_DIR "${FBCODE_DIR}/../third-party/spdlog"
+  )
+  # spdlog treats BUILD_SHARED_LIBS as an override of SPDLOG_BUILD_SHARED.
+  set(_rccl_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+  set(BUILD_SHARED_LIBS OFF)
+  FetchContent_MakeAvailable(spdlog)
+  set(BUILD_SHARED_LIBS "${_rccl_saved_build_shared_libs}")
+  unset(_rccl_saved_build_shared_libs)
+endif()
+
 # Set up RCCL library
 #==================================================================================================
 ## Set RCCL source files
 add_library(rccl ${HIP_SOURCES})
+
+target_compile_definitions(rccl PRIVATE
+  SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+  SPDLOG_FMT_EXTERNAL
+)
 
 ## Set RCCL dependencies
 ## Ensure git version is updated before building rccl
@@ -1209,6 +1321,7 @@ target_compile_definitions(rccl PRIVATE __HIPCC__)
 
 # Set non-FB infra preprocessor flags
 
+target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
 target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba logging in comms/utils/logger.
 target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
 target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
@@ -1233,6 +1346,14 @@ target_compile_options(rccl PRIVATE -Werror=deprecated-copy-with-user-provided-c
 target_compile_options(rccl PRIVATE -Wno-format-nonliteral)
 target_compile_options(rccl PRIVATE -Wno-unused-function)
 target_compile_options(rccl PRIVATE -fgpu-rdc)
+
+# Enable SSE4.2 for folly F14 CRC intrinsics (host code only) to match libfolly.a
+# build. build_rcclx.sh compiles folly with -msse4.2, so libfolly.a only defines
+# F14LinkCheck<SimdAndCrc>. Without the flag these TUs select
+# F14IntrinsicsMode::Simd and reference a F14LinkCheck<Simd> that nothing
+# defines -- a link check folly emits deliberately to catch exactly this
+# mismatch, and which surfaces as an undefined symbol at dlopen.
+target_compile_options(rccl PRIVATE -Xarch_host -msse4.2)
 
 ## Set RCCL compile and linker options for unit tests and code coverage
 if(ENABLE_CODE_COVERAGE)
@@ -1357,8 +1478,13 @@ target_link_libraries(rccl PRIVATE   Threads::Threads)
 target_link_libraries(rccl INTERFACE hip::host)
 target_link_libraries(rccl PRIVATE   hip::device)
 target_link_libraries(rccl PRIVATE   dl)
+# 128-bit atomics (__atomic_load_16/__atomic_store_16, emitted as libcalls on
+# x86_64) are not lock-free, so the compiler lowers them to libatomic. Without
+# this librccl.so has undefined __atomic_*_16 and PyTorch's dlopen fails.
+target_link_libraries(rccl PRIVATE   atomic)
 target_link_libraries(rccl PRIVATE   ${ROCM_SMI_LIBRARIES})
 target_link_libraries(rccl PRIVATE fmt::fmt-header-only)
+target_link_libraries(rccl PRIVATE spdlog::spdlog_header_only)
 if(ENABLE_MSCCLPP)
   target_link_libraries(rccl PRIVATE mscclpp_nccl)
 endif()
