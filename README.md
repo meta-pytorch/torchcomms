@@ -12,7 +12,7 @@ torchcomms is a new experimental communications API for PyTorch. This provides
 both the high level collectives API as well as several out of the box backends.
 
 * [Documentation](https://meta-pytorch.org/torchcomms/main/index.html)
-* [Examples](./comms/torchcomms/examples)
+* [NCCLX Examples](./comms/torchcomms/ncclx/examples)
 
 ## Prerequisites
 
