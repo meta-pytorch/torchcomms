@@ -172,12 +172,10 @@ def check_geometry(
     # The cache advances only on an accepted switch: reseeding the baseline before the raise
     # would let the next (still hazardous) switch slip through unflagged.
     if prev is None or prev == sig:
-        transport._last_geometry_signature = (
-            sig  # pyre-ignore[16]: runtime cache on the transport
-        )
+        transport._last_geometry_signature = sig
         return
     if os.environ.get("COMMS_DSL_ALLOW_GEOMETRY_SWITCH") == "1":
-        transport._last_geometry_signature = sig  # pyre-ignore[16]: runtime cache
+        transport._last_geometry_signature = sig
         return
     names = sorted(fields)
     raise ValueError(

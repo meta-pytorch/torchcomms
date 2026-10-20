@@ -57,6 +57,7 @@ class SplitGroupTest(unittest.TestCase):
         device = get_device(rank)
 
         input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
+        # pyrefly: ignore [bad-argument-type]
         dist.all_reduce(input_tensor, dist.ReduceOp.SUM, group=pg, async_op=False)
 
         expected = num_ranks * (num_ranks + 1) // 2
@@ -107,6 +108,7 @@ class SplitGroupTest(unittest.TestCase):
 
         # Test all_reduce on the new group
         input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
+        # pyrefly: ignore [bad-argument-type]
         dist.all_reduce(input_tensor, dist.ReduceOp.SUM, group=new_pg, async_op=False)
 
         expected = num_ranks * (num_ranks + 1) // 2
@@ -134,6 +136,7 @@ class SplitGroupTest(unittest.TestCase):
 
         # Test all_reduce on the new group with explicit backend
         input_tensor = torch.ones(1024, dtype=torch.float, device=device) * (rank + 1)
+        # pyrefly: ignore [bad-argument-type]
         dist.all_reduce(input_tensor, dist.ReduceOp.SUM, group=new_pg, async_op=False)
 
         expected = num_ranks * (num_ranks + 1) // 2

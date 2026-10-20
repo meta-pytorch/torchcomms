@@ -1,7 +1,5 @@
-from comms.testinfra.multiproc_benchmark_runner import (  # pyre-ignore
-    run_nccl_distributed_test,
-)
-from windtunnel.benchmarks.python_benchmark_runner.benchmark import (  # pyre-ignore
+from comms.testinfra.multiproc_benchmark_runner import run_nccl_distributed_test
+from windtunnel.benchmarks.python_benchmark_runner.benchmark import (
     main as servicelab_main,
     register_benchmark,
     UserCounters,
@@ -14,7 +12,7 @@ SEARCH_PATTERN = r"NCCL Comm Memory:\s*([\d.]+)\s*MB"
 
 
 @register_benchmark(use_counters=True)
-def ncclCommMemoryMB(counters: UserCounters) -> None:  # pyre-ignore
+def ncclCommMemoryMB(counters: UserCounters) -> None:
     for ppn in [1, 4]:
         target = f"{TARGET_PREFIX}{ppn}"
         memory_mb = run_nccl_distributed_test(target, SEARCH_PATTERN)

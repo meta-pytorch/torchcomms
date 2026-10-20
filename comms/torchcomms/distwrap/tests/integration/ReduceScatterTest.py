@@ -52,7 +52,11 @@ class ReduceScatterTest(unittest.TestCase):
         output_tensor = torch.zeros(1024, dtype=torch.float, device=device)
 
         dist.reduce_scatter(
-            output_tensor, input_list, op=dist.ReduceOp.SUM, async_op=False
+            # pyrefly: ignore [bad-argument-type]
+            output_tensor,
+            input_list,
+            op=dist.ReduceOp.SUM,
+            async_op=False,
         )
 
         # Each rank gets the sum of all ranks' contribution for its chunk
@@ -73,7 +77,11 @@ class ReduceScatterTest(unittest.TestCase):
         output_tensor = torch.zeros(1024, dtype=torch.float, device=device)
 
         work = dist.reduce_scatter(
-            output_tensor, input_list, op=dist.ReduceOp.SUM, async_op=True
+            # pyrefly: ignore [bad-argument-type]
+            output_tensor,
+            input_list,
+            op=dist.ReduceOp.SUM,
+            async_op=True,
         )
         if work is None:
             raise AssertionError("work is None")
@@ -95,7 +103,11 @@ class ReduceScatterTest(unittest.TestCase):
         output_tensor = torch.zeros(1024, dtype=torch.float, device=device)
 
         dist.reduce_scatter_tensor(
-            output_tensor, input_tensor, op=dist.ReduceOp.SUM, async_op=False
+            # pyrefly: ignore [bad-argument-type]
+            output_tensor,
+            input_tensor,
+            op=dist.ReduceOp.SUM,
+            async_op=False,
         )
 
         expected = num_ranks * (num_ranks + 1) // 2
@@ -114,7 +126,11 @@ class ReduceScatterTest(unittest.TestCase):
         output_tensor = torch.zeros(1024, dtype=torch.float, device=device)
 
         work = dist.reduce_scatter_tensor(
-            output_tensor, input_tensor, op=dist.ReduceOp.SUM, async_op=True
+            # pyrefly: ignore [bad-argument-type]
+            output_tensor,
+            input_tensor,
+            op=dist.ReduceOp.SUM,
+            async_op=True,
         )
         if work is None:
             raise AssertionError("work is None")
@@ -141,7 +157,11 @@ class ReduceScatterTest(unittest.TestCase):
         output_tensor = torch.zeros(output_size, dtype=torch.float, device=device)
 
         dist.reduce_scatter(
-            output_tensor, input_list, op=dist.ReduceOp.SUM, async_op=False
+            # pyrefly: ignore [bad-argument-type]
+            output_tensor,
+            input_list,
+            op=dist.ReduceOp.SUM,
+            async_op=False,
         )
 
         # Each rank gets the sum of all ranks' contributions

@@ -412,7 +412,6 @@ def _pg_options_to_hints(pg_options: Any | None) -> dict[str, str] | None:  # no
     if hasattr(pg_options, "config"):
         # Extract config attributes
         config = pg_options.config
-        # pyre-ignore[16]: ProcessGroupNCCL may not be available
         process_group_nccl = getattr(dist, "ProcessGroupNCCL", None)
         if process_group_nccl is not None:
             nccl_config_class = getattr(process_group_nccl, "NCCLConfig", None)

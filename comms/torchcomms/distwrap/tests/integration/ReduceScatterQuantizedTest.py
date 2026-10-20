@@ -74,6 +74,7 @@ class ReduceScatterQuantizedTest(unittest.TestCase):
         work = dist.reduce_scatter_quantized(
             output_tensor,
             input_tensor,
+            # pyrefly: ignore [bad-argument-type]
             dist.ReduceOp.SUM,
             seed,
             async_op=False,
@@ -109,6 +110,7 @@ class ReduceScatterQuantizedTest(unittest.TestCase):
         work = dist.reduce_scatter_quantized(
             output_tensor,
             input_tensor,
+            # pyrefly: ignore [bad-argument-type]
             dist.ReduceOp.SUM,
             seed,
             async_op=True,
