@@ -34,7 +34,6 @@ class CollTraceTest : public RcclxBaseTest {
         "NCCL_HPC_JOB_IDS",
         "HPC_JOB_NAME,HPC_JOB_VERSION,HPC_JOB_ATTEMPT_INDEX",
         0);
-    setenv("NCCL_CTRAN_ENABLE", "0", 0);
 
     RcclxBaseTest::SetUp();
     std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();

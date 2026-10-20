@@ -1864,55 +1864,6 @@ void pncclParamDumpAll(void);
 /* Dump NCCL current internal state for a given communicator in a key-value store format.
  * define outside extern "C"{} to pass C++ template */
 ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std::string>& map);
-namespace ncclx {
-
-using kvType = std::unordered_map<std::string, std::string>;
-class Hints {
-    public:
-        Hints();
-        ncclResult_t set(const std::string& key, const std::string& val);
-        ncclResult_t get(const std::string& key, std::string& val) const;
-
-    private:
-        kvType kv;
-};
-
-/*
- * Persistent All-Gather similar to ncclAllgather, the key difference is that
- * the execution will be deferred until allGatherExec is called
- * Arguments:
- *    OUT recvbuff     - Pointer to recvbuf that will receive blocks from other ranks
- *    IN  maxRecvCount - Count of elements of recvbuff
- *    IN  hints        - Hints for skipping control msg
- *    IN  datatype     - NCCL data type
- *    IN  comm         - NCCL communicator
- *    IN  stream       - HIP stream
- *    OUT request      - Request to be used in ncclCommExec to trigger the execution
- */
-ncclResult_t allGatherInit(void* recvbuff, const size_t maxRecvCount, const Hints& hints,
-    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream, void** request);
-
-/* Execute the persistent collective operation created by ncclAllGatherInit.
- * Arguments:
- *    IN  sendbuff    - Pointer to sendbuf
- *    IN  count       - count of elements to send to (receive from) each rank
- *    IN  datatype    - NCCL data type used for the allgather execution. It may be different
- *                      from the datatype used in ncclAllGatherInit.
- *    IN  request     - Request created by ncclAllGatherInit
- */
-ncclResult_t allGatherExec(
-    const void* sendbuff,
-    const size_t count,
-    const ncclDataType_t datatype,
-    void* request);
-/*
- * Trigger the execution of a request of persistent collective operation
- * created by ncclAllGatherInit
- */
-ncclResult_t pExec(void* request);
-
-ncclResult_t pFree(void* request);
-} // namespace ncclx
 #else
 #pragma message "NCCL C++ API is disabled because C compiler is being used. Please use a C++ compiler to build NCCL."
 #endif

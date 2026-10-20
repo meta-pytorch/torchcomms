@@ -33,15 +33,6 @@
 #include "mem_manager.h"
 #include "meta/lpcoll/low_precision_common.h"
 
-// Meta Ctran lib. Device passes only need the pointer member declaration;
-// parsing the host implementation also pulls in CUDA-only utility headers.
-#if (defined(__HIP_DEVICE_COMPILE__) && __HIP_DEVICE_COMPILE__) || \
-    defined(RCCL_CTRAN_FORWARD_DECL_ONLY)
-class CtranComm;
-#else
-#include "comms/ctran/CtranComm.h"
-#endif
-
 #ifdef ENABLE_ROCSHMEM
 #include <rocshmem/rocshmem.hpp>
 #endif
@@ -973,8 +964,6 @@ struct ncclComm {
   // [RCCL] Host mirrors of device side NCCL_LL128_LINEELEMS / NCCL_LL128_DATAELEMS
   int ll128LineElems;
   int ll128DataElems;
-  // This is the only bridge between ctran and baseline code
-  std::unique_ptr<CtranComm> ctranComm_;
 
 #ifdef ENABLE_ROCSHMEM
   // circular ring buffer in rocshmem symmetric heap
@@ -1006,8 +995,8 @@ struct ncclComm {
 };
 
 // These assertions are disabled because ncclComm is no longer a standard-layout type.
-// The addition of C++ standard library types like std::unique_ptr (e.g., ctranComm_
-// and ctrace) makes offsetof invalid and causes compiler errors (-Winvalid-offsetof).
+// The addition of C++ standard library types like std::unique_ptr (e.g., ctrace)
+// makes offsetof invalid and causes compiler errors (-Winvalid-offsetof).
 // static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
 // static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t), "endMagic must be the last field of ncclComm");
 
