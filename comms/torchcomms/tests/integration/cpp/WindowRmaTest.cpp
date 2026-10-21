@@ -19,6 +19,9 @@ void WindowRmaTest::SetUp() {
 
   wrapper_ = createWrapper();
   torchcomm_ = wrapper_->getTorchComm();
+  if (!torchcomm_->supportsWindow()) {
+    GTEST_SKIP() << "RMA window ops are not supported by this backend version";
+  }
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
   device_index_ = rank_ % at::cuda::device_count();
