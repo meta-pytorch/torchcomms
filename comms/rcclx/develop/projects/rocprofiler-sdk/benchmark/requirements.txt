@@ -1,3 +1,0 @@
-# these are optional, not required
-mysql-connector-python
-pyelftools
