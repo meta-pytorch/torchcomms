@@ -82,11 +82,13 @@ cvars:
    default     : false
    description : |-
      Reads local NIC counters for every NIC ctran gives the process's GPU, every
-     NICSTATS_SAMPLE_INTERVAL_MS once NIC stats start, and keeps each NIC's
-     latest reading for its consumer to copy. Each NIC is read on a thread of
-     its own, so a firmware call that hangs stalls only that NIC's readings,
-     never the caller. The mechanisms in NICSTATS_SOURCE are read at once
-     rather than one after another. Off by default.
+     NICSTATS_SAMPLE_INTERVAL_MS from when colltrace v2
+     (NCCL_COLLTRACE_VERSION=2) starts, for the GPU current then, and keeps
+     each NIC's latest reading for colltrace v2 to hand out. Without colltrace
+     v2 nothing is read. Each NIC is read on a thread of its own, so a firmware
+     call that hangs stalls only that NIC's readings, never the caller. The
+     mechanisms in NICSTATS_SOURCE are read at once rather than one after
+     another. Off by default.
 
  - name        : NICSTATS_SOURCE
    type        : stringlist
