@@ -284,7 +284,10 @@ __device__ __noinline__ void reduce_token_rows_any(const bf16_t* __restrict__ in
 // indexes a grouped-by-expert input; see the branch below.
 // kSel picks which source ranks' tokens a launch covers, block-uniformly: 0 all of them;
 // 1 those outside [sel_lo, sel_hi), 2 those inside it. The hybrid combine uses 1 and 2 to push
-// the partials bound for other nodes first (RCCL_EP_HYB_COMB_SPLIT).
+// the partials bound for other nodes first (RCCL_EP_HYB_COMB_SPLIT). tok_lo / tok_hi further
+// keep only source tokens in [tok_lo, tok_hi) (a source's rows follow its token order, so that
+// is a row range found by binary search); 0 / INT_MAX keep all. RCCL_EP_GIN_STREAM pushes the
+// remote owners' partials one token range at a time.
 //
 // combine_push is the body for source `src_rank` as CTA `by` of `gy`. seq != 0 (the streamed
 // combine) walks the rows in chunks of chunk_rounds rows per wave and publishes its progress into
@@ -301,7 +304,7 @@ __device__ __forceinline__ void combine_push(const EpConfig& cfg,
                                              const int32_t* __restrict__ src_idx,    // [nrecv]
                                              int num_recv, int grouped, const WindowView& self,
                                              WindowView* __restrict__ peer_views, int sel_lo, int sel_hi,
-                                             int src_rank, int by, int gy, uint32_t seq = 0,
+                                             int tok_lo, int tok_hi, int src_rank, int by, int gy, uint32_t seq = 0,
                                              int chunk_rounds = 0) {
   if constexpr (kSel != 0) {
     const bool in = src_rank >= sel_lo && src_rank < sel_hi;
@@ -318,8 +321,28 @@ __device__ __forceinline__ void combine_push(const EpConfig& cfg,
   if (threadIdx.x == 0) {
     int b = 0;
     for (int r = 0; r < src_rank; ++r) b += self.counts()[r];
+    int e = b + self.counts()[src_rank];
+    if (tok_lo > 0 || tok_hi < cfg.num_max_tokens_per_rank) {
+      // src_idx = src_rank * T + token, ascending over the source's rows.
+      const long long T = cfg.num_max_tokens_per_rank;
+      const int last = e < num_recv ? e : num_recv;
+      int lo = b, hi = last > b ? last : b;
+      const long long g0 = src_rank * T + tok_lo, g1 = src_rank * T + (tok_hi < T ? tok_hi : T);
+      while (lo < hi) {
+        const int mid = (lo + hi) >> 1;
+        if (src_idx[mid] < g0) lo = mid + 1; else hi = mid;
+      }
+      const int nb = lo;
+      hi = last > b ? last : b;
+      while (lo < hi) {
+        const int mid = (lo + hi) >> 1;
+        if (src_idx[mid] < g1) lo = mid + 1; else hi = mid;
+      }
+      b = nb;
+      e = lo;
+    }
     s_begin = b;
-    s_end = b + self.counts()[src_rank];
+    s_end = e;
   }
   __syncthreads();
   const int begin = s_begin, end = s_end;
@@ -447,13 +470,14 @@ __global__ void combine_impl(EpConfig cfg,
                              const int32_t* __restrict__ recv_topk,  // [nrecv, num_topk] local ids, -1 outside
                              const int32_t* __restrict__ src_idx,    // [nrecv]
                              int num_recv, int grouped, WindowView self, WindowView* __restrict__ peer_views,
-                             int sel_lo, int sel_hi) {
+                             int sel_lo, int sel_hi, int tok_lo, int tok_hi) {
   // Grid mirrors dispatch: block x owns one SOURCE rank, so the peer view is
   // loaded once per CTA and every write goes to a single peer. Parallelism is
   // gridDim.y * nwarps and only gridDim.y follows the budget; see kEpWaves.
   if ((int)blockIdx.x >= cfg.num_ranks) return;  // block-uniform, so the barrier inside is safe
   combine_push<kSel>(cfg, in_y, in_w, row_map, expert_rows, scales, fma_mode, recv_topk, src_idx, num_recv,
-                     grouped, self, peer_views, sel_lo, sel_hi, blockIdx.x, blockIdx.y, gridDim.y);
+                     grouped, self, peer_views, sel_lo, sel_hi, tok_lo, tok_hi, blockIdx.x, blockIdx.y,
+                     gridDim.y);
 }
 
 // Origin-side reduce for a token with more than 8 contributing rows. Out of line so
@@ -603,7 +627,8 @@ __global__ void combine_stream_impl(EpConfig cfg, const bf16_t* __restrict__ in_
   if ((int)blockIdx.x >= cfg.num_ranks) return;
   if ((int)blockIdx.y < push_cta) {
     combine_push<0>(cfg, in_y, in_w, row_map, expert_rows, scales, fma_mode, recv_topk, src_idx, num_recv,
-                    grouped, self, peer_views, 0, 0, blockIdx.x, blockIdx.y, push_cta, seq, chunk_rounds);
+                    grouped, self, peer_views, 0, 0, 0, cfg.num_max_tokens_per_rank, blockIdx.x, blockIdx.y,
+                    push_cta, seq, chunk_rounds);
     return;
   }
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();

@@ -163,16 +163,20 @@ struct GinRailOffs {
 
 // Block (n, l) for each destination node n != D and lane l; thread 0 issues. Puts lane l's
 // stripe of chunk hi.chunk of the records for n (dispatch) or of the node partials folded for n
-// (combine: w first, then x carrying the signal, which settles both), then flushes, so the
-// source may be rewritten once the kernel ends. ack_need > 0: first wait until n has finished
-// reading the previous call (its credit arrives on lane 0, context ctx0). Stamps each stage of
-// transfer `token` in prog. flags: this rank's flag window `fwin`, or null with
-// RCCL_EP_GIN_SIGNAL=signal.
+// (combine: w first, then x carrying the signal, which settles both; under hi.tok_split the
+// chunk is the owner-token range hyb_comb_range finds in fwd_meta; a dispatch takes each node's
+// count from dev_nsend when set), then, with `flush`, flushes,
+// so the source may be rewritten once the kernel ends. Without it (RCCL_EP_GIN_STREAM) the
+// next chunk's put follows at once and k_gin_rail_flush ends the call. ack_need > 0: first wait
+// until n has finished reading the previous call (its credit arrives on lane 0, context ctx0).
+// Stamps each stage of transfer `token` in prog. flags: this rank's flag window `fwin`, or null
+// with RCCL_EP_GIN_SIGNAL=signal.
 template <bool kCombine>
 __global__ void k_gin_rail_put(ncclDevComm dc, ncclWindow_t win, HybInfo hi, GinRailOffs o,
                                size_t T, size_t H, size_t K, int with_w, int ctx0, int lanes,
                                uint64_t ack_need, uint64_t timeout, int rank, GinProgress* prog,
-                               uint64_t token, ncclWindow_t fwin, const uint64_t* flags) {
+                               uint64_t token, ncclWindow_t fwin, const uint64_t* flags,
+                               const int32_t* fwd_meta, const int32_t* dev_nsend, int flush, int nput) {
   const int n = blockIdx.x, l = blockIdx.y;
   if (n >= hi.SO || n == hi.D || threadIdx.x != 0) return;
   const int slot = n * kGinMaxLanes + l;
@@ -191,8 +195,17 @@ __global__ void k_gin_rail_put(ncclDevComm dc, ncclWindow_t win, HybInfo hi, Gin
   ncclGin g(dc, ctx0 + l);
   const size_t np_dst = hyb_np(hi, n);              // n's slot in this rank's buffers
   const size_t np_me = hi.D < n ? hi.D : hi.D - 1;  // this node's slot in n's buffers
+  // nput > 1 (RCCL_EP_GIN_STREAM's dispatch): chunks hi.chunk .. hi.chunk + nput - 1 in one launch,
+  // chunk hi.chunk + i flagged with token + i.
+  for (int i = 0; i < nput; ++i) {
+  HybInfo hc = hi;
+  hc.chunk = hi.chunk + i;
+  token = token + (i > 0);
   int c0, c1;
-  hyb_chunk(kCombine ? hi.nrecv[n] : hi.nsend[n], hi.chunk, hi.nchunks, c0, c1);
+  if (kCombine)
+    hyb_comb_range(hc, fwd_meta, n, (int)T, (int)K, c0, c1);
+  else  // dev_nsend: the node plan's counts on the device, before the host has them (ep_hcounts_post)
+    hyb_rec_chunk(hc, dev_nsend ? dev_nsend[n] : hc.nsend[n], hc.chunk, c0, c1);
   int p0, p1;  // this lane's stripe of the chunk
   hyb_chunk(c1 - c0, l, lanes, p0, p1);
   p0 += c0;
@@ -230,8 +243,21 @@ __global__ void k_gin_rail_put(ncclDevComm dc, ncclWindow_t win, HybInfo hi, Gin
     g.signal(rail, n, sig);  // an empty chunk still counts, so the receiver's tally stays exact
   }
   gin_stamp(&prog->put_posted[kCombine][slot], token);
+  }
+  if (!flush) return;
   gin_flush_peer(g, rail, n);
   gin_stamp(&prog->put_done[kCombine][slot], token);
+}
+
+// RCCL_EP_GIN_STREAM: block (n, l) flushes what lane l posted to node n over the call's unflushed
+// puts, so their sources may be rewritten once the kernel ends; `token` is the call's last.
+template <bool kCombine>
+__global__ void k_gin_rail_flush(ncclDevComm dc, HybInfo hi, int ctx0, GinProgress* prog, uint64_t token) {
+  const int n = blockIdx.x, l = blockIdx.y;
+  if (n >= hi.SO || n == hi.D || threadIdx.x != 0) return;
+  ncclGin g(dc, ctx0 + l);
+  gin_flush_peer(g, ncclTeamWorld(dc), n);
+  gin_stamp(&prog->put_done[kCombine][n * kGinMaxLanes + l], token);
 }
 
 // Thread (m, l) waits until node m's data signal on lane l's context reaches need, the token of
