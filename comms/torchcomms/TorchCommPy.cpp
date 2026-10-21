@@ -17,7 +17,6 @@
 
 // Forward declarations for hook submodule init
 void init_clog_hook_bindings(py::module_& m);
-void init_flight_recorder_bindings(py::module_& m);
 
 namespace py = pybind11;
 using namespace torch::comms;
@@ -1360,7 +1359,7 @@ Execute the registered all-reduce on the current stream.
 
 Args:
     input: The exact input tensor captured at registration.
-    op: Reduction operation. The current RCCLX backend supports SUM.
+    op: Reduction operation. Backends may support only SUM.
     out: The exact output tensor captured at registration. If omitted, the
         registered output is used.
     registered_input: Must be True. No unregistered-input fallback, staging copy,
@@ -2460,7 +2459,7 @@ Returns:
     destroying the communicator.
 
 Note:
-    Requires an RCCLX backend with registered all-reduce ABI support.
+    Requires a backend with registered all-reduce ABI support.
           )",
           py::arg("input"),
           py::arg("output"),
@@ -2521,10 +2520,10 @@ Args:
     recv_peer_stride: Byte stride between sources in the receive tensor.
     relay_fraction: Share of each pair's rows relayed through the other GPUs,
         in [0, 1). 0 exchanges everything directly.
-    chunk_rows: Rows per relay chunk; 0 selects the RCCLX default.
-    direct_ctas_per_peer: CTAs per peer for direct copies; 0 selects the RCCLX
-        default.
-    relay_ctas_per_path: CTAs per relay path; 0 selects the RCCLX default.
+    chunk_rows: Rows per relay chunk; 0 selects the backend default.
+    direct_ctas_per_peer: CTAs per peer for direct copies; 0 selects the
+        backend default.
+    relay_ctas_per_path: CTAs per relay path; 0 selects the backend default.
 
 Returns:
     RegisteredAllToAll: Request object. Call close() explicitly before
@@ -2576,7 +2575,7 @@ Returns:
     An opaque handle to use with all_gather_p_exec and all_gather_p_free.
 
 Note:
-    Requires ``rcclx`` backend.
+    Requires a backend with persistent AllGather support.
 
 Example:
 
@@ -3077,8 +3076,6 @@ Args:
   auto hooks_mod = m.def_submodule("hooks");
   auto clog_mod = hooks_mod.def_submodule("clog");
   init_clog_hook_bindings(clog_mod);
-  auto fr_mod = hooks_mod.def_submodule("fr");
-  init_flight_recorder_bindings(fr_mod);
 
   // Python backend registration
   initPyBackendBindings(m);

@@ -19,8 +19,6 @@ TORCHCOMMS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/tests/integration/py' -type d \
     ! -path '*/ncclx/*' \
-    ! -path '*/rccl/*' \
-    ! -path '*/rcclx/*' \
     ! -path '*/fb/*' | sort -u)
 
 NCCLX_INTEGRATION_TEST_DIRS=$(find "$TORCHCOMMS_ROOT" -path '*/ncclx/tests/integration/py' -type d \
