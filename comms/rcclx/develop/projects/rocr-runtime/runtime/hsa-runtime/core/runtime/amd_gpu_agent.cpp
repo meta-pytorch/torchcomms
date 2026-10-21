@@ -1629,7 +1629,7 @@ hsa_status_t GpuAgent::DmaCopyFanOutOp(
         int picked = 0;
         for (uint32_t e = 0; e < total_sdma; ++e) {
           uint32_t candidate = BlitHostToDev + e;
-          if (usedEngines.find(candidate) == usedEngines.end()) {
+          if (!usedEngines.contains(candidate)) {
             picked = candidate;
             break;
           }
