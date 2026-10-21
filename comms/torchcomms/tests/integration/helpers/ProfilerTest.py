@@ -70,10 +70,10 @@ class ProfilerTestBase(unittest.TestCase):
 
     def __init__(
         self,
+        *args,
         backend: str,
         device: torch.device,
         validation_func: Callable[[Dict[str, List]], None],
-        *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
