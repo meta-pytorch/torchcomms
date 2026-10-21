@@ -25,8 +25,6 @@ ncclResult_t ncclCommDump(
 #include "latency_profiler/CollTrace.h"
 // #include "meta/colltrace/ProxyMock.h"
 
-// #include "meta/wrapper/CtranExComm.h"
-
 static bool VERBOSE = true;
 enum class sourceToDump { comm, telemetryData };
 
