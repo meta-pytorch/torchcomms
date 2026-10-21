@@ -53,6 +53,20 @@ TEST_F(ConstConfigTest, InitRankConfigWithBlocking) {
   EXPECT_EQ(0, std::memcmp(&config, &configCopy, sizeof(ncclConfig_t)));
 }
 
+TEST_F(ConstConfigTest, InitRankConfigWithMinCTAsOnly) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  config.minCTAs = 16;
+
+  ncclConfig_t configCopy;
+  std::memcpy(&configCopy, &config, sizeof(ncclConfig_t));
+
+  ncclx::test::NcclCommRAII comm(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  ASSERT_NE(nullptr, comm.get());
+
+  EXPECT_EQ(0, std::memcmp(&config, &configCopy, sizeof(ncclConfig_t)));
+}
+
 TEST_F(ConstConfigTest, InitRankConfigWithSplitShare) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.splitShare = 1;
