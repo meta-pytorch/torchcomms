@@ -17,8 +17,8 @@ class IbvVirtualQp;
 // dlopen the libibverbs named by IBVERBX_IBVERBS_SO, or libibverbs.so.1 when
 // unset. A plain environment variable rather than a cvar: it is read here, at
 // the point of use, so it works the same in every ibverbx consumer -- including
-// ctranx, prims and uniflow-light, none of which populate ncclx cvars before
-// this runs. Point it at //comms/ctran/ibverbx/ib_injection to inject verbs
+// ctranx and prims, neither of which populates ncclx cvars before this runs.
+// Point it at //comms/ctran/ibverbx/ib_injection to inject verbs
 // failures or completion skew.
 //
 // A set-but-unloadable path is an ERROR, not a fallback to libibverbs.so.1:
