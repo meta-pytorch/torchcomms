@@ -22,15 +22,19 @@ from torchcomms.distwrap.utils import (
 )
 
 
+# Mirrors torch.distributed's _ReduceOp: ReduceOp members are typed RedOpType.
+_ReduceOp = ReduceOp | ReduceOp.RedOpType
+
+
 # =============================================================================
 # Module-level State
 # =============================================================================
 
 # Dictionary mapping dist PREMUL_SUM ops to their torchcomms equivalents
-_PREMUL_SUM_OPS: dict[ReduceOp, TcReduceOp] = {}
+_PREMUL_SUM_OPS: dict[_ReduceOp, TcReduceOp] = {}
 
 # Static mapping from torch.distributed.ReduceOp to torchcomms.ReduceOp
-_REDUCE_OP_MAP: dict[ReduceOp, TcReduceOp] = {
+_REDUCE_OP_MAP: dict[_ReduceOp, TcReduceOp] = {
     ReduceOp.SUM: TcReduceOp.SUM,
     ReduceOp.PRODUCT: TcReduceOp.PRODUCT,
     ReduceOp.MIN: TcReduceOp.MIN,
@@ -47,7 +51,7 @@ _REDUCE_OP_MAP: dict[ReduceOp, TcReduceOp] = {
 # =============================================================================
 
 
-def _convert_reduce_op(op: ReduceOp) -> TcReduceOp:
+def _convert_reduce_op(op: _ReduceOp) -> TcReduceOp:
     """Convert torch.distributed.ReduceOp to torchcomms.ReduceOp."""
     if op in _PREMUL_SUM_OPS:
         return _PREMUL_SUM_OPS[op]
@@ -107,7 +111,7 @@ def _make_nccl_premul_sum(mul_factor: float | torch.Tensor) -> ReduceOp:
 
 def all_reduce(
     tensor: torch.Tensor,
-    op: ReduceOp = ReduceOp.SUM,
+    op: _ReduceOp = ReduceOp.SUM,
     group: ProcessGroup | None = None,
     async_op: bool = False,
 ) -> dist.Work | None:
@@ -154,7 +158,7 @@ def broadcast(
 def reduce(
     tensor: torch.Tensor,
     dst: int | None = None,
-    op: ReduceOp = ReduceOp.SUM,
+    op: _ReduceOp = ReduceOp.SUM,
     group: ProcessGroup | None = None,
     async_op: bool = False,
     group_dst: int | None = None,
@@ -232,7 +236,7 @@ def all_gather_into_tensor(
 def reduce_scatter(
     output: torch.Tensor,
     input_list: list[torch.Tensor],
-    op: ReduceOp = ReduceOp.SUM,
+    op: _ReduceOp = ReduceOp.SUM,
     group: ProcessGroup | None = None,
     async_op: bool = False,
 ) -> dist.Work | None:
@@ -257,7 +261,7 @@ def reduce_scatter(
 def reduce_scatter_tensor(
     output: torch.Tensor,
     input: torch.Tensor,
-    op: ReduceOp = ReduceOp.SUM,
+    op: _ReduceOp = ReduceOp.SUM,
     group: ProcessGroup | None = None,
     async_op: bool = False,
 ) -> dist.Work | None:

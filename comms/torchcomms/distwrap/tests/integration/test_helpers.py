@@ -6,6 +6,7 @@ import os
 from typing import Tuple
 
 import torch
+from torch.distributed import ReduceOp
 from torchcomms import distwrap as dist
 
 
@@ -22,9 +23,9 @@ def get_dtype_name(dtype: torch.dtype) -> str:
     return dtype_names.get(dtype, "Unknown")
 
 
-def get_op_name(op: dist.ReduceOp) -> str:
+def get_op_name(op: ReduceOp | ReduceOp.RedOpType) -> str:
     """Helper function to get a string representation of the reduction operation."""
-    op_names = {
+    op_names: dict[ReduceOp | ReduceOp.RedOpType, str] = {
         dist.ReduceOp.SUM: "Sum",
         dist.ReduceOp.PRODUCT: "Product",
         dist.ReduceOp.MIN: "Min",
