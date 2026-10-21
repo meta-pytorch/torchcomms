@@ -274,16 +274,17 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::signal(
     size_t offset = ncclGetResourceBufferOffset(signal_buffer_handle_) +
         detail::signal_slot_index(signal_id, num_ranks_, rank_) *
             sizeof(uint64_t);
-    // atomicAdd posts a WQE and rings the doorbell inline — no flush needed.
-    // QP ordering guarantees prior puts on this QP complete before this atomic.
+    // A VA signal is a remote atomic add on the slot in the peer's resource
+    // window. It posts a WQE and rings the doorbell inline — no flush needed.
+    // Prior puts to this peer settle before the signal is visible: through QP
+    // ordering, and on NCCL 2.32+ because the devComm requests strong signals
+    // (the ginStrongSignalsRequired default), which this legacy action uses.
     // User calls flush() explicitly if they need local completion.
     detail::nccl_coop_dispatch(scope, [&](auto coop) {
-      gin.atomicAdd(
+      gin.signal(
           ncclTeamWorld(dev_comm),
           peer,
-          dev_comm.resourceWindow,
-          offset,
-          value,
+          ncclGin_VASignalAdd{dev_comm.resourceWindow, offset, value},
           coop);
     });
   }
