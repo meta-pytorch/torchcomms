@@ -260,29 +260,6 @@ function build_third_party {
   popd
 }
 
-function build_comms_tracing_service {
-  local include_prefix="comms/analyzer/if"
-  local base_dir="${PWD}"
-  local build_dir=/tmp/build/comms_tracing_service
-
-  rm -rf "$build_dir"
-  mkdir -p "$build_dir"
-  pushd "$build_dir"
-  # set up the directory structure
-  mkdir -p "$include_prefix"
-  cp -r "${base_dir}/${include_prefix}"/* "$include_prefix"
-  mv "$include_prefix"/CMakeLists.txt .
-
-  # set up the build config
-  cp -r /tmp/third-party/thrift/build .
-
-  # build the thrift service library
-  cd build
-  do_cmake_build ..
-
-  popd
-}
-
 # A snapshot's CMake finds the fbcode root a fixed number of directories above
 # itself, which only resolves from comms/rcclx/develop. Recreate that layout
 # next to the build dir: the snapshot's comms/rcclx, and the rest of fbcode
@@ -388,13 +365,11 @@ THIRD_PARTY_LDFLAGS=""
 if [[ -z "${NCCL_BUILD_SKIP_DEPS}" ]]; then
   echo "Building dependencies"
   build_third_party
-  build_comms_tracing_service
 fi
 
 # set up the third-party ldflags
 export PKG_CONFIG_PATH="${CONDA_LIB_DIR}"/pkgconfig
 THRIFT_SERVICE_LDFLAGS=(
-  "-l:libcomms_tracing_service.a"
   "-Wl,--start-group"
   "-l:libasync.a"
   "-l:libconcurrency.a"
