@@ -4,6 +4,7 @@
 
 #include <sys/socket.h>
 #include <unistd.h>
+#include <future>
 #include <thread>
 #include <vector>
 
@@ -42,6 +43,49 @@ static AsyncSyncPair makeConnectedPair(EventBase& evb) {
   }
 
   return {std::move(asyncConn), std::move(syncConn)};
+}
+
+template <typename EventBaseImpl>
+static void destroyOnLoopWithPendingRegistration() {
+  TScopedEventBaseThread<EventBaseImpl> evbThread{"destroy-pending"};
+  auto* evb = evbThread.getEventBase();
+  auto [asyncConn, syncConn] = makeConnectedPair(*evb);
+  ASSERT_NE(asyncConn, nullptr);
+  ASSERT_NE(syncConn, nullptr);
+
+  std::promise<void> loopBlocked;
+  auto loopBlockedFuture = loopBlocked.get_future();
+  std::promise<void> releaseLoop;
+  auto releaseLoopFuture = releaseLoop.get_future();
+  evb->dispatch([&]() noexcept {
+    loopBlocked.set_value();
+    releaseLoopFuture.wait();
+  });
+  loopBlockedFuture.wait();
+
+  std::vector<uint8_t> recvData;
+  auto recvFuture = asyncConn->recv(recvData);
+  std::promise<void> destroyed;
+  auto destroyedFuture = destroyed.get_future();
+  evb->dispatch([&]() noexcept {
+    asyncConn.reset();
+    destroyed.set_value();
+  });
+
+  releaseLoop.set_value();
+  destroyedFuture.wait();
+  evb->dispatchAndWait([]() noexcept {});
+
+  auto recvResult = recvFuture.get();
+  EXPECT_TRUE(recvResult.hasError());
+}
+
+TEST(TcpAsyncSendRecvLifecycleTest, LockFreeLoopDestruction) {
+  destroyOnLoopWithPendingRegistration<LockFreeEventBase>();
+}
+
+TEST(TcpAsyncSendRecvLifecycleTest, MutexLoopDestruction) {
+  destroyOnLoopWithPendingRegistration<MutexEventBase>();
 }
 
 // ---------------------------------------------------------------------------

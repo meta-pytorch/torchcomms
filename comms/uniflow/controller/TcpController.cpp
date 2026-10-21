@@ -982,8 +982,18 @@ void TcpConn<IOPolicy>::updateFdRegistration()
     return;
   }
 
-  io_.evb.registerFd(
-      sock_, events, [this](uint32_t revents) { onFdReady(revents); });
+  auto alive = io_.registrationAlive;
+  const int fd = sock_;
+  io_.evb.dispatch([this, fd, events, alive = std::move(alive)]() noexcept {
+    if (!alive->load(std::memory_order_acquire) || sock_ != fd) {
+      return;
+    }
+    io_.evb.registerFd(fd, events, [this, alive](uint32_t revents) {
+      if (alive->load(std::memory_order_acquire)) {
+        onFdReady(revents);
+      }
+    });
+  });
 }
 
 template <typename IOPolicy>
@@ -1217,7 +1227,10 @@ TcpConn<IOPolicy>::~TcpConn() {
   if constexpr (std::same_as<IOPolicy, AsyncIO>) {
     // Always drain — queued dispatch lambdas from prior send/recv calls
     // capture `this` and may still be pending even after close().
-    auto cleanupFn = [this]() noexcept { failAllOps("TcpConn destroyed"); };
+    auto cleanupFn = [this]() noexcept {
+      io_.registrationAlive->store(false, std::memory_order_release);
+      failAllOps("TcpConn destroyed");
+    };
 
     if (io_.evb.inLoopThread()) {
       cleanupFn();
