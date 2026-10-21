@@ -146,10 +146,11 @@ cvars:
    type        : stringlist
    default     : "adp_retx_bin0,adp_retx_bin1,adp_retx_bin2,adp_retx_bin3,adp_retx_bin4,adp_retx_bin5,adp_retx_bin6,adp_retx_bin7,adp_retx_bin8,adp_retx_bin9,adp_retx_bin10,adp_retx_bin11,adp_retx_bin12,adp_retx_bin13,adp_retx_bin14,adp_retx_bin15,tx_bytes,rx_bytes,tx_packets,rx_packets,pause_tx,pause_rx"
    description : |-
-     Which counters each reading carries. A counter the selected mechanism
-     cannot produce is reported unsupported rather than zero -- never as zero,
-     which is what an idle link legitimately reports. An unrecognised name
-     turns reading off for the run and logs an error naming it.
+     Which counters each reading carries, and the ones colltrace v2's
+     get_nic_stats() returns when not told which. A counter the selected
+     mechanism cannot produce is reported unsupported rather than zero -- never
+     as zero, which is what an idle link legitimately reports. An unrecognised
+     name turns reading off for the run and logs an error naming it.
 
      The default is the retransmission histogram, the function's bytes and
      packets each way to normalise it against, and the pause frames sent and

@@ -9,6 +9,7 @@
 #include "comms/utils/colltrace/nicstats/NicStatsAttach.h"
 #include "comms/utils/colltrace/nicstats/NicStatsLatest.h"
 #include "comms/utils/colltrace/v2/CollEvents.h"
+#include "comms/utils/colltrace/v2/CollTraceV2TestAccessor.h"
 #include "comms/utils/colltrace/v2/CommState.h"
 #include "comms/utils/colltrace/v2/Env.h"
 #include "comms/utils/colltrace/v2/Log.h"
@@ -203,6 +204,12 @@ int CollTraceV2::getNumKernels(uint64_t collId) {
 std::vector<colltrace::nicstats::NicStatsReading> CollTraceV2::nicStats()
     const {
   return nicLatest_->snapshot();
+}
+
+void CollTraceV2TestAccessor::putNicStats(
+    CollTraceV2& ct,
+    colltrace::nicstats::NicStatsReading reading) {
+  ct.nicLatest_->put(std::move(reading));
 }
 
 std::vector<Event> CollTraceV2::getCollEvents(std::string_view commDesc) {

@@ -154,6 +154,8 @@ class COLLTRACEV2_API CollTraceV2 {
   std::vector<colltrace::nicstats::NicStatsReading> nicStats() const;
 
  private:
+  friend class CollTraceV2TestAccessor;
+
   std::shared_ptr<CommState> find(std::string_view commDesc);
   std::shared_ptr<CommState> find(uint32_t commIndex);
 
