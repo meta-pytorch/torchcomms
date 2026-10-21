@@ -1259,9 +1259,6 @@ target_include_directories(rccl PRIVATE
 # librccl carries this dependency even though RCCL itself dlopens amd-smi.
 target_link_libraries(rccl PRIVATE ${SMI_LIBRARIES})
 target_link_libraries(rccl PRIVATE
-  ${CONDA_LIB_DIR}/libcomms_tracing_service.a
-)
-target_link_libraries(rccl PRIVATE
   "$<LINK_GROUP:RESCAN,${thrift_group_list}>"
 )
 target_link_libraries(rccl PRIVATE
