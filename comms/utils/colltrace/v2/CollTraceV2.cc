@@ -4,6 +4,10 @@
 
 #include <utility>
 
+#include <cuda_runtime.h> // @manual
+
+#include "comms/utils/colltrace/nicstats/NicStatsAttach.h"
+#include "comms/utils/colltrace/nicstats/NicStatsLatest.h"
 #include "comms/utils/colltrace/v2/CollEvents.h"
 #include "comms/utils/colltrace/v2/CommState.h"
 #include "comms/utils/colltrace/v2/Env.h"
@@ -60,11 +64,25 @@ CollTraceV2& CollTraceV2::instance() {
 }
 
 CollTraceV2::CollTraceV2()
+    : CollTraceV2(
+          [](std::shared_ptr<colltrace::nicstats::NicStatsLatest> latest)
+              -> std::shared_ptr<void> {
+            int cudaDev = -1;
+            if (cudaGetDevice(&cudaDev) != cudaSuccess) {
+              return nullptr;
+            }
+            return colltrace::nicstats::startNicStats(
+                cudaDev, std::move(latest));
+          }) {}
+
+CollTraceV2::CollTraceV2(const NicStatsStarter& startNicStats)
     : ringEntries_(
           static_cast<uint32_t>(envUint("COLLTRACE_RING_ENTRIES", 65536))),
       collHistory_(
           static_cast<std::size_t>(
               envUint("COLLTRACE_COLL_HISTORY", uint64_t{64} << 20))),
+      nicLatest_(std::make_shared<colltrace::nicstats::NicStatsLatest>()),
+      nicReaders_(startNicStats(nicLatest_)),
       collEvents_(std::make_unique<CollEvents>()) {}
 
 CollTraceV2::~CollTraceV2() = default;
@@ -180,6 +198,11 @@ int CollTraceV2::getNumKernels(uint64_t collId) {
   std::lock_guard<std::mutex> lock(state->mu);
   const auto* count = state->kernelCountFor(collId & kLocalMask);
   return count == nullptr ? -1 : static_cast<int>(*count);
+}
+
+std::vector<colltrace::nicstats::NicStatsReading> CollTraceV2::nicStats()
+    const {
+  return nicLatest_->snapshot();
 }
 
 std::vector<Event> CollTraceV2::getCollEvents(std::string_view commDesc) {

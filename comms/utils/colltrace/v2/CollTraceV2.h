@@ -52,6 +52,11 @@
 // getKernelHandle of that returns an unarmed handle, getCollEvents() returns
 // nothing.
 //
+// With NICSTATS_ENABLE, construction starts reading the NICs of the GPU current
+// then, each on its own timer, and nicStats() copies out each NIC's latest
+// reading. No communicator calls into NIC stats, so the instance must first be
+// constructed after the backend has loaded its flags, with its GPU current.
+//
 // The ring is Overwrite: if the drain falls behind, the oldest entries are lost
 // and the loss is logged; the kernel never waits on the host.
 
@@ -60,6 +65,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -68,10 +74,17 @@
 #include <vector>
 
 #include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
+#include "comms/utils/colltrace/nicstats/NicStatsFeedTypes.h"
 
 // The API its consumers (libnccl, libmccl, the Python bindings) resolve,
 // exported whatever visibility the enclosing library is built with.
 #define COLLTRACEV2_API __attribute__((visibility("default")))
+
+// Declared, not included: its folly::Synchronized does not compile in CUDA
+// sources, which include this header.
+namespace meta::comms::colltrace::nicstats {
+class NicStatsLatest;
+} // namespace meta::comms::colltrace::nicstats
 
 namespace meta::comms::colltracev2 {
 
@@ -104,7 +117,14 @@ class CollEvents;
 
 class COLLTRACEV2_API CollTraceV2 {
  public:
+  /* Starts reading NICs into `latest` and returns what keeps them reading, or
+   * null when nothing will be read. */
+  using NicStatsStarter = std::function<std::shared_ptr<void>(
+      std::shared_ptr<colltrace::nicstats::NicStatsLatest> latest)>;
+
   CollTraceV2();
+  // With NIC stats started by `startNicStats`. Tests only.
+  explicit CollTraceV2(const NicStatsStarter& startNicStats);
   ~CollTraceV2();
 
   // Shared by every backend that arms kernels.
@@ -129,12 +149,18 @@ class COLLTRACEV2_API CollTraceV2 {
   int getNumKernels(uint64_t collId);
   std::vector<Event> getCollEvents(std::string_view commDesc);
 
+  /* The latest reading of each of the process's NICs, one per NIC, ordered by
+   * device and port. Empty while NIC stats are off or have read nothing. */
+  std::vector<colltrace::nicstats::NicStatsReading> nicStats() const;
+
  private:
   std::shared_ptr<CommState> find(std::string_view commDesc);
   std::shared_ptr<CommState> find(uint32_t commIndex);
 
   const uint32_t ringEntries_;
   const std::size_t collHistory_;
+  const std::shared_ptr<colltrace::nicstats::NicStatsLatest> nicLatest_;
+  const std::shared_ptr<void> nicReaders_;
   std::unique_ptr<CollEvents> collEvents_;
 
   std::mutex commsMu_;
