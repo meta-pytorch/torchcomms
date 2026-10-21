@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "version": "7.14.1",
+  "architecture": "gfx950",
+  "bootstrap_artifacts": [
+    {
+      "name": "setuptools",
+      "version": "81.0.0",
+      "filename": "setuptools-81.0.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl",
+      "sha256": "fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6"
+    },
+    {
+      "name": "packaging",
+      "version": "26.2",
+      "filename": "packaging-26.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl",
+      "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e"
+    },
+    {
+      "name": "rocm",
+      "version": "7.14.1",
+      "filename": "rocm-7.14.1.tar.gz",
+      "url": "https://repo.amd.com/rocm/whl-multi-arch/rocm-7.14.1.tar.gz",
+      "sha256": "ffea97f6a9da9987a9260f9e635995b27a44dd6985d1b2b1663431356aaf669b"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "rocm-sdk-core",
+      "version": "7.14.1",
+      "filename": "rocm_sdk_core-7.14.1-py3-none-linux_x86_64.whl",
+      "url": "https://repo.amd.com/rocm/whl-multi-arch/rocm_sdk_core-7.14.1-py3-none-linux_x86_64.whl",
+      "sha256": "da1f9c960a55a64c3134004ba1346d2424090cc3e2336ccfec94e9f62169cf85"
+    },
+    {
+      "name": "rocm-sdk-devel",
+      "version": "7.14.1",
+      "filename": "rocm_sdk_devel-7.14.1-py3-none-linux_x86_64.whl",
+      "url": "https://repo.amd.com/rocm/whl-multi-arch/rocm_sdk_devel-7.14.1-py3-none-linux_x86_64.whl",
+      "sha256": "858088ac949d45be6621557e5d7b7f020235e12068c62b6be2bfd0b4234be3dd"
+    },
+    {
+      "name": "rocm-sdk-device-gfx950",
+      "version": "7.14.1",
+      "filename": "rocm_sdk_device_gfx950-7.14.1-py3-none-linux_x86_64.whl",
+      "url": "https://repo.amd.com/rocm/whl-multi-arch/rocm_sdk_device_gfx950-7.14.1-py3-none-linux_x86_64.whl",
+      "sha256": "96b0fcc241aeaa92b68649164967fcf9358926ff949eac4e6a6183625793d061"
+    },
+    {
+      "name": "rocm-sdk-libraries",
+      "version": "7.14.1",
+      "filename": "rocm_sdk_libraries-7.14.1-py3-none-linux_x86_64.whl",
+      "url": "https://repo.amd.com/rocm/whl-multi-arch/rocm_sdk_libraries-7.14.1-py3-none-linux_x86_64.whl",
+      "sha256": "dfe9ed137a53d4725b2e280662f3a240fe961dce4f3ad0b977e44a74b5ba6f68"
+    }
+  ]
+}
