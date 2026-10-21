@@ -9,7 +9,7 @@ ncclx-specific profiler test using the common ProfilerTestBase class.
 import unittest
 
 import torch
-from torchcomms.tests.integration.helpers.ProfilerTest import ProfilerTestBase
+import torchcomms.tests.integration.helpers.ProfilerTest as profiler_test
 
 
 def validate_ncclx_profiler_events(per_coll_meta):
@@ -32,7 +32,7 @@ def validate_ncclx_profiler_events(per_coll_meta):
     assert len(per_coll_meta["broadcast"]) == 1
 
 
-class ProfilerTest(ProfilerTestBase):
+class ProfilerTest(profiler_test.ProfilerTestBase):
     """ncclx-specific profiler test."""
 
     def __init__(self, *args, **kwargs):
