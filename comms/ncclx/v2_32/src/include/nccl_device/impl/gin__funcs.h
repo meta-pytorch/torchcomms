@@ -884,6 +884,37 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::putValue(
 
 #ifdef __CUDACC__
 template <unsigned beMask>
+template <typename Coop, typename DescriptorSmem>
+NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::atomicAdd(ncclTeam team, int peer, ncclWindow_t dstWin,
+                                                              size_t dstOffset, uint64_t value, Coop coop,
+                                                              DescriptorSmem descriptor,
+                                                              cuda::thread_scope givenRelease,
+                                                              cuda::thread_scope requiredRelease) const {
+  using nccl::utility::loadConst;
+  using nccl::gin::internal::teamRankToGinRank;
+  coop.sync();
+  if (coop.thread_rank() == 0) {
+    ncclGinWindow_t ginWin;
+    size_t ginOffset;
+    if (dstWin->numSegments == 1) {
+      ginWin = nccl::gin::internal::getGinWindow(dstWin, this->comm.backendIndex, this->connectionId);
+      ginOffset = 4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset;
+    } else {
+      int dstSeg;
+      nccl::gin::internal::findSegmentFromWindow(dstWin, dstOffset, &dstSeg, &ginOffset);
+      ginWin = nccl::gin::internal::getSegmentGinWindow(dstWin, dstSeg, dstWin->ginMultiSegmentWins[dstSeg],
+                                                        this->comm.backendIndex, this->connectionId);
+    }
+    ncclGinCall<ncclGinApi_AtomicAdd>(this->_makeCtx(), ncclCoopThread(), teamRankToGinRank(this->comm, team, peer),
+                                      ginWin, ginOffset, value, ncclGin_isDescriptor(descriptor),
+                                      ncclGin_getDescriptor(descriptor), requiredRelease, givenRelease);
+  }
+  coop.sync();
+}
+#endif
+
+#ifdef __CUDACC__
+template <unsigned beMask>
 template <typename RemoteAction, typename Coop, typename DescriptorSmem>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::signal(ncclTeam team, int peer, RemoteAction action, Coop coop,
                                                             DescriptorSmem descriptor, cuda::thread_scope givenRelease,

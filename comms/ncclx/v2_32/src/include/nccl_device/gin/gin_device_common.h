@@ -154,6 +154,14 @@ struct ncclGinApi_PutValue {
                                       uint32_t optFlags = ncclGinOptFlagsDefault);
 };
 
+template <ncclNetDeviceType backend>
+struct ncclGinApi_AtomicAdd {
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static void call(ncclGinCtx, Coop coop, int peer, ncclGinWindow_t dstWin, size_t dstOff,
+                                      uint64_t value, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
+                                      cuda::thread_scope required, cuda::thread_scope given);
+};
+
 struct ncclGinOffsetPtr {
   uint64_t* ptr;
   uint64_t offset;
