@@ -81,12 +81,12 @@ cvars:
    type        : bool
    default     : false
    description : |-
-     Reads local NIC counters for every NIC ctran gives the process's GPU once
-     NIC stats start, and keeps each NIC's latest reading for its consumer to
-     copy. Each NIC is read on a thread of its own, so a firmware call that
-     hangs stalls only that NIC's readings, never the caller. The mechanisms in
-     NICSTATS_SOURCE are read at once rather than one after another. Off by
-     default.
+     Reads local NIC counters for every NIC ctran gives the process's GPU, every
+     NICSTATS_SAMPLE_INTERVAL_MS once NIC stats start, and keeps each NIC's
+     latest reading for its consumer to copy. Each NIC is read on a thread of
+     its own, so a firmware call that hangs stalls only that NIC's readings,
+     never the caller. The mechanisms in NICSTATS_SOURCE are read at once
+     rather than one after another. Off by default.
 
  - name        : NICSTATS_SOURCE
    type        : stringlist
@@ -173,6 +173,16 @@ cvars:
      class are a plausible zero, so the default of -1 reads none per
      priority. A value above 7 is treated the same and logs an error. One
      priority per process; each reading records the one it was read at.
+
+ - name        : NICSTATS_SAMPLE_INTERVAL_MS
+   type        : int
+   default     : 100
+   description : |-
+     How often, in milliseconds, each NIC is read once NIC stats start. Reads
+     fall on multiples of this interval, so every NIC in the process is read at
+     about the same moment. Reads missed while a slow read holds a NIC's thread
+     are made up with one read. 0 or less turns NIC stats off for the run, and
+     logs an error.
 
  - name        : NCCL_HPC_JOB_IDS
    type        : stringlist
