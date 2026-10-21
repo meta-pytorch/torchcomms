@@ -18,7 +18,7 @@ namespace {
 
 // Singleton to generate globally unique increasing op_ids across all TorchComm
 // instances. This ensures that when multiple communicators share the same
-// FlightRecorder, their op_id values don't collide.
+// hook, their op_id values don't collide.
 class GlobalOpIdGenerator {
  public:
   static GlobalOpIdGenerator& instance() {
@@ -30,8 +30,8 @@ class GlobalOpIdGenerator {
     return nextOpId_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  // Reset the counter to 0. Used when creating isolated FlightRecorder
-  // instances to ensure each test gets a fresh op_id space.
+  // Reset the counter to 0. Used when creating isolated hook instances to
+  // ensure each test gets a fresh op_id space.
   void reset() {
     nextOpId_.store(0, std::memory_order_relaxed);
   }
@@ -96,12 +96,10 @@ std::shared_ptr<TorchComm> new_comm(
 
 void TorchComm::finalize() {
   // finalize is a lifecycle event, not a collective — don't consume a
-  // global op_id slot. Built-in hooks (FlightRecorder, Clog) all
-  // short-circuit on finalize, and FlightRecorder keys its ring-buffer
-  // slot off op_id. Bumping the global counter here would leave a hole
-  // in the FR's index space. Use a sentinel op_id instead so
-  // pre/post hooks still pair on the same value for finalize-aware
-  // Python custom hooks.
+  // global op_id slot. Built-in hooks short-circuit on finalize, and hooks
+  // that key ring-buffer slots off op_id would otherwise see a hole in
+  // their index space. Use a sentinel op_id instead so pre/post hooks
+  // still pair on the same value for finalize-aware Python custom hooks.
   constexpr size_t kFinalizeOpId = std::numeric_limits<size_t>::max();
   preHook(kFinalizeOpId, FinalizePreHookArgs{});
   impl_->finalize();

@@ -4,37 +4,15 @@
 # patternlint-disable fbcode-nonempty-init-py
 import ctypes
 import os
-import sys
 from datetime import timedelta
 from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
-from torchcomms.functional import (
-    is_torch_compile_supported,
-    is_torch_compile_supported_and_enabled,
-)
 
-if is_torch_compile_supported():
-    try:
-        # PyTorch 2.14+ renamed torch._opaque_base to torch._custom_class_base
-        # (pytorch/pytorch#188456)
-        from torch._custom_class_base import OpaqueBaseMeta
-    except ImportError:
-        from torch._opaque_base import OpaqueBaseMeta
 
-    # make the metaclass available to the pybind module
-    sys.modules["torchcomms._opaque_meta"] = type(
-        "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
-    )()
-
-    # to support opaque registration for time delta.
-    class Timeout(timedelta, metaclass=OpaqueBaseMeta):
-        pass
-else:
-    # When compile support is disabled, define Timeout without the metaclass
-    class Timeout(timedelta):
-        pass
+class Timeout(timedelta):
+    pass
 
 
 def _load_libtorchcomms() -> None:
@@ -51,12 +29,6 @@ _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: E402, F401, F403
 import torchcomms.hooks as hooks  # noqa: E402, F401
 import torchcomms.objcol as objcol  # noqa: E402, F401, F403
-
-if is_torch_compile_supported_and_enabled():
-    # Import collectives first to ensure all operations are registered
-    # This must happen before patch_torchcomm() so that window operations
-    # and other collectives are registered and can be patched
-    from torchcomms.functional import collectives  # noqa: F401
 
 
 # The documentation uses __all__ to determine what is documented and in what

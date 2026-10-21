@@ -87,8 +87,8 @@ class TorchCommWindow {
   // ==========================================================================
   // Device API — virtual methods for GPU-initiated communication.
   //
-  // Default implementations throw so that existing backends (NCCL, Gloo, RCCL)
-  // continue to build and fail loudly at runtime until they add support.
+  // Default implementations throw so that backends without device-API support
+  // continue to build and fail loudly at runtime until they add it.
   // When all backends implement these, the defaults can be made pure virtual.
   // ==========================================================================
 

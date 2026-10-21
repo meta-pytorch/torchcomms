@@ -8,12 +8,8 @@ TORCHCOMMS_ROOT="comms/torchcomms"
 collect_unit_test_dirs () {
     find "$TORCHCOMMS_ROOT" -path '*/tests/py' -type d \
         ! -path '*/tests/integration/*' \
-        ! -path '*/rccl/*' \
-        ! -path '*/rcclx/*' \
         ! -path '*/fb/*'
     find "$TORCHCOMMS_ROOT" -path '*/tests/unit/py' -type d \
-        ! -path '*/rccl/*' \
-        ! -path '*/rcclx/*' \
         ! -path '*/fb/*'
 }
 

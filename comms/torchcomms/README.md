@@ -32,7 +32,7 @@ import torchcomms
 
 ### Version Requirements
 
-The nccl and ncclx backends require specific library versions for full
+The ncclx backend requires specific library versions for full
 functionality:
 
 | Feature | Minimum Version |
@@ -497,7 +497,7 @@ store = torch.distributed.FileStore("/tmp/torchcomm_test", 2)
 
 # Create a communicator
 device = torch.device("cuda:0")
-comm = torchcomms.new_comm("nccl", device, store=store)
+comm = torchcomms.new_comm("ncclx", device, store=store)
 
 # Get rank and world size
 rank = comm.get_rank()
@@ -525,7 +525,7 @@ import torchcomms
 # Create a communicator
 store = torch.distributed.FileStore("/tmp/torchcomm_test", 2)
 device = torch.device("cuda:0")
-comm = torchcomms.new_comm("nccl", device, store=store)
+comm = torchcomms.new_comm("ncclx", device, store=store)
 
 rank = comm.get_rank()
 world_size = comm.get_size()
