@@ -396,16 +396,8 @@ class RcclxBaseTest : public ::testing::Test {
     setenv("NCCL_FASTINIT_MODE", "none", 1);
 #endif
 
-#if defined(TEST_ENABLE_CTRAN)
-    setenv("NCCL_CTRAN_ENABLE", "1", 1);
-#endif
-
 #if defined(TEST_ENABLE_LOCAL_REGISTER)
     setenv("NCCL_LOCAL_REGISTER", "1", 1);
-#endif
-
-#if defined(TEST_CUDA_GRAPH_MODE)
-    setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
 #endif
 
     CUDACHECKABORT(cudaSetDevice(this->localRank));
@@ -442,15 +434,6 @@ class RcclxBaseTest : public ::testing::Test {
                 << " stopped.";
     }
   }
-
-  // void intraNodeBarrier(ncclComm_t comm) {
-  //   NCCLCHECK_TEST(bootstrapIntraNodeBarrier(
-  //       comm->bootstrap,
-  //       comm->localRankToRank,
-  //       comm->ctranComm_->statex_->localRank(),
-  //       comm->ctranComm_->statex_->nLocalRanks(),
-  //       comm->ctranComm_->statex_->localRankToRank(0)));
-  // }
 
   void setInitEnv(bool init) {
     initEnvAtSetup = init;

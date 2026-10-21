@@ -709,14 +709,14 @@ src/ras/client.cc
 set(RCCLX_FILES
   meta/algorithms/AlgoInit.h
   meta/algorithms/AlgoUtils.h
+  meta/algorithms/BaselineBootstrap.cc
+  meta/algorithms/BaselineBootstrap.h
   meta/colltrace/CollTrace.cc
   meta/colltrace/CollTraceEvent.cc
   meta/colltrace/CollTraceEvent.h
   meta/colltrace/CollTraceFunc.cc
   meta/colltrace/CollTraceFunc.h
   meta/colltrace/CollTrace.h
-  meta/ctran/BaselineBootstrap.cc
-  meta/ctran/BaselineBootstrap.h
 # meta/scuba/RcclxScubaLogger.cc
 # meta/scuba/RcclxScubaLogger.h
   meta/testinfra/TestsDistUtils.h
@@ -1107,7 +1107,6 @@ endif()
 # We will include their parent directories so they are found by CMake
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/colltrace)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/algorithms)
-target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/meta/ctran)
 
 # Files that are imported using their full path have been HIPified
 # in fbcode/comms/rcclx/develop/build/release/hipify/<path/from/fbcode>
@@ -1323,7 +1322,6 @@ target_compile_definitions(rccl PRIVATE __HIPCC__)
 
 target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
 target_compile_definitions(rccl PRIVATE MOCK_SCUBA_DATA) # removes some Scuba logging in comms/utils/logger.
-target_compile_definitions(rccl PRIVATE CTRAN_DISABLE_TCPDM) # TCPDM has strict topology requirements, which is why it isn't supported NCCLX/RCCLX Conda packages. See T239012482.
 target_compile_definitions(rccl PRIVATE NVTX_DISABLE) # NVTX is for annotating code for profilers like NSight systems. It's disabled by default for the NCCLX Conda package.
 
 ## Set RCCL compile options

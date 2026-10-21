@@ -307,9 +307,9 @@ function stage_snapshot_tree {
   rm "$stage_dir/fbcode/comms/rcclx"
   cp -a "$snapshot_dir" "$stage_dir/fbcode/comms/rcclx"
   # Copy rather than link the trees the CMake walks: hipify_external_headers.sh
-  # uses `find -type f`, which skips symlinks, and comms/ctran is globbed.
+  # uses `find -type f`, which skips symlinks.
   local dir
-  for dir in common utils torchcomms observatory ctran; do
+  for dir in common utils torchcomms observatory; do
     [ -d "${fbcode_dir}/comms/${dir}" ] || continue
     rm "$stage_dir/fbcode/comms/${dir}"
     cp -a "${fbcode_dir}/comms/${dir}" "$stage_dir/fbcode/comms/"
@@ -474,8 +474,7 @@ fi
 # hipify-perl (ROCm 7.0) doesn't map cudaEventWait/Record flags, so they pass
 # through unchanged into hipified source. Define them directly.
 # CUDART_CB (the CUDA host-callback calling-convention macro, empty on Linux)
-# is likewise not mapped by hipify; define it empty for CTRAN and colltrace
-# callbacks.
+# is likewise not mapped by hipify; define it empty for colltrace callbacks.
 #
 # ${BASE_DIR} (fbsource/fbcode) must be searched for comms/* headers, but it also
 # contains fbcode's in-tree copies of OSS third-party (folly, snappy, ...). Those
