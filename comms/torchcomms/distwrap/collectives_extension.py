@@ -4,8 +4,8 @@
 from typing import Any
 
 import torch
-from torch.distributed import ProcessGroup, ReduceOp
-from torchcomms.distwrap.collectives import _convert_reduce_op
+from torch.distributed import ProcessGroup
+from torchcomms.distwrap.collectives import _convert_reduce_op, _ReduceOp
 from torchcomms.distwrap.pginfo import pg_info_get_data
 from torchcomms.distwrap.utils import (
     get_group,
@@ -55,7 +55,7 @@ def new_window(
 def reduce_scatter_quantized(
     output: torch.Tensor,
     input: torch.Tensor,
-    op: ReduceOp,
+    op: _ReduceOp,
     seed: torch.Tensor,
     group: ProcessGroup | None = None,
     async_op: bool = False,
