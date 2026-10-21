@@ -19,10 +19,12 @@
  ************************************************************************/
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
@@ -33,6 +35,7 @@
 #include "device/dispatch.h"
 #include "device/ep_common.h"
 #include "device/expand.h"
+#include "device/gin_rail.h"
 #include "device/hip_prims.h"
 #include "device/hybrid.h"
 #include "device/internode.h"
@@ -150,6 +153,30 @@ struct EpHandle {
   // (hyb_call_layout). Off: hybrid_alloc's full layout for every call.
   bool hyb_compact{false};
   hipEvent_t ev_a[kMaxChunks]{}, ev_b[kMaxChunks]{};
+  // The rail over RCCL GIN (RCCL_EP_GIN, device/gin_rail.h): the hybrid buffers live in one
+  // window registered on rail_comm, and each chunk is a put from the side stream instead of a
+  // send/recv. gseq_d / gseq_c count this handle's hybrid dispatches / combines; every rank
+  // makes the same calls, so the counts, and the flag tokens they predict, agree.
+  bool gin{false}, gdc_made{false};
+  int glanes{1};  // contexts each transfer is striped over (RCCL_EP_GIN_LANES)
+  // Arrival and credit flags are RDMA writes into this window (device/gin_rail.h); false with
+  // RCCL_EP_GIN_SIGNAL=signal, which uses GIN signal fetch-and-adds instead.
+  bool gwflag{false};
+  void* gfbuf{};
+  ncclWindow_t gfwin{};
+  uint64_t gtimeout{0};  // wall-clock ticks a GIN wait may take before it reports and traps
+  ncclDevComm gdc{};
+  ncclWindow_t gwin{};
+  void* gbuf{};
+  GinRailOffs goff{};
+  uint64_t gseq_d{0}, gseq_c{0};
+  // The GIN kernels' progress (host-mapped) and the host watchdog that reports a stall from it
+  // (gin_watch). gtok / gack: the last transfer token and credited call issued per direction.
+  GinProgress* gprog{};
+  int gwatch_s{0};
+  std::thread gwatch;
+  std::atomic<bool> gwatch_stop{false};
+  std::atomic<uint64_t> gtok[2]{}, gack[2]{};
   const int32_t *bound_slot_of{}, *bound_node_list{}, *bound_node_pos{};
   int32_t* bound_fwd_meta{};
   // A hybrid combine issued with defer (ep_combine_v4): its rail transfer is in flight and the
@@ -276,6 +303,16 @@ inline void release_window(EpHandle* h, bool registered) {
     h->devcomm = false;
   }
   if (registered) ncclCommWindowDeregister(h->lsa, h->win);
+  // GIN: the hybrid buffers are carved out of the rail window, not allocated one by one.
+  if (h->gbuf) {
+    if (h->gwin) ncclCommWindowDeregister(h->rail_comm, h->gwin);
+    ncclMemFree(h->gbuf);
+    h->gbuf = nullptr;
+    h->gwin = nullptr;
+    h->so_send = h->so_recv = nullptr;
+    h->comb_x = h->land_x = nullptr;
+    h->comb_w = h->land_w = nullptr;
+  }
   if (h->d_plan_agg) {
     hipFree(h->d_plan_agg);
     h->d_plan_agg = nullptr;
@@ -297,8 +334,24 @@ inline void release_window(EpHandle* h, bool registered) {
   }
 }
 
+// The GIN rail's watchdog, progress record, flag window and device communicator (gin_rail_setup).
+inline void release_gin_rail(EpHandle* h) {
+  h->gwatch_stop = true;
+  if (h->gwatch.joinable()) h->gwatch.join();
+  if (h->gprog) hipHostFree(h->gprog);
+  h->gprog = nullptr;
+  if (h->gfwin) ncclCommWindowDeregister(h->rail_comm, h->gfwin);
+  if (h->gfbuf) ncclMemFree(h->gfbuf);
+  h->gfwin = nullptr;
+  h->gfbuf = nullptr;
+  h->gwflag = false;
+  if (h->gdc_made) ncclDevCommDestroy(h->rail_comm, &h->gdc);
+  h->gdc_made = h->gin = false;
+}
+
 // The per-node communicator and the count-exchange scratch, taken in ep_create_v2.
 inline void release_inter_comm(EpHandle* h) {
+  release_gin_rail(h);
   if (h->rail_comm) ncclCommDestroy(h->rail_comm);
   h->rail_comm = nullptr;
   if (h->side) hipStreamDestroy(h->side);
@@ -490,6 +543,9 @@ static void hyb_call_layout(const EpHandle* h, HybInfo& hi, int use_fp8, int wit
   hi.rec_bytes = (int)align_up(o + (size_t)hi.SU * sizeof(int32_t), 16);
 }
 
+// This rank's flag window for the GIN kernels, or null with RCCL_EP_GIN_SIGNAL=signal.
+inline const uint64_t* gin_flags(const EpHandle* h) { return h->gwflag ? (const uint64_t*)h->gfbuf : nullptr; }
+
 // Hybrid dispatch, first half: pack one record per (token, remote node) and hand them to the
 // side stream, which moves them to the rail peers while the caller's stream goes on to the
 // local push. Every rank posts the same sends and receives in the same node order.
@@ -501,6 +557,7 @@ int hybrid_dispatch_begin(EpHandle* h, uintptr_t x, uintptr_t x_sf, uintptr_t to
   hi.nchunks = h->nchunks;
   hyb_call_layout(h, hi, use_fp8, with_meta);
   const size_t T = c.num_max_tokens_per_rank, rb = hi.rec_bytes;
+  if (h->gin) ++h->gseq_d;
   for (int k = 0; k < hi.nchunks; ++k) {
     hi.chunk = k;
     if (use_fp8)
@@ -515,6 +572,24 @@ int hybrid_dispatch_begin(EpHandle* h, uintptr_t x, uintptr_t x_sf, uintptr_t to
                          with_meta);
     HC(hipEventRecord(h->ev_a[k], s));
     HC(hipStreamWaitEvent(h->side, h->ev_a[k], 0));
+    if (h->gin) {
+      // Chunk 0 first takes each peer's credit for the previous dispatch's records. The wait for
+      // the peers' chunk runs here too, so ev_b[k] means "sent and received" as for send/recv,
+      // and the caller's stream only ever waits on events: every spinning kernel stays on the
+      // side stream. A spin on the caller's stream can sit in a hardware queue it shares with
+      // other streams' collectives (GPU_MAX_HW_QUEUES=2) and deadlock across ranks.
+      const uint64_t ack = (k == 0 && h->gseq_d > 1) ? h->gseq_d - 1 : 0;
+      const uint64_t tok = (h->gseq_d - 1) * hi.nchunks + k + 1;
+      hipLaunchKernelGGL(k_gin_rail_put<false>, dim3(hi.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc,
+                         h->gwin, hi, h->goff, T, (size_t)0, (size_t)0, 0, 0, h->glanes, ack, h->gtimeout, c.rank,
+                         h->gprog, tok, h->gfwin, gin_flags(h));
+      hipLaunchKernelGGL(k_gin_rail_wait, dim3(1), dim3(kMaxNodes * h->glanes), 0, h->side, h->gdc, 0, h->glanes,
+                         hi.SO, hi.D, tok, h->gtimeout, c.rank, (int)kGinDispatchData, h->gprog, gin_flags(h));
+      HC(hipGetLastError());
+      HC(hipEventRecord(h->ev_b[k], h->side));
+      h->gtok[0] = tok;
+      continue;
+    }
     NC(ncclGroupStart());
     ncclResult_t gr = ncclSuccess;
     for (int n = 0; n < hi.SO; ++n) {
@@ -554,6 +629,13 @@ int hybrid_dispatch_end(EpHandle* h, int use_fp8, int with_meta, int cta, hipStr
   }
   hipLaunchKernelGGL(k_inter_set_counts, dim3(1), dim3(kMaxWorldRanks), 0, s, c.num_ranks, h->bound,
                      (int32_t*)((uint8_t*)h->win_buf + h->lay.off_counts));
+  // GIN: the forward has read so_recv, so each peer gets its credit back. Only posts signals.
+  if (h->gin) {
+    hipLaunchKernelGGL(k_gin_rail_ack, dim3(1), dim3(kMaxNodes), 0, s, h->gdc, 0, hi.SO, hi.D, h->gprog, 0, h->gseq_d,
+                       h->gfwin, (int)h->gwflag);
+    HC(hipGetLastError());
+    h->gack[0] = h->gseq_d;
+  }
   return 0;
 }
 
@@ -574,6 +656,12 @@ int hybrid_combine_finish(EpHandle* h, hipStream_t s) {
                      h->pend.num_tokens, h->bound_node_pos, h->land_x, h->land_w,
                      (const bf16_t*)h->pend.bias0, (const bf16_t*)h->pend.bias1, (bf16_t*)h->pend.out,
                      (float*)h->pend.out_w);
+  if (h->gin) {  // land_x / land_w are read: the peers may send the next combine's partials
+    hipLaunchKernelGGL(k_gin_rail_ack, dim3(1), dim3(kMaxNodes), 0, s, h->gdc, h->glanes, h->hyb.SO, h->hyb.D,
+                       h->gprog, 1, h->gseq_c, h->gfwin, (int)h->gwflag);
+    HC(hipGetLastError());
+    h->gack[1] = h->gseq_c;
+  }
   return 0;
 }
 
@@ -620,6 +708,7 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
   const size_t T = c.num_max_tokens_per_rank, H = c.hidden, K = c.num_topk;
   HybInfo hk = hi;
   hk.nchunks = h->nchunks;
+  if (h->gin) ++h->gseq_c;
   for (int k = 0; k < hk.nchunks; ++k) {
     hk.chunk = k;
     hipLaunchKernelGGL(k_hyb_fold, dim3(hk.SO, hcta), dim3(kEpWaves * kWarpSize), 0, s, c, hk,
@@ -627,6 +716,19 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
                        (const float*)(win + h->stage_off_w), with_w, h->comb_x, h->comb_w);
     HC(hipEventRecord(h->ev_a[k], s));
     HC(hipStreamWaitEvent(h->side, h->ev_a[k], 0));
+    if (h->gin) {  // as in hybrid_dispatch_begin: put, then wait for the peers' chunk, on `side`
+      const uint64_t ack = (k == 0 && h->gseq_c > 1) ? h->gseq_c - 1 : 0;
+      const uint64_t tok = (h->gseq_c - 1) * hk.nchunks + k + 1;
+      hipLaunchKernelGGL(k_gin_rail_put<true>, dim3(hk.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc,
+                         h->gwin, hk, h->goff, T, H, K, with_w, h->glanes, h->glanes, ack, h->gtimeout, c.rank,
+                         h->gprog, tok, h->gfwin, gin_flags(h));
+      hipLaunchKernelGGL(k_gin_rail_wait, dim3(1), dim3(kMaxNodes * h->glanes), 0, h->side, h->gdc, h->glanes,
+                         h->glanes, hk.SO, hk.D, tok, h->gtimeout, c.rank, (int)kGinCombineData, h->gprog, gin_flags(h));
+      HC(hipGetLastError());
+      HC(hipEventRecord(h->ev_b[k], h->side));
+      h->gtok[1] = tok;
+      continue;
+    }
     NC(ncclGroupStart());
     ncclResult_t gr = ncclSuccess;
     for (int n = 0; n < hk.SO; ++n) {
@@ -799,17 +901,205 @@ static int hybrid_alloc(EpHandle* h) {
   o = align_up(o + sizeof(int32_t), 16);
   hi.off_slots = (int)o;
   hi.rec_bytes = (int)align_up(o + (size_t)hi.SU * sizeof(int32_t), 16);
-  if (hipMalloc(&h->so_send, rn * T * hi.rec_bytes) != hipSuccess ||
-      hipMalloc(&h->so_recv, rn * T * hi.rec_bytes) != hipSuccess ||
-      hipMalloc(&h->comb_x, rn * T * H * sizeof(bf16_t)) != hipSuccess ||
-      hipMalloc(&h->land_x, rn * T * H * sizeof(bf16_t)) != hipSuccess ||
-      hipMalloc(&h->comb_w, rn * T * K * sizeof(float)) != hipSuccess ||
-      hipMalloc(&h->land_w, rn * T * K * sizeof(float)) != hipSuccess ||
-      hipMalloc(&h->sink, 4096) != hipSuccess ||
-      hipMalloc(&h->d_local_sendc, c.num_ranks * sizeof(int32_t)) != hipSuccess) {
+  const size_t rec = rn * T * hi.rec_bytes, xb = rn * T * H * sizeof(bf16_t), wb = rn * T * K * sizeof(float);
+  if (h->gin) {
+    // One rail window holds all six, so a put can address any of them on the peer.
+    // Registration is collective over rail_comm, as ep_configure is over every rank.
+    size_t off = 0;
+    auto take = [&off](size_t b) { const size_t at = off; off = align_up(off + b, 4096); return at; };
+    GinRailOffs& g = h->goff;
+    g.so_send = take(rec);
+    g.so_recv = take(rec);
+    g.comb_x = take(xb);
+    g.land_x = take(xb);
+    g.comb_w = take(wb);
+    g.land_w = take(wb);
+    if (ncclMemAlloc(&h->gbuf, off) != ncclSuccess ||
+        ncclCommWindowRegister(h->rail_comm, h->gbuf, off, &h->gwin, NCCL_WIN_DEFAULT) != ncclSuccess ||
+        h->gwin == nullptr) {
+      fprintf(stderr, "[rccl_ep] GIN rail window (%zu bytes) failed\n", off);
+      return -1;
+    }
+    uint8_t* b = (uint8_t*)h->gbuf;
+    h->so_send = b + g.so_send;
+    h->so_recv = b + g.so_recv;
+    h->comb_x = (bf16_t*)(b + g.comb_x);
+    h->land_x = (bf16_t*)(b + g.land_x);
+    h->comb_w = (float*)(b + g.comb_w);
+    h->land_w = (float*)(b + g.land_w);
+  } else if (hipMalloc(&h->so_send, rec) != hipSuccess || hipMalloc(&h->so_recv, rec) != hipSuccess ||
+             hipMalloc(&h->comb_x, xb) != hipSuccess || hipMalloc(&h->land_x, xb) != hipSuccess ||
+             hipMalloc(&h->comb_w, wb) != hipSuccess || hipMalloc(&h->land_w, wb) != hipSuccess) {
     fprintf(stderr, "[rccl_ep] hybrid buffers (%zu records of %d bytes per node) failed\n", T, hi.rec_bytes);
     return -1;
   }
+  if (hipMalloc(&h->sink, 4096) != hipSuccess ||
+      hipMalloc(&h->d_local_sendc, c.num_ranks * sizeof(int32_t)) != hipSuccess) {
+    fprintf(stderr, "[rccl_ep] hybrid count buffers failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+// RCCL_EP_GIN_WATCH_S (default 60, 0 = off): a host thread that reports, once per stall, GIN
+// transfers that have stopped moving for that long: per peer node, the last token each stage of
+// this rank's put, wait and credit kernels reached (lowest over lanes), against what the host has
+// issued, and the rail communicator's async error (a dead GIN proxy thread shows only there). It
+// also prints the record of a wait that timed out on the device, whose own printf dies with the trap.
+static void gin_watch(EpHandle* h) {
+  const int SO = h->hyb.SO, D = h->hyb.D, L = h->glanes, rank = h->cfg.rank;
+  static const char* const kinds[] = {"dispatch data", "combine data", "dispatch credit", "combine credit"};
+  GinProgress last{}, now{};
+  int idle = 0, tick = 0;
+  bool reported = false, to_reported = false, err_reported = false;
+  while (!h->gwatch_stop) {
+    for (int i = 0; i < 10 && !h->gwatch_stop; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    memcpy(&now, (const void*)h->gprog, sizeof(now));
+    if (now.to_set == 1 && !to_reported) {
+      fprintf(stderr, "[rccl_ep] GIN wait timed out on rank %d: %s from node %llu, context %llu, signal %llu at %llu of %llu\n",
+              rank, kinds[now.to_kind & 3], (unsigned long long)now.to_node, (unsigned long long)now.to_ctx,
+              (unsigned long long)now.to_sig, (unsigned long long)now.to_seen, (unsigned long long)now.to_need);
+      to_reported = true;
+    }
+    if (++tick % 10 == 0 && !err_reported) {
+      ncclResult_t ar = ncclSuccess;
+      if (ncclCommGetAsyncError(h->rail_comm, &ar) == ncclSuccess && ar != ncclSuccess && ar != ncclInProgress) {
+        fprintf(stderr, "[rccl_ep] GIN rail communicator async error on rank %d: %s\n", rank, ncclGetErrorString(ar));
+        err_reported = true;
+        // The GIN progress thread has exited, so nothing posted on this rail will complete: the
+        // job would hang until a watchdog. RCCL_EP_GIN_ABORT_ON_ERROR=0 keeps it up for inspection.
+        const char* ab = getenv("RCCL_EP_GIN_ABORT_ON_ERROR");
+        if (!(ab && ab[0] == '0')) {
+          fprintf(stderr, "[rccl_ep] aborting: the GIN rail cannot recover (RCCL_EP_GIN_ABORT_ON_ERROR=0 to wait instead)\n");
+          fflush(stderr);
+          abort();
+        }
+      }
+    }
+    if (memcmp(&now, &last, sizeof(now)) != 0) {
+      last = now;
+      idle = 0;
+      reported = false;
+      continue;
+    }
+    if (++idle < h->gwatch_s || reported) continue;
+    const uint64_t tok[2] = {h->gtok[0].load(), h->gtok[1].load()}, ack[2] = {h->gack[0].load(), h->gack[1].load()};
+    bool pending = false;
+    for (int d = 0; d < 2; ++d) {
+      pending |= now.ack_done[d] < ack[d];
+      for (int n = 0; n < SO; ++n)
+        for (int l = 0; l < L && n != D; ++l)
+          pending |= now.put_done[d][n * kGinMaxLanes + l] < tok[d] || now.wait_done[d][n * kGinMaxLanes + l] < tok[d];
+    }
+    if (!pending) continue;
+    char line[2048];
+    int o = snprintf(line, sizeof(line), "[rccl_ep] GIN stall on rank %d (node %d of %d), %d s without progress:",
+                     rank, D, SO, idle);
+    for (int d = 0; d < 2 && o < (int)sizeof(line); ++d) {
+      o += snprintf(line + o, sizeof(line) - o, " %s issued %llu wait_enter %llu credits %llu/%llu |",
+                    d ? "combine" : "dispatch", (unsigned long long)tok[d], (unsigned long long)now.wait_enter[d],
+                    (unsigned long long)now.ack_done[d], (unsigned long long)ack[d]);
+      for (int n = 0; n < SO && o < (int)sizeof(line); ++n) {
+        if (n == D) continue;
+        uint64_t m[5] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
+        for (int l = 0; l < L; ++l) {
+          const int sl = n * kGinMaxLanes + l;
+          m[0] = std::min(m[0], now.put_enter[d][sl]);
+          m[1] = std::min(m[1], now.put_credit[d][sl]);
+          m[2] = std::min(m[2], now.put_posted[d][sl]);
+          m[3] = std::min(m[3], now.put_done[d][sl]);
+          m[4] = std::min(m[4], now.wait_done[d][sl]);
+        }
+        o += snprintf(line + o, sizeof(line) - o, " n%d put %llu/%llu/%llu/%llu recv %llu |", n,
+                      (unsigned long long)m[0], (unsigned long long)m[1], (unsigned long long)m[2],
+                      (unsigned long long)m[3], (unsigned long long)m[4]);
+      }
+    }
+    fprintf(stderr, "%s (put: entered/credited/posted/flushed)\n", line);
+    reported = true;
+  }
+}
+
+// The rail over GIN (RCCL_EP_GIN, device/gin_rail.h): a device communicator on rail_comm with
+// GIN connections between the rail peers. Needs GIN on when the communicators were created
+// (NCCL_GIN_ENABLE=1, the default), symmetric windows and cuMem: NCCL_WIN_ENABLE=1 (RCCL also
+// takes NCCL_DEVR_INIT=1; RCCLX only WIN_ENABLE) and NCCL_CUMEM_ENABLE=1. Collective over
+// rail_comm.
+static int gin_rail_setup(EpHandle* h) {
+  ncclCommProperties_t p = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(h->rail_comm, &p) != ncclSuccess || !p.deviceApiSupport ||
+      p.railedGinType == NCCL_GIN_TYPE_NONE) {
+    fprintf(stderr,
+            "[rccl_ep] RCCL_EP_GIN: the rail has no GIN (device API %d, GIN type %d; the device "
+            "API needs NCCL_WIN_ENABLE=1 and NCCL_CUMEM_ENABLE=1)\n",
+            (int)p.deviceApiSupport, (int)p.railedGinType);
+    return -1;
+  }
+  // rocSHMEM GDA (NCCL_GIN_TYPE=5): GPU-initiated, no proxy thread. Its contexts share their
+  // connection's queue pairs and signals, so the per-lane, per-direction signal ids of
+  // RCCL_EP_GIN_SIGNAL=signal would alias (and they are RDMA atomics); only flags are supported.
+  // Every early return here depends only on the GIN type and the environment, which every rank
+  // shares, so all ranks take the same branch before the collective ncclDevCommCreate.
+  const bool gda = p.railedGinType == NCCL_GIN_TYPE_ROCSHMEM_GDA;
+#if !NCCL_GIN_ROCSHMEM_GDA_ENABLE
+  if (gda) {
+    fprintf(stderr, "[rccl_ep] RCCL_EP_GIN: the rail's GIN is rocSHMEM GDA, but librccl_ep.so was built without it\n");
+    return -1;
+  }
+#endif
+  const char* sm = getenv("RCCL_EP_GIN_SIGNAL");
+  h->gwflag = !(sm && strcmp(sm, "signal") == 0);
+  if (gda && !h->gwflag) {
+    fprintf(stderr, "[rccl_ep] RCCL_EP_GIN_SIGNAL=signal is not supported on GDA\n");
+    return -1;
+  }
+  // RCCL_EP_GIN_TIMEOUT_S (default 300, half torch's collective timeout so the report comes first;
+  // 0 = wait forever): how long a GIN wait may spin before it reports what it waited for and
+  // traps. wall_clock64 runs at 100 MHz.
+  const char* to = getenv("RCCL_EP_GIN_TIMEOUT_S");
+  h->gtimeout = (uint64_t)std::max(0, to ? atoi(to) : 300) * 100000000ull;
+  // One context per lane and direction: dispatch [0, L), combine [L, 2L). On GDA each context
+  // has its own queue pairs, on alternating UDMA engines.
+  const char* ln = getenv("RCCL_EP_GIN_LANES");
+  h->glanes = std::max(1, std::min(ln ? atoi(ln) : 4, kGinMaxLanes));
+  ncclDevCommRequirements req = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  req.ginConnectionType = NCCL_GIN_CONNECTION_RAIL;
+  req.ginContextCount = 2 * h->glanes;
+  req.ginSignalCount = gda ? 0 : kGinSignals;  // GDA runs flags only, which need no signals
+  NC(ncclDevCommCreate(h->rail_comm, &req, &h->gdc));
+  h->gdc_made = true;
+  // The kernels handle PROXY, and GDA when built for it; any other backend would run them as UB.
+  const int want = gda ? (int)NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA : (int)NCCL_NET_DEVICE_GIN_PROXY;
+  bool ok = h->gdc.ginContextCount >= 2 * h->glanes && h->gdc.ginConnectionCount > 0;
+  for (int c = 0; c < h->gdc.ginConnectionCount; ++c)
+    ok = ok && (int)h->gdc.ginNetDeviceTypes[c] == want;
+  if (!ok) {
+    fprintf(stderr, "[rccl_ep] RCCL_EP_GIN: unsupported GIN device communicator (%d contexts, type %d)\n",
+            (int)h->gdc.ginContextCount, (int)h->gdc.ginNetDeviceTypes[0]);
+    return -1;
+  }
+  if (h->cfg.rank == 0)
+    fprintf(stderr, "[rccl_ep] GIN rail: %s, %d lane(s), %d connection(s)\n", gda ? "rocSHMEM GDA" : "proxy",
+            h->glanes, (int)h->gdc.ginConnectionCount);
+  // The flag window (unless RCCL_EP_GIN_SIGNAL=signal), collective over rail_comm.
+  if (h->gwflag) {
+    const size_t fb = kGinFlagWords * sizeof(uint64_t);
+    NC(ncclMemAlloc(&h->gfbuf, fb));
+    HC(hipMemset(h->gfbuf, 0, fb));
+    HC(hipDeviceSynchronize());
+    NC(ncclCommWindowRegister(h->rail_comm, h->gfbuf, fb, &h->gfwin, NCCL_WIN_STRICT_ORDERING));
+    if (!h->gfwin) {
+      fprintf(stderr, "[rccl_ep] RCCL_EP_GIN: flag window registration failed\n");
+      return -1;
+    }
+  }
+  HC(hipHostMalloc((void**)&h->gprog, sizeof(GinProgress), hipHostMallocCoherent | hipHostMallocMapped));
+  memset(h->gprog, 0, sizeof(GinProgress));
+  const char* ws = getenv("RCCL_EP_GIN_WATCH_S");
+  h->gwatch_s = std::max(0, ws ? atoi(ws) : 60);
+  h->gwatch_stop = false;
+  if (h->gwatch_s > 0) h->gwatch = std::thread(gin_watch, h);
+  h->gin = true;
   return 0;
 }
 
@@ -2256,8 +2546,20 @@ int ep_hybrid_enable(void* handle, int multi) {
   // Both ends of the rail derive the record stride from it, so every rank must set it alike.
   const char* cr = getenv("RCCL_EP_HYB_COMPACT_REC");
   h->hyb_compact = cr && cr[0] == '1';
+  // RCCL_EP_GIN: 0 (default) RCCL send/recv on the rail; 1 GIN when the rail has it, else
+  // send/recv; 2 GIN or fail. GIN support is decided at communicator init and agreed by every
+  // rank, so all ranks take the same branch.
+  const int gin_mode = env_int("RCCL_EP_GIN");
+  if (gin_mode > 0 && h->hyb.SO > 1 && gin_rail_setup(h) != 0) {
+    release_gin_rail(h);
+    if (gin_mode >= 2) return -1;
+    if (h->cfg.rank == 0) fprintf(stderr, "[rccl_ep] RCCL_EP_GIN=1: the rail falls back to RCCL send/recv\n");
+  }
   return 0;
 }
+
+// 1 when the hybrid rail runs over GIN (ep_hybrid_enable with RCCL_EP_GIN), else 0.
+int ep_rail_gin(void* handle) { return static_cast<EpHandle*>(handle)->gin ? 1 : 0; }
 
 // ep_hcounts' exchange buffers for W = R + SO + E ints per rank: [R * W gathered | W this rank's |
 // SU * W this node's, for the two-level gather]. Grown on demand; growing synchronizes.
@@ -2453,7 +2755,9 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
   // windows can differ in T and a peer's rail region holds T records.
   static const int prefix_env = env_int("RCCL_EP_HYB_PREFIX");
   const int prefix = std::min(prefix_env, (int)T);
-  const bool pre = prefix > 0 && h->nchunks == 1 && env_int("RCCL_EP_HCOUNTS_2LEVEL") != 1;
+  // A GIN rail moves so_send with one-sided puts under its own credits (device/gin_rail.h); the
+  // prefix's send/recv round would write so_recv outside them, so it is send/recv-only.
+  const bool pre = !h->gin && prefix > 0 && h->nchunks == 1 && env_int("RCCL_EP_HCOUNTS_2LEVEL") != 1;
   HybInfo hi = h->hyb;
   hi.nchunks = 1;
   hi.chunk = 0;
