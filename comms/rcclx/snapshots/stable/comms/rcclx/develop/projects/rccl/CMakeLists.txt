@@ -102,7 +102,7 @@ set(CONDA_INCLUDE_DIR "$ENV{CONDA_INCLUDE_DIR}" CACHE PATH "Path to conda includ
 set(CONDA_LIB_DIR "$ENV{CONDA_LIB_DIR}" CACHE PATH "Path to conda lib directory")
 
 # Path to the fbcode root (five levels up from this CMakeLists.txt).
-# Defined once and used for the CTRAN glob, hipify, and external scripts.
+# Defined once and used for hipify and external scripts.
 set(FBCODE_DIR "${CMAKE_SOURCE_DIR}/../../../../..")
 get_filename_component(FBCODE_DIR "${FBCODE_DIR}" ABSOLUTE)
 option(ENABLE_WARP_SPEED                       "Enable WARP_SPEED optimizations"               OFF)

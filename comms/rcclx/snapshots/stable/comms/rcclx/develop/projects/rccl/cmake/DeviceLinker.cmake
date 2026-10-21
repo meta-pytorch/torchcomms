@@ -698,8 +698,8 @@ endif()
 # Compiled monolithically -- no --offload-host-only -- so each TU carries its
 # own fatbin rather than leaving an undefined __hip_fatbin_* for the linker.
 #
-# Object names are path-derived, not NAME_WE: Impl.cu.cpp occurs three times
-# under comms/ctran/algos and Get/PutSignal are not unique either.
+# Object names are path-derived, not NAME_WE, so sources that share a basename
+# in different directories cannot collide.
 # ===========================================================================
 set(META_FAT_OBJS "")
 foreach(_meta_rel IN LISTS META_DEVICE_SOURCES)
@@ -729,46 +729,10 @@ foreach(_meta_rel IN LISTS META_DEVICE_SOURCES)
 endforeach()
 
 # ===========================================================================
-# ctran kernel instantiation objects
-#
-# CTRAN_GEN_HIP_FILES is populated by the genctran block in src/CMakeLists.txt,
-# which routes the generated TUs here rather than into the host-only rccl
-# target. Basenames are unique within the generated directory, so unlike the
-# META_DEVICE_SOURCES loop above these need no path-derived naming.
-# ===========================================================================
-set(CTRAN_GEN_FAT_OBJS "")
-foreach(_ctran_src IN LISTS CTRAN_GEN_HIP_FILES)
-  get_filename_component(_ctran_name "${_ctran_src}" NAME)
-  string(REGEX REPLACE "\\.cu\\.cpp$" "" _ctran_name "${_ctran_name}")
-  set(_ctran_obj "${DEVICE_BUILD_DIR}/ctran_${_ctran_name}.o")
-  add_custom_command(
-    OUTPUT  ${_ctran_obj}
-    COMMAND ${DL_CLANG}
-      -x hip ${DL_OFFLOAD_ARCH_FLAGS}
-      ${DL_HIP_COMPILER_FLAGS}
-      -DRCCL_DEVICE_LINKER
-      ${_link_def_flags}
-      ${_host_inc_flags}
-      ${DL_OPT_FLAGS}
-      -std=c++${CMAKE_CXX_STANDARD}
-      -fPIC
-      -w
-      -c -o ${_ctran_obj}
-      ${_ctran_src}
-    DEPENDS ${_ctran_src}
-    COMMENT "DL compile: ctran ${_ctran_name} (kernel instantiations)"
-    VERBATIM
-  )
-  list(APPEND CTRAN_GEN_FAT_OBJS ${_ctran_obj})
-endforeach()
-list(LENGTH CTRAN_GEN_FAT_OBJS _ctran_obj_count)
-message(STATUS "Device Linker: ${_ctran_obj_count} ctran instantiation objects")
-
-# ===========================================================================
 # Top-level target
 # ===========================================================================
 add_custom_target(device_linker_build ALL
-  DEPENDS ${COMMON_FAT_OBJ} ${ONERANK_FAT_OBJ} ${COLLECTIVES_FAT_OBJ} ${DDA_ALL_REDUCE_IPC_FAT_OBJ} ${DDA_REDUCE_SCATTER_IPC_FAT_OBJ} ${DDA_ALL_GATHER_IPC_FAT_OBJ} ${DDA_ALLTOALL_IPC_FAT_OBJ} ${SYM_FAT_OBJS} ${META_FAT_OBJS} ${CTRAN_GEN_FAT_OBJS}
+  DEPENDS ${COMMON_FAT_OBJ} ${ONERANK_FAT_OBJ} ${COLLECTIVES_FAT_OBJ} ${DDA_ALL_REDUCE_IPC_FAT_OBJ} ${DDA_REDUCE_SCATTER_IPC_FAT_OBJ} ${DDA_ALL_GATHER_IPC_FAT_OBJ} ${DDA_ALLTOALL_IPC_FAT_OBJ} ${SYM_FAT_OBJS} ${META_FAT_OBJS}
 )
 add_dependencies(device_linker_build hipify_all)
 
@@ -782,7 +746,6 @@ set(DEVICE_LINKER_OBJECTS
   ${DDA_ALLTOALL_IPC_FAT_OBJ}
   ${SYM_FAT_OBJS}
   ${META_FAT_OBJS}
-  ${CTRAN_GEN_FAT_OBJS}
 )
 
 # ===========================================================================
