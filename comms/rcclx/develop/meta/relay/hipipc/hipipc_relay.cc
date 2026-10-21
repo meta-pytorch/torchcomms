@@ -153,6 +153,49 @@ void writeCanaries(
         "write workspace canary");
   }
 }
+struct CaptureInfo {
+  unsigned long long identity{};
+  hipGraph_t graph{};
+  std::vector<hipGraphNode_t> dependencies;
+};
+CaptureInfo captureInfo(hipStream_t stream) {
+  CaptureInfo result;
+  hipStreamCaptureStatus status{};
+  const hipGraphNode_t* dependencies = nullptr;
+  size_t count = 0;
+  check(
+      hipStreamGetCaptureInfo_v2(
+          stream,
+          &status,
+          &result.identity,
+          &result.graph,
+          &dependencies,
+          &count),
+      "get stream capture dependencies");
+  require(
+      status == hipStreamCaptureStatusActive && result.graph && result.identity,
+      "captureAllReduce requires active CAP");
+  if (count) {
+    result.dependencies.assign(dependencies, dependencies + count);
+  }
+  return result;
+}
+hipGraphNode_t latestNode(
+    hipStream_t stream,
+    const CaptureInfo& before,
+    hipGraphNodeType expected) {
+  const auto after = captureInfo(stream);
+  require(
+      after.identity == before.identity && after.graph == before.graph &&
+          after.dependencies.size() == 1,
+      "capture changed during canonical enqueue");
+  const auto node = after.dependencies.front();
+  hipGraphNodeType type{};
+  check(hipGraphNodeGetType(node, &type), "get latest captured node type");
+  require(
+      type == expected, "canonical enqueue did not produce the expected node");
+  return node;
+}
 } // namespace
 
 namespace detail {
@@ -161,6 +204,23 @@ struct Mapping {
   uint64_t generation{};
   size_t bytes{};
   size_t refs{};
+};
+struct CaptureRecord {
+  RegistrationId id{};
+  uint64_t order{};
+  Owner owner;
+  const void* input{};
+  void* output{};
+  size_t bytes{};
+  hipStream_t stream{};
+  CaptureInfo capture;
+  hipGraphNode_t copy{};
+  hipGraphNode_t kernel{};
+  CapturedDescriptor local{};
+  CapturedDescriptor peer{};
+  bool described{};
+  bool bound{};
+  bool finalized{};
 };
 struct WorkspaceState {
   explicit WorkspaceState(Config c) : config(std::move(c)) {}
@@ -171,6 +231,8 @@ struct WorkspaceState {
   BusId peerBus{};
   int rank{};
   RegistrationRecords records;
+  std::map<uint64_t, CaptureRecord> captures;
+  uint64_t captureOrder{};
   std::map<IpcHandle, Mapping> imports;
   std::set<RegistrationId> boundPeerIds;
   std::vector<RegistrationId> retiring;
@@ -329,6 +391,28 @@ struct WorkspaceState {
             reinterpret_cast<uintptr_t>(out),
             bytes),
         "output overlaps its input");
+  }
+  CaptureRecord& captured(RegistrationId id) {
+    auto found = captures.find(id.identity);
+    require(
+        found != captures.end() && found->second.id == id,
+        "stale captured op identity/generation");
+    return found->second;
+  }
+  void controlCheck(RegistrationId id) {
+    if (captures.count(id.identity)) {
+      captured(id);
+    } else {
+      records.get(id);
+    }
+  }
+  void captureEnded(const CaptureRecord& op) {
+    streamCheck(stream);
+    hipStreamCaptureStatus status{};
+    check(hipStreamIsCapturing(op.stream, &status), "query CAP after capture");
+    require(
+        status == hipStreamCaptureStatusNone,
+        "end CAP before importing/finalizing");
   }
   void cleanup() {
     require(imports.empty(), "close imports before freeing exported memory");
@@ -524,16 +608,16 @@ void closeBatch(
   }
   require(!s.allClosing && s.retiring.empty(), "retirement already pending");
   for (auto id : ids) {
-    s.records.get(id);
+    s.controlCheck(id);
   }
   s.retiring = ids;
   s.allClosing = all;
   DeviceGuard guard(s.config.device);
   s.drain();
   for (auto id : ids) {
-    const auto& r = s.records.get(id);
-    if (r.bound) {
-      s.closeImport(r.peer.base);
+    auto found = s.records.inputs.find(id.identity);
+    if (found != s.records.inputs.end() && found->second.bound) {
+      s.closeImport(found->second.peer.base);
     }
   }
   if (all) {
@@ -547,6 +631,106 @@ void closeBatch(
     require(s.imports.empty(), "unexpected surviving IPC import");
   }
   s.importsClosed = true;
+}
+RegistrationId registerInputRecord(
+    WorkspaceState& s,
+    const void* input,
+    size_t bytes,
+    const Owner& owner,
+    RegistrationId id) {
+  s.usable();
+  s.incomingOwner = owner;
+  require(
+      owner && input && reinterpret_cast<uintptr_t>(input) % 16 == 0 &&
+          bytes <= s.config.capacity,
+      "registration needs an aligned owned range");
+  DeviceGuard guard(s.config.device);
+  s.streamCheck(s.stream);
+  hipPointerAttribute_t attributes{};
+  check(
+      hipPointerGetAttributes(&attributes, input), "query producer allocation");
+  if (attributes.type != hipMemoryTypeDevice || attributes.isManaged) {
+    s.incomingOwner.reset();
+    throw UnsupportedAllocation(
+        "registration requires non-managed HIP device memory");
+  }
+  require(
+      attributes.device == s.config.device, "producer is on another device");
+  void* base = nullptr;
+  size_t allocationBytes = 0;
+  const auto rangeStatus =
+      hipMemGetAddressRange(&base, &allocationBytes, const_cast<void*>(input));
+  if (rangeStatus == hipErrorNotSupported ||
+      rangeStatus == hipErrorInvalidValue ||
+      rangeStatus == hipErrorInvalidDevicePointer) {
+    s.incomingOwner.reset();
+    (void)hipGetLastError();
+    throw UnsupportedAllocation("allocation has no legacy HIP address range");
+  }
+  check(rangeStatus, "resolve producer allocation base");
+  const auto address = reinterpret_cast<uintptr_t>(input);
+  require(
+      address >= reinterpret_cast<uintptr_t>(base),
+      "invalid producer allocation base");
+  const size_t offset = address - reinterpret_cast<uintptr_t>(base);
+  validateRange(allocationBytes, offset, bytes);
+  require(
+      base != s.input && base != s.flagBase,
+      "register producer, not workspace storage");
+  auto found = s.records.bases.find(base);
+  IpcHandle handle{};
+  uint64_t allocationGeneration = nextIdentity();
+  if (found != s.records.bases.end()) {
+    require(
+        found->second.bytes == allocationBytes,
+        "live allocation extent changed");
+    handle = found->second.handle;
+    allocationGeneration = found->second.generation;
+  } else {
+    try {
+      handle = exportHandle(base, true);
+    } catch (const UnsupportedAllocation&) {
+      s.incomingOwner.reset();
+      throw;
+    }
+  }
+  detail::InputRecord record;
+  record.input = input;
+  record.base = base;
+  record.local.workspaceGeneration = s.local.generation;
+  record.local.peerWorkspaceGeneration = s.peer.generation;
+  record.local.registration = id;
+  record.local.allocationGeneration = allocationGeneration;
+  record.local.allocationBytes = allocationBytes;
+  record.local.offset = offset;
+  record.local.bytes = bytes;
+  record.local.base = handle;
+  s.records.add(record, owner);
+  s.incomingOwner.reset();
+  return id;
+}
+void bindInputRecord(
+    WorkspaceState& s,
+    RegistrationId id,
+    const RegistrationDescriptor& peer,
+    bool remember = true) {
+  auto& r = s.records.get(id);
+  require(!r.bound, "registration peer may only bind once");
+  require(
+      peer.workspaceGeneration == s.peer.generation &&
+          peer.peerWorkspaceGeneration == s.local.generation &&
+          peer.registration.identity && peer.registration.generation &&
+          peer.allocationGeneration && peer.bytes == r.local.bytes,
+      "peer registration identity/generation/size mismatch");
+  validateRange(peer.allocationBytes, peer.offset, peer.bytes);
+  // Keep seen IDs after retirement, rejecting replay of a retired descriptor.
+  require(
+      !remember || s.boundPeerIds.insert(peer.registration).second,
+      "stale or already bound peer registration");
+  DeviceGuard guard(s.config.device);
+  s.open(peer.base, peer.allocationGeneration, peer.allocationBytes);
+  r.peer = peer;
+  r.bound = true;
 }
 } // namespace
 
@@ -658,77 +842,8 @@ void Workspace::probe(void* stream) {
 RegistrationId
 Workspace::registerInput(const void* input, size_t bytes, Owner owner) {
   return locked(state_, [&](auto& s) {
-    s.usable();
-    s.incomingOwner = owner;
-    require(
-        owner && input && reinterpret_cast<uintptr_t>(input) % 16 == 0 &&
-            bytes <= s.config.capacity,
-        "registration needs an aligned owned range");
-    DeviceGuard guard(s.config.device);
-    s.streamCheck(s.stream);
-    hipPointerAttribute_t attributes{};
-    check(
-        hipPointerGetAttributes(&attributes, input),
-        "query producer allocation");
-    if (attributes.type != hipMemoryTypeDevice || attributes.isManaged) {
-      s.incomingOwner.reset();
-      throw UnsupportedAllocation(
-          "registration requires non-managed HIP device memory");
-    }
-    require(
-        attributes.device == s.config.device, "producer is on another device");
-    void* base = nullptr;
-    size_t allocationBytes = 0;
-    const auto rangeStatus = hipMemGetAddressRange(
-        &base, &allocationBytes, const_cast<void*>(input));
-    if (rangeStatus == hipErrorNotSupported ||
-        rangeStatus == hipErrorInvalidValue ||
-        rangeStatus == hipErrorInvalidDevicePointer) {
-      s.incomingOwner.reset();
-      (void)hipGetLastError();
-      throw UnsupportedAllocation("allocation has no legacy HIP address range");
-    }
-    check(rangeStatus, "resolve producer allocation base");
-    const auto address = reinterpret_cast<uintptr_t>(input);
-    require(
-        address >= reinterpret_cast<uintptr_t>(base),
-        "invalid producer allocation base");
-    const size_t offset = address - reinterpret_cast<uintptr_t>(base);
-    validateRange(allocationBytes, offset, bytes);
-    require(
-        base != s.input && base != s.flagBase,
-        "register producer, not workspace storage");
-    auto found = s.records.bases.find(base);
-    IpcHandle handle{};
-    uint64_t allocationGeneration = nextIdentity();
-    if (found != s.records.bases.end()) {
-      require(
-          found->second.bytes == allocationBytes,
-          "live allocation extent changed");
-      handle = found->second.handle;
-      allocationGeneration = found->second.generation;
-    } else {
-      try {
-        handle = exportHandle(base, true);
-      } catch (const UnsupportedAllocation&) {
-        s.incomingOwner.reset();
-        throw;
-      }
-    }
-    detail::InputRecord record;
-    record.input = input;
-    record.base = base;
-    record.local.workspaceGeneration = s.local.generation;
-    record.local.peerWorkspaceGeneration = s.peer.generation;
-    record.local.registration = {nextIdentity(), nextIdentity()};
-    record.local.allocationGeneration = allocationGeneration;
-    record.local.allocationBytes = allocationBytes;
-    record.local.offset = offset;
-    record.local.bytes = bytes;
-    record.local.base = handle;
-    s.records.add(record, owner);
-    s.incomingOwner.reset();
-    return record.local.registration;
+    return registerInputRecord(
+        s, input, bytes, owner, {nextIdentity(), nextIdentity()});
   });
 }
 std::vector<uint8_t> Workspace::describe(RegistrationId id) const {
@@ -740,24 +855,7 @@ std::vector<uint8_t> Workspace::describe(RegistrationId id) const {
 void Workspace::bindPeer(RegistrationId id, const std::vector<uint8_t>& bytes) {
   locked(state_, [&](auto& s) {
     s.usable();
-    auto& r = s.records.get(id);
-    require(!r.bound, "registration peer may only bind once");
-    const auto peer = decodeRecord<RegistrationDescriptor>(bytes);
-    require(
-        peer.workspaceGeneration == s.peer.generation &&
-            peer.peerWorkspaceGeneration == s.local.generation &&
-            peer.registration.identity && peer.registration.generation &&
-            peer.allocationGeneration && peer.bytes == r.local.bytes,
-        "peer registration identity/generation/size mismatch");
-    validateRange(peer.allocationBytes, peer.offset, peer.bytes);
-    // Keep seen IDs after retirement, rejecting replay of a retired descriptor.
-    require(
-        s.boundPeerIds.insert(peer.registration).second,
-        "stale or already bound peer registration");
-    DeviceGuard guard(s.config.device);
-    s.open(peer.base, peer.allocationGeneration, peer.allocationBytes);
-    r.peer = peer;
-    r.bound = true;
+    bindInputRecord(s, id, decodeRecord<RegistrationDescriptor>(bytes));
   });
 }
 void Workspace::allReduceStaged(
@@ -803,6 +901,178 @@ void Workspace::allReduceDirect(
         "launch canonical TP2 relay");
   });
 }
+CapturedOp Workspace::captureAllReduce(
+    const void* input,
+    void* output,
+    size_t bytes,
+    Owner owner,
+    void* captureStream) {
+  return locked(state_, [&](auto& s) {
+    s.usable();
+    s.incomingOwner = owner;
+    const RegistrationId id{nextIdentity(), nextIdentity()};
+    auto& op = s.captures[id.identity];
+    op.id = id;
+    op.order = ++s.captureOrder;
+    op.owner = owner;
+    op.input = input;
+    op.output = output;
+    op.bytes = bytes;
+    op.stream = static_cast<hipStream_t>(captureStream);
+    require(owner != nullptr, "capture requires input/output owner group");
+    s.payload(input, output, bytes);
+    require(op.stream != s.stream, "CAP must be separate from bound EXEC");
+    int device = -1;
+    check(hipGetDevice(&device), "get CAP device");
+    require(device == s.config.device, "CAP current device mismatch");
+    hipDevice_t streamDevice = device;
+    check(
+        hipStreamGetDevice(op.stream, &streamDevice), "get CAP stream device");
+    require(streamDevice == device, "CAP stream device mismatch");
+    op.capture = captureInfo(op.stream);
+    check(
+        hipMemcpyAsync(
+            s.input, input, bytes, hipMemcpyDeviceToDevice, op.stream),
+        "capture provisional staging copy");
+    op.copy = latestNode(op.stream, op.capture, hipGraphNodeTypeMemcpy);
+    check(
+        launchRegisteredRelayAllReduce(
+            s.args(s.input, s.peerInput, output, bytes), op.stream),
+        "capture canonical TP2 relay");
+    op.kernel = latestNode(op.stream, op.capture, hipGraphNodeTypeKernel);
+    s.incomingOwner.reset();
+    return CapturedOp{id};
+  });
+}
+std::vector<uint8_t> Workspace::describe(CapturedOp token) {
+  return locked(state_, [&](auto& s) {
+    s.usable();
+    auto& op = s.captured(token.id);
+    s.captureEnded(op);
+    if (!op.described) {
+      auto& descriptor = op.local.input;
+      descriptor.workspaceGeneration = s.local.generation;
+      descriptor.peerWorkspaceGeneration = s.peer.generation;
+      descriptor.registration = op.id;
+      descriptor.bytes = op.bytes;
+      if (reinterpret_cast<uintptr_t>(op.input) % 16 == 0) {
+        try {
+          registerInputRecord(s, op.input, op.bytes, op.owner, op.id);
+          descriptor = s.records.get(op.id).local;
+          op.local.role = CaptureRole::Direct;
+        } catch (const UnsupportedAllocation&) {
+          // The capture's owner remains rooted even for non-exportable storage.
+        }
+      }
+      op.described = true;
+    }
+    return encodeRecord(op.local);
+  });
+}
+void Workspace::bindPeer(CapturedOp token, const std::vector<uint8_t>& bytes) {
+  locked(state_, [&](auto& s) {
+    s.usable();
+    auto& op = s.captured(token.id);
+    s.captureEnded(op);
+    require(
+        op.described && !op.bound && !op.finalized,
+        "describe then bind captured peer once");
+    const auto peer = decodeRecord<CapturedDescriptor>(bytes);
+    validateCapturedDescriptor(peer);
+    require(
+        peer.input.workspaceGeneration == s.peer.generation &&
+            peer.input.peerWorkspaceGeneration == s.local.generation &&
+            peer.input.bytes == op.bytes,
+        "peer captured op workspace/size mismatch");
+    require(
+        s.boundPeerIds.insert(peer.input.registration).second,
+        "stale or already bound peer captured op");
+    if (op.local.role == CaptureRole::Direct &&
+        peer.role == CaptureRole::Direct) {
+      bindInputRecord(s, op.id, peer.input, false);
+    }
+    op.peer = peer;
+    op.bound = true;
+  });
+}
+void Workspace::finalizeCapture(
+    void* rawGraph,
+    const std::vector<CapturedOp>& ops) {
+  require(
+      rawGraph && !ops.empty(),
+      "finalize requires exact raw graph and captured ops");
+  locked(state_, [&](auto& s) {
+    s.usable();
+    const auto& first = s.captured(ops.front().id);
+    s.captureEnded(first);
+    std::vector<const detail::CaptureRecord*> expected;
+    for (const auto& entry : s.captures) {
+      const auto& op = entry.second;
+      if (op.capture.graph == rawGraph &&
+          op.capture.identity == first.capture.identity &&
+          op.stream == first.stream) {
+        expected.push_back(&op);
+      }
+    }
+    std::sort(expected.begin(), expected.end(), [](auto* a, auto* b) {
+      return a->order < b->order;
+    });
+    require(
+        expected.size() == ops.size(), "incomplete captured operation list");
+    for (size_t i = 0; i < ops.size(); ++i) {
+      require(
+          expected[i]->id == ops[i].id,
+          "captured operations must follow capture order");
+    }
+    std::set<RegistrationId> seen;
+    for (auto token : ops) {
+      const auto& op = s.captured(token.id);
+      require(
+          op.capture.graph == rawGraph &&
+              op.capture.identity == first.capture.identity &&
+              op.stream == first.stream && op.described && op.bound &&
+              !op.finalized && seen.insert(token.id).second,
+          "wrong graph, stale, duplicate or unbound captured op");
+    }
+    for (auto token : ops) {
+      auto& op = s.captured(token.id);
+      const bool direct = op.local.role == CaptureRole::Direct &&
+          op.peer.role == CaptureRole::Direct;
+      const void* mine = s.input;
+      const void* peer = s.peerInput;
+      if (direct) {
+        const auto& record = s.records.get(op.id);
+        mine = op.input;
+        peer =
+            static_cast<unsigned char*>(s.imports.at(record.peer.base).base) +
+            record.peer.offset;
+      }
+      auto arguments = s.args(mine, peer, op.output, op.bytes);
+      hipKernelNodeParams params{};
+      check(
+          hipGraphKernelNodeGetParams(op.kernel, &params),
+          "get captured canonical kernel params");
+      void* argument = &arguments;
+      params.extra = nullptr;
+      params.kernelParams = &argument;
+      check(
+          hipGraphKernelNodeSetParams(op.kernel, &params),
+          "patch canonical graph pointers before instantiate");
+      if (direct) {
+        // Only the copy and its recorded parents are rewired; no DAG traversal.
+        for (auto parent : op.capture.dependencies) {
+          check(
+              hipGraphAddDependencies(op.capture.graph, &parent, &op.kernel, 1),
+              "preserve direct kernel ordering without staging copy");
+        }
+        check(
+            hipGraphDestroyNode(op.copy),
+            "remove unnecessary direct staging copy");
+      }
+      op.finalized = true;
+    }
+  });
+}
 void Workspace::drain() {
   locked(state_, [](auto& s) {
     s.healthy();
@@ -815,6 +1085,7 @@ void Workspace::closeImports(const std::vector<RegistrationId>& ids) {
 }
 void Workspace::retire(const std::vector<RegistrationId>& ids) {
   std::vector<std::vector<Owner>> detached;
+  std::vector<Owner> capturedOwners;
   locked(state_, [&](auto& s) {
     s.healthy();
     const auto batch = sortedIds(ids);
@@ -822,11 +1093,19 @@ void Workspace::retire(const std::vector<RegistrationId>& ids) {
         !s.allClosing && s.importsClosed && s.retiring == batch,
         "retire needs the closed acknowledgment for this import batch");
     detached.reserve(batch.size());
+    capturedOwners.reserve(batch.size());
     for (auto id : batch) {
-      s.records.get(id);
+      s.controlCheck(id);
     }
     for (auto id : batch) {
-      detached.push_back(s.records.erase(id));
+      if (s.records.inputs.count(id.identity)) {
+        detached.push_back(s.records.erase(id));
+      }
+      auto found = s.captures.find(id.identity);
+      if (found != s.captures.end()) {
+        capturedOwners.push_back(std::move(found->second.owner));
+        s.captures.erase(found);
+      }
     }
     s.retiring.clear();
     s.importsClosed = false;
@@ -842,11 +1121,17 @@ void Workspace::closeImports() {
     for (const auto& entry : s.records.inputs) {
       ids.push_back(entry.second.local.registration);
     }
+    for (const auto& entry : s.captures) {
+      if (!s.records.inputs.count(entry.first)) {
+        ids.push_back(entry.second.id);
+      }
+    }
     closeBatch(s, sortedIds(ids), true);
   });
 }
 void Workspace::close() {
   detail::RegistrationRecords detached;
+  std::map<uint64_t, detail::CaptureRecord> detachedCaptures;
   locked(state_, [&](auto& s) {
     if (s.phase == WorkspaceState::Phase::Closed) {
       return;
@@ -863,6 +1148,7 @@ void Workspace::close() {
             expected, WorkspaceState::Phase::Closed),
         "workspace poisoned during close");
     std::swap(detached, s.records);
+    std::swap(detachedCaptures, s.captures);
   });
 }
 bool Workspace::poisoned() const {
@@ -872,7 +1158,6 @@ void Workspace::poison() noexcept {
   retainForever(state_);
 }
 } // namespace rcclx::relay::hipipc
-
 extern "C" uint32_t hipipc_relay_abi_version() {
   return rcclx::relay::hipipc::kAbiVersion;
 }
