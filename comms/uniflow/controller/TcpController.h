@@ -111,6 +111,8 @@ struct AsyncIO {
   EventBase& evb;
   std::optional<SendState> sendState;
   std::optional<RecvState> recvState;
+  std::shared_ptr<std::atomic<bool>> registrationAlive{
+      std::make_shared<std::atomic<bool>>(true)};
   explicit AsyncIO(EventBase& evb) : evb(evb) {}
 };
 
