@@ -91,6 +91,7 @@ SRC += $(wildcard $(UTILS_DIR)/memtrace/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/colltrace/v1/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/colltrace/v1/plugins/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/colltrace/v2/*.cc)
+SRC += $(wildcard $(UTILS_DIR)/colltrace/nicstats/*.cc)
 SRC += $(wildcard $(UTILS_DIR)/hrdw_ring_buffer/*.cc)
 SRC += $(filter-out $(CVARS_CC),$(wildcard $(CVARS_DIR)/*.cc)) $(CVARS_CC)
 CUSRC := $(UTILS_DIR)/hrdw_ring_buffer/GpuClockCalibration.cu
