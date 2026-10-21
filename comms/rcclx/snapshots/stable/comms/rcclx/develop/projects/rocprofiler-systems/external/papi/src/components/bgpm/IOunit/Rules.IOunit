@@ -1,7 +1,0 @@
-# $Id$
-
-COMPSRCS += components/bgpm/IOunit/linux-IOunit.c 
-COMPOBJS += linux-IOunit.o 
-
-linux-IOunit.o: components/bgpm/IOunit/linux-IOunit.c components/bgpm/IOunit/linux-IOunit.h $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/bgpm/IOunit/linux-IOunit.c -o linux-IOunit.o

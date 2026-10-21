@@ -1,7 +1,0 @@
-# $Id$
-
-COMPSRCS += components/micpower/linux-micpower.c 
-COMPOBJS += linux-micpower.o
-
-linux-micpower.o: components/micpower/linux-micpower.c components/micpower/linux-micpower.h 
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/micpower/linux-micpower.c -o linux-micpower.o 

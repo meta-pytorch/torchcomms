@@ -1,3 +1,0 @@
-Cython >= 3.0.0
-scikit-build
-cmake >= 3.15.0

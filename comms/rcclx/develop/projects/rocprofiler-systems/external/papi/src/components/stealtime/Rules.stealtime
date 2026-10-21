@@ -1,6 +1,0 @@
-
-COMPSRCS += components/stealtime/linux-stealtime.c
-COMPOBJS += linux-stealtime.o
-
-linux-stealtime.o: components/stealtime/linux-stealtime.c $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/stealtime/linux-stealtime.c -o linux-stealtime.o 
