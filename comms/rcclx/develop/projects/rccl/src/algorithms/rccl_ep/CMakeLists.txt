@@ -29,8 +29,8 @@ set(RCCL_EP_RCCL_ROOT "" CACHE PATH
     "Root of an EP-capable RCCL install, holding include/ and lib/")
 
 # The window path needs symmetric memory, which needs cuMem, which RCCL only
-# exposes on new enough ROCm; and the library must be built WITHOUT
-# --rocshmem-gin, whose device symbols python3 cannot resolve at load time.
+# exposes on new enough ROCm. An RCCL built with --rocshmem-gin loads in
+# python3 only with RCCL_GIN_LINK_ROCSHMEM (rocSHMEM's host code linked in).
 # Neither is discoverable from CMake, so RCCL is located explicitly rather than
 # picked up from the system.
 if(NOT RCCL_EP_RCCL_ROOT)
@@ -118,6 +118,26 @@ target_link_libraries(rccl_ep PRIVATE "${RCCL_EP_RCCL_LIBRARY}" hip::device)
 target_compile_definitions(rccl_ep PRIVATE ROCM_VERSION=${ROCM_VERSION})
 
 target_compile_options(rccl_ep PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-Wno-unused-value>)
+
+# The GIN rail on rocSHMEM GDA (NCCL_GIN_TYPE=5) as well as the proxy. Needs the QueuePair device
+# bitcode of an RCCL configured with ENABLE_ROCSHMEM_GIN for a single GDA provider
+# (<rccl build>/device_build/rocshmem_qp_device.bc): its constmem carries that provider, which the
+# QueuePair code dispatches on. Still no -fgpu-rdc: the bitcode is linked into this TU.
+option(RCCL_EP_GIN_GDA "Build the GIN rail for the rocSHMEM GDA backend too" OFF)
+set(RCCL_EP_ROCSHMEM_QP_BC "" CACHE FILEPATH "rocshmem_qp_device.bc from an ENABLE_ROCSHMEM_GIN RCCL build")
+if(RCCL_EP_GIN_GDA)
+  if(NOT EXISTS "${RCCL_EP_ROCSHMEM_QP_BC}")
+    message(FATAL_ERROR "RCCL_EP_GIN_GDA needs RCCL_EP_ROCSHMEM_QP_BC (got '${RCCL_EP_ROCSHMEM_QP_BC}')")
+  endif()
+  # ncclGin's backend mask is fixed per TU: without the GDA bit a type-5 device communicator runs
+  # no backend. The SDMA backend's header needs rocSHMEM's private sources, and the rail does not
+  # use it.
+  target_compile_definitions(rccl_ep PRIVATE NCCL_GIN_ROCSHMEM_GDA_ENABLE=1 NCCL_GIN_ANVIL_SDMA_ENABLE=0)
+  target_compile_options(rccl_ep PRIVATE
+    "$<$<COMPILE_LANGUAGE:HIP>:SHELL:-Xclang -mlink-builtin-bitcode -Xclang ${RCCL_EP_ROCSHMEM_QP_BC}>")
+  # OBJECT_DEPENDS is a source-file property: recompile when the bitcode is regenerated.
+  set_property(SOURCE python/rccl_ep_capi.hip APPEND PROPERTY OBJECT_DEPENDS "${RCCL_EP_ROCSHMEM_QP_BC}")
+endif()
 
 # Land the artifact beside the Python package: rccl_ep/__init__.py falls back to
 # a co-located librccl_ep.so, so an installed build needs no RCCL_EP_LIB.
