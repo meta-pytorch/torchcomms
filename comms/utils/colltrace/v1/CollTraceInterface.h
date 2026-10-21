@@ -8,11 +8,11 @@
 #include <optional>
 #include <string>
 
-#include "comms/observatory/colltrace/LifecycleFeedTypes.h"
 #include "comms/utils/colltrace/v1/CollMetadata.h"
 #include "comms/utils/colltrace/v1/CollTraceHandle.h"
 #include "comms/utils/colltrace/v1/CollTracePlugin.h"
 #include "comms/utils/colltrace/v1/CollWaitEvent.h"
+#include "comms/utils/colltrace/v1/LifecycleFeedTypes.h"
 
 namespace meta::comms::colltrace {
 

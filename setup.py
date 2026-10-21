@@ -101,11 +101,10 @@ USE_TRANSPORT_CCA_HOOK = flag_enabled(
     "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
 )
 USE_TRITON = flag_enabled("USE_TRITON", False)
-# The from-source NCCLX build provides libcommsutils.so and libobservatory.so
-# but no package ships them, so the wheel has to. Turn this off wherever the
-# environment already supplies the process's one copy of each (the commsutils
-# package). A second copy gives each backend its own configuration table and
-# registry.
+# The from-source NCCLX build provides libcommsutils.so but no package ships
+# it, so the wheel has to. Turn this off wherever the environment already
+# supplies the process's one copy (the commsutils package). A second copy gives
+# each backend its own configuration table.
 TORCHCOMMS_BUNDLE_COMMSUTILS = flag_enabled("TORCHCOMMS_BUNDLE_COMMSUTILS", True)
 
 

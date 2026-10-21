@@ -296,7 +296,6 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-LDFLAGS    += -L$(LIBDIR) -lobservatory
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
 	# Ensure that cudart symbols are resolved within the module itself.
@@ -375,25 +374,9 @@ $(INCDIR)/nccl.h : nccl.h.in ../makefiles/version.mk
 	    -e "s/\$${nccl:Version}/$(NCCL_VERSION)/g" \
 	    $< > $@
 
-# libobservatory.so. See comms/observatory/README.md.
-#
-# This library must retain default visibility and remain outside libnccl's
-# version script so all users resolve the process-wide registry here.
-LIBOBSERVATORY_SRC    := ${BASE_DIR}/comms/observatory/colltrace/LifecycleFeedRegistry.cc
-LIBOBSERVATORY_NAME   := libobservatory.so
-LIBOBSERVATORY_SONAME := $(LIBOBSERVATORY_NAME).1
-LIBOBSERVATORY_HDRS   := $(wildcard ${BASE_DIR}/comms/observatory/colltrace/*.h)
-
-$(LIBDIR)/$(LIBOBSERVATORY_SONAME): $(LIBOBSERVATORY_SRC) $(LIBOBSERVATORY_HDRS)
-	@printf "Linking    %-35s > %s\n" $(LIBOBSERVATORY_SONAME) $@
-	mkdir -p $(LIBDIR)
-	$(CXX) $(CXXFLAGS) -fvisibility=default -I${BASE_DIR} -shared \
-	    -Wl,--no-undefined -Wl,-soname,$(LIBOBSERVATORY_SONAME) -o $@ $<
-	ln -sf $(LIBOBSERVATORY_SONAME) $(LIBDIR)/$(LIBOBSERVATORY_NAME)
-
 # Device objects are linked into libnccl.so so cross-translation-unit device
 # symbols resolve from the shared library.
-$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFESTS) $(LIBDIR)/$(LIBOBSERVATORY_SONAME)
+$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFESTS)
 	@printf "Linking    %-35s > %s\n" $(LIBTARGET) $@
 	mkdir -p $(LIBDIR)
 	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFESTS)) $(LDFLAGS)

@@ -334,8 +334,7 @@ if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
 else
   THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt "
 fi
-# libcommsutils.so.1 and libobservatory.so.1 are DT_NEEDED of libnccl.so and
-# are installed beside it.
+# libcommsutils.so.1 is DT_NEEDED of libnccl.so and is installed beside it.
 # $$ because make gets this on its command line, where a bare $O expands as a
 # make variable; the quotes keep $ORIGIN from the recipe's shell.
 THIRD_PARTY_LDFLAGS+="-Wl,-rpath,'\$\$ORIGIN' "
@@ -352,11 +351,11 @@ fi
 
 mkdir -p "$BUILDDIR"
 
-# libcommsutils.so.1 and libobservatory.so.1 are a dependency of libnccl.so,
-# consumed from COMMSUTILS_LIB_DIR. Environments with the commsutils package
-# (the conda feedstock's host dep, the wheel build's installed wheel) already
-# have them there; otherwise -- the from-source OSS build, a bare env -- build
-# and install them like the other dependencies above, into their own build
+# libcommsutils.so.1 is a dependency of libnccl.so, consumed from
+# COMMSUTILS_LIB_DIR. Environments with the commsutils package (the conda
+# feedstock's host dep, the wheel build's installed wheel) already have it
+# there; otherwise -- the from-source OSS build, a bare env -- build and
+# install it like the other dependencies above, into its own build
 # tree so `src.install`'s copy of $BUILDDIR/lib does not ship a second copy.
 # A build tree left by an earlier run means the installed copy came from this
 # script, so it is rebuilt (incrementally) rather than reused, and edits to
@@ -365,11 +364,10 @@ COMMSUTILS_LIB_DIR=${COMMSUTILS_LIB_DIR:="$CONDA_LIB_DIR"}
 COMMSUTILS_BUILDDIR="$BUILDDIR/commsutils"
 if [[ -z "${NCCL_REBUILD_COMMSUTILS:-}" ]] \
    && [ ! -d "$COMMSUTILS_BUILDDIR" ] \
-   && [ -f "$COMMSUTILS_LIB_DIR/libcommsutils.so.1" ] \
-   && [ -f "$COMMSUTILS_LIB_DIR/libobservatory.so.1" ]; then
-  echo "Using the commsutils libraries in $COMMSUTILS_LIB_DIR"
+   && [ -f "$COMMSUTILS_LIB_DIR/libcommsutils.so.1" ]; then
+  echo "Using the commsutils library in $COMMSUTILS_LIB_DIR"
 else
-  echo "Building the commsutils libraries into $COMMSUTILS_LIB_DIR"
+  echo "Building the commsutils library into $COMMSUTILS_LIB_DIR"
   PREFIX="$(dirname "$COMMSUTILS_LIB_DIR")" \
     CONDA_PREFIX="$CONDA_PREFIX" \
     USE_SYSTEM_LIBS="${USE_SYSTEM_LIBS:-}" \

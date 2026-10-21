@@ -1,13 +1,12 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #
-# The commsutils package: libcommsutils.so.1 and libobservatory.so.1, the
-# one-copy-per-process libraries shared by NCCLX and MCCL.
+# The commsutils package: libcommsutils.so.1, the one-copy-per-process library
+# shared by NCCLX and MCCL.
 #
 # libcommsutils.so.1 is comms/utils -- NCCL's configuration (cvars) table, the
 # logger, the trainer context, memtrace, colltrace and the shared helpers.
-# libobservatory.so.1 is comms/observatory (see its README for why it must be
-# a single instance). libnccl.so, libctran.so and libmccl.so link both as
-# prebuilt libraries; nothing else builds them.
+# libnccl.so, libctran.so and libmccl.so link it as a prebuilt library; nothing
+# else builds it.
 #
 # Inputs: BASE_DIR (the directory containing comms/), BUILDDIR (outputs go to
 # $(BUILDDIR)/lib and $(BUILDDIR)/obj/commsutils), PREFIX (where `install`
@@ -40,11 +39,8 @@ THIRD_PARTY_LDFLAGS ?=
 LIBDIR    := $(BUILDDIR)/lib
 OBJDIR    := $(BUILDDIR)/obj/commsutils
 UTILS_DIR := $(BASE_DIR)/comms/utils
-OBSERVATORY_DIR := $(BASE_DIR)/comms/observatory
 NAME      := libcommsutils.so
 SONAME    := $(NAME).1
-OBSERVATORY_NAME   := libobservatory.so
-OBSERVATORY_SONAME := $(OBSERVATORY_NAME).1
 
 INCLUDES := -I$(BASE_DIR) -I$(CUDA_INC) -I$(CUDA_INC)/cccl
 ifneq ($(CONDA_INCLUDE_DIR),)
@@ -99,10 +95,7 @@ CUSRC += $(UTILS_DIR)/colltrace/v1/HRDWRingBufferInstantiations.cu
 
 OBJ := $(SRC:$(BASE_DIR)/%.cc=$(OBJDIR)/%.o) $(CUSRC:$(BASE_DIR)/%.cu=$(OBJDIR)/%.cu.o)
 
-OBSERVATORY_SRC  := $(OBSERVATORY_DIR)/colltrace/LifecycleFeedRegistry.cc
-OBSERVATORY_HDRS := $(wildcard $(OBSERVATORY_DIR)/colltrace/*.h)
-
-all: $(LIBDIR)/$(SONAME) $(LIBDIR)/$(OBSERVATORY_SONAME)
+all: $(LIBDIR)/$(SONAME)
 
 $(CVARS_STAMP): $(CVARS_DIR)/nccl_cvars.yaml $(CVARS_DIR)/nccl_cvars.cc.in $(CVARS_DIR)/extractcvars.py
 	@printf "Generating %-35s > %s\n" nccl_cvars.yaml $(CVARS_CC)
@@ -124,40 +117,28 @@ $(OBJDIR)/%.cu.o: $(BASE_DIR)/%.cu | $(CVARS_H)
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCUFLAGS) -c $< -o $@
 
-# Default visibility and no -Bsymbolic: consumers must resolve these symbols
-# here rather than locally. The export map only hides third-party code.
-$(LIBDIR)/$(OBSERVATORY_SONAME): $(OBSERVATORY_SRC) $(OBSERVATORY_HDRS) $(EXPORT_MAP)
-	@printf "Linking    %-35s > %s\n" $(OBSERVATORY_SONAME) $@
-	@mkdir -p $(LIBDIR)
-	$(CXX) $(CXXFLAGS) -I$(BASE_DIR) -shared \
-	    -Wl,--no-undefined -Wl,--version-script=$(EXPORT_MAP) \
-	    -Wl,-soname,$(OBSERVATORY_SONAME) -o $@ $<
-	ln -sf $(OBSERVATORY_SONAME) $(LIBDIR)/$(OBSERVATORY_NAME)
-
 # -lstdc++ ahead of the third-party archives: libfolly.a carries folly's
 # exception tracer, which defines __cxa_throw and friends and finds the real
 # ones with dlsym(RTLD_NEXT). The first archive member satisfying a `throw`
 # wins at link time, so without this the tracer is pulled in as a local
 # interposer; RTLD_NEXT then misses libstdc++ (already loaded, e.g. by
 # Python) and the first exception thrown in here crashes the process.
-$(LIBDIR)/$(SONAME): $(OBJ) $(LIBDIR)/$(OBSERVATORY_SONAME) $(EXPORT_MAP)
+$(LIBDIR)/$(SONAME): $(OBJ) $(EXPORT_MAP)
 	@printf "Linking    %-35s > %s\n" $(SONAME) $@
 	@mkdir -p $(LIBDIR)
 	$(CXX) $(CXXFLAGS) -shared -Wl,--no-undefined -Wl,--exclude-libs,ALL \
 	    -Wl,--version-script=$(EXPORT_MAP) -Wl,-soname,$(SONAME) -o $@ $(OBJ) -lstdc++ \
-	    -L$(CUDA_LIB) $(if $(CONDA_LIB_DIR),-L$(CONDA_LIB_DIR)) -L$(LIBDIR) -lobservatory \
+	    -L$(CUDA_LIB) $(if $(CONDA_LIB_DIR),-L$(CONDA_LIB_DIR)) \
 	    -l$(CUDARTLIB) -latomic -lpthread -lm -lrt -ldl $(THIRD_PARTY_LDFLAGS) -Wl,-rpath,'$$ORIGIN'
 	ln -sf $(SONAME) $(LIBDIR)/$(NAME)
 
 install: all
 	install -d $(DESTDIR)$(PREFIX)/lib
-	install -m 755 $(LIBDIR)/$(SONAME) $(LIBDIR)/$(OBSERVATORY_SONAME) $(DESTDIR)$(PREFIX)/lib/
+	install -m 755 $(LIBDIR)/$(SONAME) $(DESTDIR)$(PREFIX)/lib/
 	ln -sf $(SONAME) $(DESTDIR)$(PREFIX)/lib/$(NAME)
-	ln -sf $(OBSERVATORY_SONAME) $(DESTDIR)$(PREFIX)/lib/$(OBSERVATORY_NAME)
 
 clean:
-	rm -rf $(OBJDIR) $(LIBDIR)/$(NAME) $(LIBDIR)/$(SONAME) \
-	    $(LIBDIR)/$(OBSERVATORY_NAME) $(LIBDIR)/$(OBSERVATORY_SONAME)
+	rm -rf $(OBJDIR) $(LIBDIR)/$(NAME) $(LIBDIR)/$(SONAME)
 
 -include $(filter %.d,$(OBJ:.o=.d))
 

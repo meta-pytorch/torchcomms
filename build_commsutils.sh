@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Builds and installs the commsutils libraries -- libcommsutils.so.1
-# (comms/utils) and libobservatory.so.1 (comms/observatory) -- from
-# comms/utils/Makefile into $PREFIX/lib. This is the one place that derives the
-# library's third-party link line; the conda feedstock, the wheel build and
+# Builds and installs the commsutils library, libcommsutils.so.1 (comms/utils),
+# from comms/utils/Makefile into $PREFIX/lib. This is the one place that derives
+# the library's third-party link line; the conda feedstock, the wheel build and
 # build_ncclx.sh's dependency step all run it.
 #
 # Required env:
@@ -88,43 +87,38 @@ make -C "${BASE_DIR}/comms/utils" -j"$(nproc)" install \
 # shared dependencies resolve from the build env's lib dir here; whoever
 # packages the library (conda: same prefix; wheel: bundled beside it) gives it
 # its runtime search path.
-for lib in libcommsutils.so.1 libobservatory.so.1; do
-  path="${PREFIX}/lib/${lib}"
-  [ -f "${path}" ] || { echo "ERROR: ${path} was not installed" >&2; exit 1; }
-  if LD_LIBRARY_PATH="${CONDA_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "${path}" | grep -q 'not found'; then
-    echo "ERROR: ${path} has unresolved dependencies:" >&2
-    LD_LIBRARY_PATH="${CONDA_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "${path}" | grep 'not found' >&2
-    exit 1
-  fi
-done
-if readelf -d "${PREFIX}/lib/libcommsutils.so.1" | grep -qE 'NEEDED.*lib(glog|gflags)\.so'; then
-  echo "ERROR: libcommsutils.so.1 links shared glog/gflags; they must be static inside it" >&2
+lib=libcommsutils.so.1
+path="${PREFIX}/lib/${lib}"
+[ -f "${path}" ] || { echo "ERROR: ${path} was not installed" >&2; exit 1; }
+if LD_LIBRARY_PATH="${CONDA_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "${path}" | grep -q 'not found'; then
+  echo "ERROR: ${path} has unresolved dependencies:" >&2
+  LD_LIBRARY_PATH="${CONDA_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "${path}" | grep 'not found' >&2
+  exit 1
+fi
+if readelf -d "${path}" | grep -qE 'NEEDED.*lib(glog|gflags)\.so'; then
+  echo "ERROR: ${lib} links shared glog/gflags; they must be static inside it" >&2
   exit 1
 fi
 # Nothing from the third-party namespaces may be exported, or a consumer with
 # its own copy binds to it (comms/utils/libcommsutils.map). The two folly
 # specializations for CommLogData are comms/utils' own and stay exported.
 THIRD_PARTY_EXPORT_RE='^_Z([GT][VRISTC])?Z{0,2}NK?(5folly|3fmt|6spdlog|6google|4absl|5boost|3fLB|3fLS|3fLI|3fLU|3fLD|4fL64)|^_ZT[hvc][^_]*_N(5folly|3fmt|6spdlog|6google|4absl|5boost)'
-for lib in libcommsutils.so.1 libobservatory.so.1; do
-  leaked=$(nm -D --defined-only "${PREFIX}/lib/${lib}" | awk '{print $3}' \
-    | grep -E "${THIRD_PARTY_EXPORT_RE}" \
-    | grep -vE '^_ZN5folly1[68]Dynamic(Converter|Constructor)I11CommLogData' || true)
-  if [ -n "${leaked}" ]; then
-    echo "ERROR: ${lib} exports third-party symbols (the export map must hide them):" >&2
-    echo "${leaked}" | head -20 >&2
-    exit 1
-  fi
-done
+leaked=$(nm -D --defined-only "${path}" | awk '{print $3}' \
+  | grep -E "${THIRD_PARTY_EXPORT_RE}" \
+  | grep -vE '^_ZN5folly1[68]Dynamic(Converter|Constructor)I11CommLogData' || true)
+if [ -n "${leaked}" ]; then
+  echo "ERROR: ${lib} exports third-party symbols (the export map must hide them):" >&2
+  echo "${leaked}" | head -20 >&2
+  exit 1
+fi
 # The C++ runtime's exception entry points must come from libstdc++, not from
 # a folly exception-tracer copy linked in as a local interposer (its RTLD_NEXT
 # lookup fails under Python, where libstdc++ is already loaded, and the first
 # throw in the library crashes the process). nm reads .symtab, so this runs
 # before any stripping.
-for lib in libcommsutils.so.1 libobservatory.so.1; do
-  interposed=$(nm "${PREFIX}/lib/${lib}" 2>/dev/null | awk '$2 ~ /^[TtWw]$/ && $3 ~ /^__cxa_(throw|rethrow|begin_catch|end_catch)$/ {print $3}')
-  if [ -n "${interposed}" ]; then
-    echo "ERROR: ${lib} defines ${interposed//$'\n'/ }; link libstdc++ ahead of the folly archive" >&2
-    exit 1
-  fi
-done
+interposed=$(nm "${path}" 2>/dev/null | awk '$2 ~ /^[TtWw]$/ && $3 ~ /^__cxa_(throw|rethrow|begin_catch|end_catch)$/ {print $3}')
+if [ -n "${interposed}" ]; then
+  echo "ERROR: ${lib} defines ${interposed//$'\n'/ }; link libstdc++ ahead of the folly archive" >&2
+  exit 1
+fi
 echo "commsutils installed into ${PREFIX}/lib"

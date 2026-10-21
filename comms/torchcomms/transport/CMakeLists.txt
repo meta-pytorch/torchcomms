@@ -146,8 +146,7 @@ if(NOT USE_SYSTEM_LIBS)
         # keeps a transport-only build (USE_NCCLX=OFF) importable.
         set(TRANSPORT_COMMSUTILS_RPATH "$ORIGIN")
         file(GLOB TRANSPORT_COMMSUTILS_FILES
-            "${TRANSPORT_COMMSUTILS_LIB_DIR}/libcommsutils.so*"
-            "${TRANSPORT_COMMSUTILS_LIB_DIR}/libobservatory.so*")
+            "${TRANSPORT_COMMSUTILS_LIB_DIR}/libcommsutils.so*")
         install(FILES ${TRANSPORT_COMMSUTILS_FILES} DESTINATION .)
     else()
         # `site-packages/torchcomms` up to the environment's lib dir.
