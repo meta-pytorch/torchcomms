@@ -806,6 +806,16 @@ set(COMMON_FILES
   comms/utils/TypeUtils.h
 )
 
+# NIC stats is globbed rather than listed: open source gets a stand-in
+# directory at this path with fewer files than the internal one.
+file(GLOB NICSTATS_SOURCES_ABS CONFIGURE_DEPENDS
+    "${FBCODE_DIR}/comms/utils/colltrace/nicstats/*.cc"
+    "${FBCODE_DIR}/comms/utils/colltrace/nicstats/*.h"
+)
+foreach(ABS_PATH ${NICSTATS_SOURCES_ABS})
+    file(RELATIVE_PATH REL_PATH "${FBCODE_DIR}" "${ABS_PATH}")
+    list(APPEND COMMON_FILES "${REL_PATH}")
+endforeach()
 
 # Prepend src/ to all source files for proper paths from root
 list(TRANSFORM SRC_FILES PREPEND "src/")
