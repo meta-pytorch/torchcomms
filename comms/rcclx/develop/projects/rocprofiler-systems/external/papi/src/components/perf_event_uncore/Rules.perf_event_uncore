@@ -1,9 +1,0 @@
-# Note, this component can only be built if perf_event component also built
-
-COMPSRCS += components/perf_event_uncore/perf_event_uncore.c
-
-COMPOBJS += perf_event_uncore.o
-
-perf_event_uncore.o: components/perf_event_uncore/perf_event_uncore.c components/perf_event/perf_event_lib.h
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -Icomponents/perf_event/ -c components/perf_event_uncore/perf_event_uncore.c -o perf_event_uncore.o 
-

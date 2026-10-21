@@ -1,8 +1,0 @@
-# $Id$
-
-COMPSRCS += components/net/linux-net.c
-COMPOBJS += linux-net.o
-
-linux-net.o: components/net/linux-net.c components/net/linux-net.h $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/net/linux-net.c -o $@
-

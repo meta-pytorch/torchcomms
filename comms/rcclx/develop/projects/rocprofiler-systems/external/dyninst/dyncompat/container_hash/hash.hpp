@@ -1,6 +1,0 @@
-#ifndef DYNINST_DYNCOMPAT_CONTAINER_HASH_HASH_HPP
-#define DYNINST_DYNCOMPAT_CONTAINER_HASH_HASH_HPP
-
-#include "../functional/hash.hpp"
-
-#endif
