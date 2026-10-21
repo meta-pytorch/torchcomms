@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -22,31 +24,27 @@ class CtranMapperTcpdmTest : public ::testing::Test {
   std::unique_ptr<CtranMapper> mapper;
 
  protected:
-  void SetUp() override {
-    setenv("TCP_DEVMEM_SKIP_AGENT", "1", 1);
-    setenv("TCP_DEVMEM_RECONFIGURE_DEVICES", "0", 1);
-    // TCPDM only available with certain kernel version. Skip test if with
-    // incompatible kernel
-    try {
-      setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
-      ncclCvarInit();
-      auto commRAII = ctran::createDummyCtranComm();
-      commRAII.reset();
-    } catch (const ctran::utils::Exception&) {
-      GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
-    }
-  }
   void TearDown() override {
-    unsetenv("NCCL_CTRAN_BACKENDS");
     if (timer_.joinable()) {
       timer_.join();
     }
     commRAII_.reset();
-  }
-  void createComm(bool abortEnabled = false) {
+    unsetenv("NCCL_CTRAN_BACKENDS");
+    unsetenv("TCP_DEVMEM_SKIP_AGENT");
+    unsetenv("TCP_DEVMEM_RECONFIGURE_DEVICES");
     ncclCvarInit();
-    commRAII_ = ctran::createDummyCtranComm(0, abortEnabled);
-    dummyComm_ = commRAII_->ctranComm.get();
+  }
+  std::optional<std::string> tryCreateComm(bool abortEnabled = false) {
+    setenv("TCP_DEVMEM_SKIP_AGENT", "1", 1);
+    setenv("TCP_DEVMEM_RECONFIGURE_DEVICES", "0", 1);
+    try {
+      ncclCvarInit();
+      commRAII_ = ctran::createDummyCtranComm(0, abortEnabled);
+      dummyComm_ = commRAII_->ctranComm.get();
+      return std::nullopt;
+    } catch (const ctran::utils::Exception& e) {
+      return e.what();
+    }
   }
   void setAbortAfter(std::chrono::milliseconds delay) {
     timer_ = std::thread([this, delay]() {
@@ -61,18 +59,17 @@ class CtranMapperTcpdmTest : public ::testing::Test {
 TEST_F(CtranMapperTcpdmTest, EnableTCPDMBackendThroughCVARs) {
   setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
   ASSERT_STREQ(getenv("NCCL_CTRAN_BACKENDS"), "tcpdm");
-  this->createComm();
-  auto mapper = std::make_unique<CtranMapper>(this->dummyComm_);
-  auto rank = this->dummyComm_->statex_->rank();
-  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
-  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
-  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
-  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::TCPDM));
+  ncclCvarInit();
+  EXPECT_THAT(
+      CtranMapper::getToEnableBackends({}),
+      ::testing::ElementsAre(CtranMapperBackend::TCPDM));
 }
 
 TEST_F(CtranMapperTcpdmTest, WaitNotifyReturnsWhenCommAborts) {
   setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
-  this->createComm(/*abortEnabled=*/true);
+  if (auto error = this->tryCreateComm(/*abortEnabled=*/true)) {
+    GTEST_SKIP() << "TCPDM communicator unavailable: " << *error;
+  }
 
   auto mapper = std::make_unique<CtranMapper>(this->dummyComm_);
   CtranMapperNotify notify;
@@ -86,7 +83,9 @@ TEST_F(CtranMapperTcpdmTest, WaitNotifyReturnsWhenCommAborts) {
 
 TEST_F(CtranMapperTcpdmTest, CheckNotifyReturnsWhenCommAborts) {
   setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
-  this->createComm(/*abortEnabled=*/true);
+  if (auto error = this->tryCreateComm(/*abortEnabled=*/true)) {
+    GTEST_SKIP() << "TCPDM communicator unavailable: " << *error;
+  }
 
   auto mapper = std::make_unique<CtranMapper>(this->dummyComm_);
   CtranMapperNotify notify;
@@ -101,7 +100,9 @@ TEST_F(CtranMapperTcpdmTest, CheckNotifyReturnsWhenCommAborts) {
 
 TEST_F(CtranMapperTcpdmTest, TestSomeRequestsReturnsWhenCommAborts) {
   setenv("NCCL_CTRAN_BACKENDS", "tcpdm", 1);
-  this->createComm(/*abortEnabled=*/true);
+  if (auto error = this->tryCreateComm(/*abortEnabled=*/true)) {
+    GTEST_SKIP() << "TCPDM communicator unavailable: " << *error;
+  }
 
   auto mapper = std::make_unique<CtranMapper>(this->dummyComm_);
   auto req = std::make_unique<CtranMapperRequest>();
@@ -115,18 +116,18 @@ TEST_F(CtranMapperTcpdmTest, TestSomeRequestsReturnsWhenCommAborts) {
   EXPECT_THROW(mapper->testSomeRequests(reqs), ::ctran::utils::Exception);
 }
 TEST_F(CtranMapperTcpdmTest, OverrideBackendThroughHints) {
-  // Test that config_.backends overrides NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl,ib,socket", 1);
   ASSERT_STREQ(getenv("NCCL_CTRAN_BACKENDS"), "nvl,ib,socket");
-  this->createComm();
-  // Directly set config_.backends to override CVAR-based backend selection
-  this->dummyComm_->config_.backends = {CommBackend::TCPDM};
-  auto mapper = std::make_unique<CtranMapper>(this->dummyComm_);
-  auto rank = this->dummyComm_->statex_->rank();
-  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
-  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
-  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
-  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::TCPDM));
+  ncclCvarInit();
+  EXPECT_THAT(
+      CtranMapper::getToEnableBackends({}),
+      ::testing::UnorderedElementsAre(
+          CtranMapperBackend::NVL,
+          CtranMapperBackend::IB,
+          CtranMapperBackend::SOCKET));
+  EXPECT_THAT(
+      CtranMapper::getToEnableBackends({CommBackend::TCPDM}),
+      ::testing::ElementsAre(CtranMapperBackend::TCPDM));
 }
 
 int main(int argc, char* argv[]) {
