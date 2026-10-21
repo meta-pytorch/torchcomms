@@ -1,7 +1,0 @@
-{
-  global:
-    OnLoad;
-    OnUnload;
-  local:
-    *;
-};
