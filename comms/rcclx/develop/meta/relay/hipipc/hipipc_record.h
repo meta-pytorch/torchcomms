@@ -70,6 +70,33 @@ validateRange(uint64_t allocation, uint64_t offset, uint64_t bytes) {
     throw std::invalid_argument("invalid aligned allocation range");
   }
 }
+enum class CaptureRole : uint32_t { Staged, Direct };
+struct CapturedDescriptor {
+  uint32_t version{kAbiVersion};
+  CaptureRole role{CaptureRole::Staged};
+  RegistrationDescriptor input{};
+};
+inline void validateCapturedDescriptor(const CapturedDescriptor& descriptor) {
+  const auto& input = descriptor.input;
+  if (input.version != kAbiVersion || !input.workspaceGeneration ||
+      !input.peerWorkspaceGeneration || !input.registration.identity ||
+      !input.registration.generation || !input.bytes || input.bytes % 16) {
+    throw std::invalid_argument("invalid captured descriptor identity/size");
+  }
+  if (descriptor.role == CaptureRole::Direct) {
+    if (!input.allocationGeneration) {
+      throw std::invalid_argument(
+          "missing direct captured allocation generation");
+    }
+    validateRange(input.allocationBytes, input.offset, input.bytes);
+  } else if (
+      descriptor.role != CaptureRole::Staged || input.allocationGeneration ||
+      input.allocationBytes || input.offset || input.base != IpcHandle{}) {
+    throw std::invalid_argument(
+        "staged descriptor must not carry producer IPC metadata");
+  }
+}
+
 inline bool rangesOverlap(
     uint64_t first,
     uint64_t firstBytes,
