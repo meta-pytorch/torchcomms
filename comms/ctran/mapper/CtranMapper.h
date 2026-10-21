@@ -54,6 +54,9 @@ const std::string getReqTypeStr(CtranMapperRequest::ReqType type);
 
 class CtranMapper : public ctran::regcache::IpcExportClient {
  public:
+  static std::vector<CtranMapperBackend> getToEnableBackends(
+      const std::vector<CommBackend>& overrideBackend);
+
   // `profiler` may be null when the comm has profiling disabled. When
   // non-null, it is forwarded to the underlying CtranTcpDm so the
   // transport can register its hooks during construction (avoiding a

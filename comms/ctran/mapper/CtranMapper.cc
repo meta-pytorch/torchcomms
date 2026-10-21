@@ -32,8 +32,7 @@
 
 using namespace ncclx;
 using namespace ctran;
-namespace {
-std::vector<CtranMapperBackend> getToEnableBackends(
+std::vector<CtranMapperBackend> CtranMapper::getToEnableBackends(
     const std::vector<CommBackend>& overrideBackend) {
   const std::unordered_map<enum NCCL_CTRAN_BACKENDS, CtranMapperBackend>
       NCCLCtranBackendMap = {
@@ -65,6 +64,8 @@ std::vector<CtranMapperBackend> getToEnableBackends(
 
   return enableBackends;
 }
+
+namespace {
 struct ExtraPacketInfo {
   int numExtraPackets;
   int numExtraSegments;
