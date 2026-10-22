@@ -30,8 +30,8 @@ class Tensor;
 
 namespace torch::comms {
 
-// Reset the global op_id generator. Used when creating isolated
-// FlightRecorder instances to ensure each test gets a fresh op_id space.
+// Reset the global op_id generator. Used when creating isolated hook
+// instances to ensure each test gets a fresh op_id space.
 void resetGlobalOpIdGenerator();
 
 // Forward declarations
