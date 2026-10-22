@@ -28,7 +28,6 @@ option(USE_RCCLX "Whether to build RCCLX or not" OFF)
 option(USE_XCCL "Whether to build XCCL or not" OFF)
 option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
 option(USE_TRANSPORT_CCA_HOOK "Build the minimal RDMA CCA-hook extension" ON)
-option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
 # There is one libcommsutils.so and one libobservatory.so per process. Turn
 # this off wherever the environment already supplies them (the commsutils
@@ -43,7 +42,6 @@ message(STATUS "  USE_RCCLX  : ${USE_RCCLX}")
 message(STATUS "  USE_XCCL  : ${USE_XCCL}")
 message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRANSPORT_CCA_HOOK : ${USE_TRANSPORT_CCA_HOOK}")
-message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
 # NEEDS_CUDA: TRUE when any enabled backend requires CUDA (excludes ROCm backends).
@@ -51,7 +49,7 @@ message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 # GLOO and XCCL are the only backends that are neither CUDA nor ROCm.
 # If no CUDA-dependent backend is enabled we can skip CUDA-specific setup
 # like TORCH_CUDA_ARCH_LIST detection.
-if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK OR USE_TRITON)
+if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK)
     set(NEEDS_CUDA TRUE)
 else()
     set(NEEDS_CUDA FALSE)
@@ -74,7 +72,6 @@ else()
         # Without this, .cu kernels (e.g. AtomicAddKernel.cu) are compiled only
         # for sm_90 and fail at runtime on other GPUs with
         # "no kernel image is available for execution on the device".
-        # See also: comms/torchcomms/triton/CMakeLists.txt for the same pattern.
         execute_process(
             COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
             OUTPUT_VARIABLE _smi_output
@@ -289,9 +286,6 @@ endif()
 # the NCCLX static lib (ctran::RegCache), so also gate on USE_NCCLX.
 if (USE_TRANSPORT_CCA_HOOK AND USE_NCCLX)
     include(comms/torchcomms/transport/cca_hook/CMakeLists.txt)
-endif()
-if (USE_TRITON)
-    include(comms/torchcomms/triton/CMakeLists.txt)
 endif()
 # Install targets to Python package structure
 install(TARGETS torchcomms
