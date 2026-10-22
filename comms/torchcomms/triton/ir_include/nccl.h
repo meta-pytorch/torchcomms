@@ -37,6 +37,9 @@ typedef struct ncclComm* ncclComm_t;
 struct ncclWindow_vidmem;
 typedef struct ncclWindow_vidmem* ncclWindow_t;
 
+/* Window flags read by the device headers */
+#define NCCL_WIN_CFT_COUNTED 0x08
+
 #ifdef __cplusplus
 }
 #endif

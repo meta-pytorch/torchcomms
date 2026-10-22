@@ -614,6 +614,17 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_GPI> {
 };
 
 template <>
+struct ncclGinApi_AtomicAdd<NCCL_NET_DEVICE_GIN_GPI> {
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t dstWin, size_t dstOff,
+                                      uint64_t value, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
+                                      cuda::thread_scope required, cuda::thread_scope given) {
+    // Not supported on GPI backend: no arbitrary-address remote atomic. Use GDAKI backend.
+    __trap();
+  }
+};
+
+template <>
 struct ncclGinApi_SupportsStrongSignal<NCCL_NET_DEVICE_GIN_GPI> {
   NCCL_DEVICE_INLINE static bool call(ncclGinCtx) {
     return true;

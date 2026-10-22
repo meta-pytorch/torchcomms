@@ -909,6 +909,17 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_EFA_GDA> {
   }
 };
 
+template <>
+struct ncclGinApi_AtomicAdd<NCCL_NET_DEVICE_GIN_EFA_GDA> {
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t dstWin, size_t dstOff,
+                                      uint64_t value, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
+                                      cuda::thread_scope required, cuda::thread_scope given) {
+    // Not supported on EFA GDA backend: no arbitrary-address remote atomic. Use GDAKI backend.
+    __trap();
+  }
+};
+
 /* ── Get ──────────────────────────────────────────────────────────── */
 
 template <>
