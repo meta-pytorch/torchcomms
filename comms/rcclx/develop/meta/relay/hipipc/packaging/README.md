@@ -1,74 +1,83 @@
-# Standalone HIPIPC Relay Artifact
+# HIPIPC Relay Resources
 
-The optional leaf wheel contains the prebuilt shared library and a structured
-hash manifest. Its package imports without loading HIP and declares no Python
-runtime dependencies. No native sources, uploads or runtime replacements.
+The data-only `hipipc_relay` package supplies a native TP2 BF16 relay library,
+its canonical kernel archive, and four required headers. Importing it does not
+load HIP, Torch, RCCL, or any native code. The typed binding compiles separately.
 
-## Package A Prebuilt Library
+The installed API is `__version__`, `ABI_VERSION`, `get_include()` and
+`get_library_dir()`. The library directory contains the shared object and
+archive; the include directory preserves the canonical `comms/` header layout.
+The six native payloads are the library, archive, workspace header, its required
+record header, argument header and kernel-launch header. SDK libraries are not
+bundled; the record header is needed because the workspace header includes it.
 
-In the public torchcomms repository, canonical device code remains under
-`comms/rcclx/develop/meta/relay`. Standalone host/probe sources and isolated build
-targets are under `comms/rcclx/develop/meta/relay/hipipc`.
+## Fresh ROCm 7.14.1 Build
 
-From the public repository root, package an already-built library with:
-
-```bash
-python3 comms/rcclx/develop/meta/relay/hipipc/packaging/build_hipipc_relay_wheel.py \
-  --library /absolute/resolved/libhipipc_relay.so \
-  --output-dir /absolute/scratch \
-  --version 0.1.0+abi1.source
-```
-
-Both artifact paths must be absolute. The builder does not compile the library.
-
-### Meta-Internal Build
-
-The following Buck commands require a Meta-internal checkout and toolchain. From
-its fbsource repository root, build the library and use its resolved output path
-as the builder's `--library` argument:
+The USER builds the wheel after the reviewed native stack is committed:
 
 ```bash
-buck2 build @fbcode//mode/opt-amd-gpu -m rocm_latest \
-  fbcode//comms/rcclx/develop/meta/relay/hipipc:hipipc_relay \
-  --show-full-json-output
-
-python3 fbcode/comms/rcclx/develop/meta/relay/hipipc/packaging/build_hipipc_relay_wheel.py \
-  --library /absolute/resolved/libhipipc_relay.so \
-  --output-dir /absolute/scratch \
-  --version 0.1.0+abi1.source
+fbpython -B /data/users/srinathb/fbsource/fbcode/comms/rcclx/develop/meta/relay/hipipc/packaging/build_rocm714_wheel.py
 ```
 
-The selected HIP compiler is a build-time dependency only. Isolated genrules
-avoid GPU-library macros that inject a mandatory Meta lazify runtime. The leaf
-requires `HIP_UNCACHED_MEMORY`: gfx950 protocol flags and helper rings must use
-uncached allocation, not a fine-grained fallback. Verify
-compiler/runtime compatibility on the intended gfx950 environment; a compiled
-device image or ABI-version call alone is not GPU correctness evidence.
+The script locates its own checkout and derives the version from its full source
+HEAD. Keep source fixed throughout the build. Prerequisites are Linux x86-64,
+Python 3.12 with venv/ensurepip, Sapling, readelf, patchelf, compatible host C++
+headers/libraries, HTTPS access to AMD/PyPI, and several GB of disk space.
+No OS packages or existing serving environments are modified.
 
-The builder requires an exact `libhipipc_relay.so` SONAME, ELF64 x86-64, and twelve
-defined, externally visible function exports. It rejects RCCL/NCCL/Torch/lazify
-dependencies, registered RCCLX API references and build-tree runtime paths.
-Verification uses `readelf` without loading the library or initializing a GPU.
+Seven SHA256-pinned downloads supply ROCm 7.14.1 core/devel/libraries/gfx950,
+the ROCm SDK CLI-provider sdist, setuptools 81.0.0 and packaging 26.2.
+Only downloads are reused; every run creates its own SDK venv. Older verified
+downloads remain usable; legacy SDK venv/readiness/lock state is ignored.
+Installation uses local verified bytes, no index, no dependency resolution, no pip cache,
+and no build isolation for the SDK CLI-provider sdist.
 
-## Contents And Serving
+Options: `--cache-dir` selects dedicated storage; `--offline` requires all seven
+verified downloads already cached; `--output-dir` must name a nonexistent
+directory; `--base-version` defaults to `0.1.0`. Existing output directories,
+including empty directories and dangling symlinks, are refused before SDK work.
+Default outputs and retained command logs live in fresh per-build directories.
 
-The `py3-none-linux_x86_64` wheel holds the `hipipc_relay` package, its data library,
-and `METADATA`, `WHEEL`, and CSV/SHA256 `RECORD`. Existing files are never
-silently overwritten. The stdlib builder's declared-dependency CPU tests run in
-a Meta-internal checkout with:
+Compilation pins C++17/O3/gfx950/PIC/hidden visibility and libstdc++ C++11 ABI 1.
+The canonical kernel is rebuilt, archived with SDK llvm-ar, and linked with the
+host/probe objects and amdhip64. RPATH is removed. A public-header consumer is
+compiled and linked but never executed. Packaging performs no GPU tests.
 
-```bash
-buck2 test fbcode//comms/rcclx/develop/meta/relay/hipipc/packaging/tests:wheel_builder_test
-```
+## Buck Bundle And Offline Packaging
 
-Install the versioned artifact only in the opted-in image. The Python adapter
-resolves its library through `importlib.resources`, or an explicit absolute
-`SGLANG_HIPIPC_RELAY_LIBRARY` override. Override selection takes precedence;
-serving never discovers a checkout or Buck output.
+The native bundle target is
+`fbcode//comms/rcclx/develop/meta/relay/hipipc:hipipc_relay`; its output is a
+directory, not a shared-library filename. Buck's selected ROCm toolchain is not
+the pinned 7.14.1 script toolchain. Use the measured build identity when packaging.
 
-The native library needs the existing HIP major ABI `libamdhip64.so.7` and
-standard C/C++ libraries. Torch's already-loaded compatible HIP runtime supplies
-that dependency. No separate Meta binder, embedded SDK search path, torchcomms,
-Torch C++ linkage, RCCLX registered symbols or librccl swap is required.
-Validate the exact installed artifact, topology, shader probes, full-payload
-arithmetic and quiescent teardown before enabling a serving recipe.
+The low-level packager accepts six required flags: `--native-dir`, `--output-dir`,
+`--version`, `--source-commit`, `--rocm-version`, `--architecture gfx950`.
+Directories must be absolute; the source commit is full 40-hex. The version is
+`X.Y.Z+abi1.<source-prefix>` with a matching 10-40 lowercase-hex prefix.
+It neither compiles nor installs anything. Existing wheel files are never replaced.
+
+## ABI And Validation
+
+The default filename is `hipipc_relay-0.1.0+abi1.<commit10>-py3-none-linux_x86_64.whl`.
+The header's `kAbiVersion = 1`, exported `hipipc_relay_abi_version()` and installed
+`ABI_VERSION = 1` identify the single native ABI. A changed native payload needs
+a new USER-built immutable version; do not relabel an older artifact.
+
+Packaging checks materialized payloads, regular archive magic, ELF64/x86-64,
+SONAME, a visible defined ABI getter, forbidden runtime dependencies/registered
+references, and any RPATH/RUNPATH. `manifest.json` records build-time
+payload hashes and source/build identity for audit only, not runtime verification.
+Standard wheel metadata and CSV RECORD hash every member.
+
+CPU fixture tests cover packaging contracts and builder refusals; they do not
+establish SDK build compatibility, native correctness, or GPU acceptance.
+After artifact handback, record the wheel path/SHA256 and validate the matched
+native/binding ABI separately. This tooling does not install or publish the wheel.
+
+The ROCm 7.1.4 builder requires clean source and packaging inputs. The manifest
+records payload hashes and `source_commit`; the preserved `source/` snapshot
+supports source-input comparisons. Rebuild after any payload change.
+
+Native TP2 GPU modes remain disabled in CI until an exclusive eight-gfx950 pool
+is provisioned. Run them manually with `HIPIPC_TEST_EXCLUSIVE_GFX950_POOL` set to
+the eight assigned device ordinals; CPU and packaging tests remain enabled.
