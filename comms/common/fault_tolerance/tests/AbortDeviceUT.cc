@@ -1093,6 +1093,39 @@ TEST(AbortDeviceTest, deadlineHonorsDefaultTimeoutSetAfterHandleCreation) {
       << "deadline used a stale timeout captured at handle creation";
 }
 
+// The communicator timeout is read at the first throttled poll, not at
+// `startTimeout()`, but the deadline still counts from the start: after idling
+// past it without polling, the first poll reports the timeout at once instead
+// of granting another full timeout from when the value was read.
+TEST(AbortDeviceTest, communicatorDeadlineCountsFromStartTimeout) {
+  constexpr int64_t kTimeoutMs = 50;
+  constexpr uint64_t kIdleNs = 200'000'000;
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{kTimeoutMs});
+  auto handle = abort.getDeviceHandle();
+
+  auto observedMode = makeDeviceValue<int>();
+  auto nsAfterIdle = makeDeviceValue<uint64_t>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(nsAfterIdle, nullptr);
+  ASSERT_EQ(
+      launchDeviceIdleThenWaitForTimeout(
+          handle,
+          kIdleNs,
+          observedMode.get(),
+          nsAfterIdle.get(),
+          kDeviceTimeoutPollIterations,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      readDeviceValue(observedMode), static_cast<int>(AbortReason::TIMED_OUT));
+  // One poll interval (1 ms) plus slack, far below the 50 ms a deadline
+  // counted from the first poll would take.
+  EXPECT_LT(readDeviceValue(nsAfterIdle), 10'000'000U);
+}
+
 // A per-op override beats the communicator default, and clearing it falls back
 // to shared state.
 TEST(AbortDeviceTest, perOpTimeoutOverridesCommunicatorDefault) {

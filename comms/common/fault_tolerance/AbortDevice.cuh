@@ -394,9 +394,13 @@ struct AbortDevice final {
 
   /**
    * Device-clock value this handle's deadline expires at, or zero when no
-   * device deadline is active. Cold-path diagnostics only.
+   * device deadline is active. Cold paths only: a deadline still waiting for
+   * the communicator timeout is resolved here, which reads shared state.
    */
   __host__ __device__ uint64_t deadlineCycles() const {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+    resolvePendingDeadline();
+#endif
     return deadlineCycles_;
   }
 
@@ -412,6 +416,8 @@ struct AbortDevice final {
 
   /**
    * Starts this handle's device-side timeout from the shared default duration.
+   * The default duration is read at the first throttled poll rather than here
+   * (see `resolvePendingDeadline()`); the deadline counts from this call.
    *
    * Non-positive or unset default timeouts leave the device deadline inactive.
    * If converting the timeout to device cycles would overflow, the deadline is
@@ -428,17 +434,19 @@ struct AbortDevice final {
     // first `checkExpired()` on every armed handle unthrottled, which is one
     // uncached mapped-pinned read on the one call guaranteed to happen.
     nextPollCycles_ = now + pollIntervalCycles_;
-    const auto timeoutMs = resolveTimeoutMs();
-    if (timeoutMs <= 0 || cyclesPerMs_ == 0) {
-      deadlineCycles_ = 0;
+    if (opTimeoutMs_ >= 0) {
+      deadlinePending_ = false;
+      setDeadline(now, opTimeoutMs_);
       return;
     }
-    const auto timeoutMsU = static_cast<uint64_t>(timeoutMs);
-    if (timeoutMsU > (UINT64_MAX - now) / cyclesPerMs_) {
-      deadlineCycles_ = now;
-      return;
-    }
-    deadlineCycles_ = now + timeoutMsU * cyclesPerMs_;
+    // The communicator timeout lives in mapped host memory. Reading it here
+    // would put an uncached PCIe round trip in front of every operation, and
+    // those reads serialize across blocks (about 1 us each). It is read instead
+    // on the first throttled poll, which reads shared state anyway, so an
+    // operation that finishes within one poll interval never touches the bus.
+    // The deadline still counts from now.
+    deadlineCycles_ = now;
+    deadlinePending_ = true;
   }
 
   /**
@@ -459,6 +467,7 @@ struct AbortDevice final {
    */
   __device__ void cancelTimeout() {
     deadlineCycles_ = 0;
+    deadlinePending_ = false;
   }
 
   /**
@@ -523,11 +532,16 @@ struct AbortDevice final {
     // read on the free device clock: steady-state polling costs a register
     // compare, and an abort is still observed within one poll interval.
     const uint64_t now = detail::deviceClock();
-    const bool deadlineDue = deadlineCycles_ != 0 && now >= deadlineCycles_;
+    bool deadlineDue =
+        !deadlinePending_ && deadlineCycles_ != 0 && now >= deadlineCycles_;
     if (!deadlineDue && now < nextPollCycles_) {
       return false;
     }
     nextPollCycles_ = now + pollIntervalCycles_;
+    if (deadlinePending_) {
+      resolvePendingDeadline();
+      deadlineDue = deadlineCycles_ != 0 && now >= deadlineCycles_;
+    }
 
     const uint32_t slowResult =
         detail::deviceCheckExpiredSlow(state_, deadlineDue);
@@ -600,13 +614,30 @@ struct AbortDevice final {
  private:
   friend class Abort;
 
+  /* Sets the deadline `timeoutMs` after `start`; zero when it is inactive. */
+  __device__ void setDeadline(uint64_t start, int64_t timeoutMs) const {
+    if (timeoutMs <= 0 || cyclesPerMs_ == 0) {
+      deadlineCycles_ = 0;
+      return;
+    }
+    const auto timeoutMsU = static_cast<uint64_t>(timeoutMs);
+    if (timeoutMsU > (UINT64_MAX - start) / cyclesPerMs_) {
+      deadlineCycles_ = start;
+      return;
+    }
+    deadlineCycles_ = start + timeoutMsU * cyclesPerMs_;
+  }
+
   /**
-   * Deadline duration for this operation, in milliseconds.
+   * Turns a deadline started from the communicator timeout (`deadlineCycles_`
+   * holding the start clock) into the real deadline, reading the timeout from
+   * shared state.
    *
-   * A per-operation override wins because it is the more specific request and
-   * it travels by value in the kernel arguments, so it costs no shared-state
-   * read. Otherwise the communicator-level timeout is read from mapped shared
-   * state on every start, which keeps it late-bound: a handle created before
+   * A per-operation override never gets here: it wins because it is the more
+   * specific request, and it travels by value in the kernel arguments, so
+   * `startTimeout()` sets the deadline at once. The communicator-level timeout
+   * is read from mapped shared state for every operation, at its first
+   * throttled poll, which keeps it late-bound: a handle created before
    * `setDefaultTimeout()` still observes the new value.
    *
    * Deliberately NOT cached in the handle. Transports keep one handle for the
@@ -620,11 +651,12 @@ struct AbortDevice final {
    * graph-mode device code reads the live value;
    * `DroppedRankTimeoutLapsesDuringGraphReplay` is the test that says so.
    */
-  __device__ int64_t resolveTimeoutMs() const {
-    if (opTimeoutMs_ >= 0) {
-      return opTimeoutMs_;
+  __device__ void resolvePendingDeadline() const {
+    if (!deadlinePending_) {
+      return;
     }
-    return getTimeoutMs();
+    deadlinePending_ = false;
+    setDeadline(deadlineCycles_, getTimeoutMs());
   }
 
   /**
@@ -700,6 +732,12 @@ struct AbortDevice final {
   mutable bool sawTerminalReason_{false};
 
   /**
+   * The deadline was started from the communicator timeout, which has not been
+   * read yet; `deadlineCycles_` holds the start clock until it is.
+   */
+  mutable bool deadlinePending_{false};
+
+  /**
    * Device abort behavior selected by the owning host `Abort`.
    */
   AbortBehavior behavior_{AbortBehavior::SKIP};
@@ -708,9 +746,10 @@ struct AbortDevice final {
    * Per-handle device deadline in `detail::deviceClock()` cycles.
    *
    * A value of zero means no device-side timeout is active. This is local to
-   * the copied handle and is not part of the host-owned shared state.
+   * the copied handle and is not part of the host-owned shared state. While
+   * `deadlinePending_` is set it holds the start clock instead.
    */
-  uint64_t deadlineCycles_{0};
+  mutable uint64_t deadlineCycles_{0};
 };
 
 /**
