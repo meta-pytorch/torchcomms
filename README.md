@@ -14,10 +14,6 @@ both the high level collectives API as well as several out of the box backends.
 * [Documentation](https://meta-pytorch.org/torchcomms/main/index.html)
 * [Examples](./comms/torchcomms/examples)
 
-> [!WARNING]
-> The NCCLX backend is deprecated for OSS usage. It is no longer included in
-> wheels or tested in CI, and its sources are no longer updated.
-
 ## Prerequisites
 
 torchcomms requires the following software and hardware:
