@@ -3713,6 +3713,17 @@ cvars:
      deployment rollback path.
      This policy is NVIDIA-only and ignored on AMD.
 
+ - name        : MCCL_EXPERIMENTAL_QP_DESTROY_THREADS
+   type        : int
+   default     : 1
+   description : |-
+     Experimental host worker count for independent NVIDIA Prims IBGDA
+     hardware-QP destruction. Workers join before referenced buffers are
+     freed. ERR transitions and remaining high-level QP cleanup stay serial.
+     1 preserves serial teardown. Values in [1, 64] are accepted; out-of-range
+     values fall back to 1. This setting is ignored on AMD and does not
+     establish a supported concurrent-teardown contract for the provider.
+
  - name        : MCCL_IB_QP_DEPTH
    type        : uint64_t
    default     : 1024

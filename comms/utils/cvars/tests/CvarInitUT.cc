@@ -54,6 +54,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("MCCL_ALGO");
     unsetenv("NCCL_DEBUG_SUBSYS");
     unsetenv("MCCL_IBGDA_MAX_RD_ATOMIC");
+    unsetenv("MCCL_EXPERIMENTAL_QP_DESTROY_THREADS");
     unsetenv("NCCL_CVARS_LOG_INFO");
     unsetenv("NCCL_CVARS_SETTINGS");
     unsetenv("NCCL_DUMMY_TEST_VAR");
@@ -84,6 +85,21 @@ TEST_F(CvarInitTest, McclAlgoDefaultsToExplicitRingSimple) {
   EXPECT_NO_THROW(ncclCvarInit());
   EXPECT_EQ(MCCL_ALGO, "allreduce:ring:simple");
   EXPECT_EQ(MCCL_ALGO_DEFAULTCVARVALUE, "allreduce:ring:simple");
+}
+
+TEST_F(CvarInitTest, McclExperimentalQpDestroyThreadsDefaultsToSerial) {
+  MCCL_EXPERIMENTAL_QP_DESTROY_THREADS = 16;
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_EXPERIMENTAL_QP_DESTROY_THREADS, 1);
+  EXPECT_EQ(MCCL_EXPERIMENTAL_QP_DESTROY_THREADS_DEFAULTCVARVALUE, 1);
+}
+
+TEST_F(CvarInitTest, McclExperimentalQpDestroyThreadsReadsUserValue) {
+  for (const char* value : {"16", "64"}) {
+    setenv("MCCL_EXPERIMENTAL_QP_DESTROY_THREADS", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_EXPERIMENTAL_QP_DESTROY_THREADS, std::stoi(value));
+  }
 }
 
 TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeDefaultsToAuto) {
