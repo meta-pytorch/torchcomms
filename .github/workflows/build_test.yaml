@@ -20,10 +20,12 @@ jobs:
             gpu-arch-type: "cuda"
             gpu-arch-version: "13.0"
             torch-version: "stable"
+            build-flags: ""
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
             gpu-arch-version: "13.0"
             torch-version: "nightly"
+            build-flags: ""
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
@@ -34,11 +36,12 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
+      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}-${{ matrix.build-flags }}
       script: |
         set -ex
         source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
 
+        if [ -n "${{ matrix.build-flags }}" ]; then export ${{ matrix.build-flags }}; fi
         BUILD_JOBS=$(($(nproc) - 2))
         if ((BUILD_JOBS < 1)); then
           BUILD_JOBS=1
@@ -100,10 +103,12 @@ jobs:
             gpu-arch-type: "cuda"
             gpu-arch-version: "13.0"
             torch-version: "stable"
+            build-flags: ""
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
             gpu-arch-version: "13.0"
             torch-version: "nightly"
+            build-flags: ""
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
@@ -114,12 +119,13 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
-      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
+      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}-${{ matrix.build-flags }}
       script: |
         set -ex
         TORCH_VERSION=$(cat "${RUNNER_ARTIFACT_DIR}/torch_version.txt")
         source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
 
+        if [ -n "${{ matrix.build-flags }}" ]; then export ${{ matrix.build-flags }}; fi
         export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
 
         # Install from pre-built wheel (skip build step)
