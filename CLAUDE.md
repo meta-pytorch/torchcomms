@@ -71,7 +71,7 @@ Backend selection is controlled by environment variables (ON/OFF or 1/0) set bef
 
 ### NCCLX build (deprecated)
 
-NCCLX is deprecated in OSS; use PyTorch Distributed instead. Enable with `USE_NCCLX=ON`.
+NCCLX is deprecated for OSS usage. Enable with `USE_NCCLX=ON`.
 
 `build_ncclx.sh` is the main build script. It builds ~20 third-party dependencies from source (fmt, zlib, boost, openssl, glog, gflags, folly, fbthrift, etc.), generates nccl_cvars files, builds the comms tracing service, and then compiles the vendored NCCL fork via `make`.
 
