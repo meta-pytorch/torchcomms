@@ -545,8 +545,12 @@ host can tell those apart.
 
 ### One budget per kernel
 
-`startTimeout()` computes `deadlineCycles_ = deviceClock() + timeoutMs *
-cyclesPerMs_` **at the moment it is called**. There is no host-settable absolute
+`startTimeout()` arms `deadlineCycles_ = deviceClock() + timeoutMs *
+cyclesPerMs_`, counted from **the moment it is called**. A per-operation timeout
+is applied there and then. The communicator timeout lives in mapped host memory,
+so it is read at the handle's first throttled poll instead (which reads shared
+state anyway), keeping that uncached round trip off every operation that
+finishes within one poll interval. Either way there is no host-settable absolute
 deadline, so a deadline is only ever as wide as the region between the `start()`
 that armed it and the wait that observes it.
 

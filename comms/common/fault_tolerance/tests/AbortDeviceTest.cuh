@@ -98,6 +98,14 @@ cudaError_t launchDeviceWaitForTimeout(
     int maxIterations,
     cudaStream_t stream);
 
+cudaError_t launchDeviceIdleThenWaitForTimeout(
+    AbortDevice abort,
+    uint64_t idleNs,
+    int* observedMode,
+    uint64_t* nsAfterIdle,
+    int maxIterations,
+    cudaStream_t stream);
+
 cudaError_t launchDeviceWaitForTimeoutStartAlias(
     AbortDevice abort,
     int* observedMode,
