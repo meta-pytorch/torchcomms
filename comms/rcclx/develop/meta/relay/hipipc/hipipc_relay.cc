@@ -240,7 +240,6 @@ struct WorkspaceState {
   std::vector<std::pair<int, void*>> allocations;
   std::vector<void*> rings;
   std::vector<void*> peerRings;
-  std::array<hipStream_t, 7> helperStreams{};
   std::array<hipEvent_t, 7> helperEvents{};
   std::array<const unsigned char**, 7> helperAddresses{};
   std::array<ProbeWord*, 7> helperResults{};
@@ -428,12 +427,6 @@ struct WorkspaceState {
             hipEventDestroy(helperEvents[h]), "destroy helper readiness event");
         helperEvents[h] = nullptr;
       }
-      if (helperStreams[h]) {
-        check(
-            hipStreamDestroy(helperStreams[h]),
-            "destroy helper readiness stream");
-        helperStreams[h] = nullptr;
-      }
     }
     for (auto& allocation : allocations) {
       if (allocation.second) {
@@ -532,9 +525,6 @@ void initialize(WorkspaceState& s) {
     writeCanaries(ring, kRingBytes, s.local.generation, h + 3);
     s.local.rings[h] = exportHandle(ring);
     check(
-        hipStreamCreateWithFlags(&s.helperStreams[h], hipStreamNonBlocking),
-        "create persistent helper readiness stream");
-    check(
         hipEventCreateWithFlags(&s.helperEvents[h], hipEventDisableTiming),
         "create persistent helper readiness event");
     s.helperAddresses[h] = static_cast<const unsigned char**>(
@@ -555,16 +545,17 @@ void initialize(WorkspaceState& s) {
             sizeof(addresses),
             hipMemcpyHostToDevice),
         "upload helper shader probe");
+    // Default stream: a dedicated stream would keep one more hardware queue
+    // mapped on every helper device for the life of the workspace.
     check(
         hipipcRelayProbeRead(
             s.helperAddresses[h],
             sites.size(),
             reinterpret_cast<unsigned long long*>(s.helperResults[h]),
-            s.helperStreams[h]),
+            nullptr),
         "warm helper shader resources");
     check(
-        hipEventRecord(s.helperEvents[h], s.helperStreams[h]),
-        "record helper completion");
+        hipEventRecord(s.helperEvents[h], nullptr), "record helper completion");
     s.wait(s.helperEvents[h]);
     std::array<ProbeWord, 3> results{};
     check(
