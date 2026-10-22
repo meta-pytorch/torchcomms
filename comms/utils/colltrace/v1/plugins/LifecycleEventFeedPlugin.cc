@@ -128,13 +128,13 @@ CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
     const auto backlog = unreadEvents_.size();
     const auto dropped = droppedEvents_.load(std::memory_order_relaxed);
     if (dropped != 0) [[unlikely]] {
-      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
+      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, DBG, 60000)
           << "LifecycleEventFeedPlugin has discarded " << dropped
           << " events for comm " << commId_
           << " to stay within its cap; unread backlog is " << backlog
           << "; what the consumer reads will have gaps";
     } else if (backlog >= kBacklogWarningThreshold) [[unlikely]] {
-      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
+      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, DBG, 60000)
           << "LifecycleEventFeedPlugin estimated unread backlog is " << backlog
           << " events for comm " << commId_ << "; consumer may be stalled and "
           << (maxUnreadEvents_ != 0 ? "events will start being discarded"
