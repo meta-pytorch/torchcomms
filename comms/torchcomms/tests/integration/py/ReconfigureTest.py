@@ -28,7 +28,7 @@ from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
 class ReconfigureTest(unittest.TestCase):
     """Test class for reconfigure() fault tolerance API."""
 
-    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx", "rccl", "rcclx"}
+    SUPPORTED_BACKENDS = {"mccl", "gloo", "nccl", "ncclx"}
 
     _shared_store = None
 
@@ -103,9 +103,6 @@ class ReconfigureTest(unittest.TestCase):
         """Skip test if commGrow is not available.
 
         For nccl/ncclx, skip when the linked NCCL version is older than 2.29.
-        For rccl/rcclx, commGrow requires RCCL >= 2.29; the version check is
-        performed in the C++ backend at compile time, so we attempt the test
-        and rely on the backend to surface an error if the API is unavailable.
         """
         if self.backend not in ("nccl", "ncclx"):
             return

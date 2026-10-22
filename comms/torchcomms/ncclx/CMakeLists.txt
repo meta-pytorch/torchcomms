@@ -28,18 +28,17 @@ else()
     # third-party deps) so NCCLX_BUILD_DIR should already exist at this point.
 endif()
 
-# libcommsutils.so and libobservatory.so: the commsutils package (comms/utils
-# and comms/observatory, one copy per process), in the environment's lib dir
-# either from the package itself or from build_ncclx.sh when the environment
-# has none (COMMSUTILS_LIB_DIR names another location). The extension links
-# libcommsutils on both paths: it uses the CUDA RAII wrappers and the graph
-# capture side stream from comms/utils, which libnccl.so does not export.
+# libcommsutils.so: the commsutils package (comms/utils, one copy per process),
+# in the environment's lib dir either from the package itself or from
+# build_ncclx.sh when the environment has none (COMMSUTILS_LIB_DIR names
+# another location). The extension links libcommsutils on both paths: it uses
+# the CUDA RAII wrappers and the graph capture side stream from comms/utils,
+# which libnccl.so does not export.
 set(NCCLX_COMMSUTILS_LIB_DIR "$ENV{COMMSUTILS_LIB_DIR}")
 if(NOT NCCLX_COMMSUTILS_LIB_DIR)
     set(NCCLX_COMMSUTILS_LIB_DIR "${CONDA_LIB}")
 endif()
 set(NCCLX_COMMSUTILS_LIB "${NCCLX_COMMSUTILS_LIB_DIR}/libcommsutils.so")
-set(NCCLX_OBSERVATORY_LIB "${NCCLX_COMMSUTILS_LIB_DIR}/libobservatory.so")
 
 # Get folly LDFLAGS using pkg-config
 set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
@@ -77,28 +76,9 @@ if(NOT EXISTS "${NCCLX_INCLUDE}")
     message(FATAL_ERROR "NCCLX include not found at ${NCCLX_INCLUDE}")
 endif()
 
-# Check if NCCL Device API headers are available (requires NCCLX 2.28+)
-# This enables the device API for GPU-initiated networking (GIN) support
-if(EXISTS "${NCCLX_INCLUDE}/nccl_device/core.h")
-    message(STATUS
-        "NCCL Device API headers found,"
-        " building with device API support")
-    set(TORCHCOMMS_HAS_NCCL_DEVICE_API ON)
-    file(GLOB TORCHCOMMS_DEVICE_NCCLX_SOURCE
-        "comms/torchcomms/device/ncclx/*.cpp")
-else()
-    message(STATUS
-        "NCCL Device API headers NOT found"
-        " (requires NCCLX 2.28+),"
-        " building without device API support")
-    set(TORCHCOMMS_HAS_NCCL_DEVICE_API OFF)
-    set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
-endif()
-
 add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
-    ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
@@ -116,12 +96,6 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
 )
 torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
-
-# Add device API compile definition if headers are available
-if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
-    target_compile_definitions(torchcomms_comms_ncclx
-        PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
-endif()
 
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_ncclx PRIVATE
@@ -144,16 +118,15 @@ if(USE_SYSTEM_LIBS)
         "-lfmt"
     )
 else()
-    # libcommsutils.so / libobservatory.so after the archive, not before: it is
-    # the archive's members that name their symbols (the cvars table, the
-    # loggers, the lifecycle registry), and under --as-needed a shared library
-    # listed ahead of its first reference is dropped. `ar` runs no link step,
+    # libcommsutils.so after the archive, not before: it is the archive's
+    # members that name its symbols (the cvars table, the loggers), and under
+    # --as-needed a shared library listed ahead of its first reference is
+    # dropped. `ar` runs no link step,
     # so the archive carries the references with nothing to satisfy them; a
     # MODULE tolerates that and the failure lands at import instead of at link.
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
         ${NCCLX_COMMSUTILS_LIB}
-        ${NCCLX_OBSERVATORY_LIB}
         "-l:libfolly.a"
         "-l:libcrypto.a"
         "-l:libssl.a"
@@ -225,8 +198,7 @@ if(NOT USE_SYSTEM_LIBS)
         # Nothing is silently skipped if a library is missing, because the link
         # above already named it.
         file(GLOB NCCLX_COMMSUTILS_FILES
-            "${NCCLX_COMMSUTILS_LIB_DIR}/libcommsutils.so*"
-            "${NCCLX_COMMSUTILS_LIB_DIR}/libobservatory.so*")
+            "${NCCLX_COMMSUTILS_LIB_DIR}/libcommsutils.so*")
         install(FILES ${NCCLX_COMMSUTILS_FILES} DESTINATION .)
     else()
         # `site-packages/torchcomms` up to the environment's lib dir, which is

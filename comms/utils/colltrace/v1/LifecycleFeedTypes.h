@@ -8,9 +8,9 @@
 #include <string>
 
 // The value types crossing the lifecycle-feed boundary. Keep them free of
-// colltrace, and of anything carrying state of its own: these cross between
-// shared objects, so a type here with a registrar or a reclamation domain
-// behind it gets one copy per backend (comms/observatory/README.md).
+// anything carrying state of its own: these cross between shared objects, so a
+// type here with a registrar or a reclamation domain behind it gets one copy
+// per backend.
 
 namespace meta::comms::colltrace {
 
@@ -39,7 +39,7 @@ struct LifecycleEventRecord {
   std::optional<uint64_t> capturedCollId;
   LifecycleEventType eventType{LifecycleEventType::kEnqueue};
   // The same type as ICollWaitEvent's alias, spelled out: naming that alias
-  // here would pull the wait-event interface into observatory.
+  // here would pull the wait-event interface into this header.
   std::chrono::system_clock::time_point timestamp{};
 
   bool operator==(const LifecycleEventRecord&) const = default;

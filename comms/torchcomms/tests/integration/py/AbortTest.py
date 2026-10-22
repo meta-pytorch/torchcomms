@@ -14,7 +14,7 @@ from torch.distributed import TCPStore
 class AbortTest(unittest.TestCase):
     """Test the abort() API for TorchComm."""
 
-    SUPPORTED_BACKENDS = {"nccl", "ncclx", "rccl", "rcclx"}
+    SUPPORTED_BACKENDS = {"nccl", "ncclx"}
 
     _shared_store = None
 

@@ -93,7 +93,7 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupInit(
     ncclComm_t comm,
     cudaStream_t stream,
     void** request) {
-  WARN("allToAllvDedupInit: experimental API moved to comms/experiments/algos");
+  WARN("allToAllvDedupInit: experimental API has been removed");
   return ncclInvalidUsage;
 }
 
@@ -105,7 +105,7 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
     void* recvBuff,
     int recvBlockIds[],
     void* request) {
-  WARN("allToAllvDedupExec: experimental API moved to comms/experiments/algos");
+  WARN("allToAllvDedupExec: experimental API has been removed");
   return ncclInvalidUsage;
 }
 
@@ -205,8 +205,7 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
       NCCLCHECK(metaCommToNccl(ctran::AllToAllPDestroy(pReq)));
       break;
     case CtranPersistentRequest::Type::ALLTOALLV_DEDUP:
-      WARN(
-          "allToAllvDedupDestroy: experimental API moved to comms/experiments/algos");
+      WARN("allToAllvDedupDestroy: experimental API has been removed");
       return ncclInvalidUsage;
     default:
       ERR(ncclInvalidArgument,

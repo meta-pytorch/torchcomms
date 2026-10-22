@@ -108,11 +108,10 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tuner/*.cc)
 
 #### Start of fbcode source files
 ## comms/utils -- the cvars table, the logger, the trainer context, memtrace,
-## colltrace and the shared helpers -- is libcommsutils.so.1, and the
-## observability registry is libobservatory.so.1: the commsutils package
-## (comms/utils/Makefile) builds both, and libnccl.so links the installed
-## copies like any other dependency, so one process holds one copy of each,
-## shared with the MCCL plugin. None of their sources is compiled here.
+## colltrace and the shared helpers -- is libcommsutils.so.1: the commsutils
+## package (comms/utils/Makefile) builds it, and libnccl.so links the installed
+## copy like any other dependency, so one process holds one copy, shared with
+## the MCCL plugin. None of its sources is compiled here.
 ## Include ibverbx files
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/ibverbx/*.cc)
 ## Include common fault-tolerance files
@@ -262,12 +261,12 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-# libcommsutils.so.1 and libobservatory.so.1 come prebuilt from the commsutils
-# package: the environment's lib dir, or wherever the caller installed them
+# libcommsutils.so.1 comes prebuilt from the commsutils package: the
+# environment's lib dir, or wherever the caller installed it
 # (comms/github/build_ncclx.sh runs comms/github/build_commsutils.sh when the
 # environment has none).
 COMMSUTILS_LIB_DIR ?= $(CONDA_LIB_DIR)
-LDFLAGS    += -L$(COMMSUTILS_LIB_DIR) -lobservatory -lcommsutils
+LDFLAGS    += -L$(COMMSUTILS_LIB_DIR) -lcommsutils
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
     # Ensure that cudart symbols are resolved within the module itself.
@@ -329,10 +328,10 @@ $(INCDIR)/nccl.h : nccl.h.in ${NCCLDIR}/makefiles/version.mk
 	    -e "s/\$${nccl:Version}/$(NCCL_VERSION)/g" \
 	    $< > $@
 
-# The commsutils libraries libnccl.so links (see LDFLAGS above). No recipe:
-# they are inputs, and a missing one is reported here, where the linker would
+# The commsutils library libnccl.so links (see LDFLAGS above). No recipe: it is
+# an input, and a missing one is reported here, where the linker would
 # otherwise name it without saying where it should have come from.
-COMMSUTILS_LIBS := $(COMMSUTILS_LIB_DIR)/libcommsutils.so.1 $(COMMSUTILS_LIB_DIR)/libobservatory.so.1
+COMMSUTILS_LIBS := $(COMMSUTILS_LIB_DIR)/libcommsutils.so.1
 $(COMMSUTILS_LIBS):
 	$(error $@ is missing: install the commsutils package into $(COMMSUTILS_LIB_DIR) or run comms/github/build_commsutils.sh)
 

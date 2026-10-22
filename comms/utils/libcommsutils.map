@@ -1,6 +1,6 @@
-# Export map for libcommsutils.so.1 and libobservatory.so.1.
+# Export map for libcommsutils.so.1.
 #
-# Every library that loads beside these (libnccl, libmccl, libctran, the
+# Every library that loads beside it (libnccl, libmccl, libctran, the
 # torchcomms extension) carries its own static folly, fmt, spdlog, glog and
 # gflags. A default-visibility symbol of the same name in two of them binds to
 # whichever copy the dynamic linker saw first, so a folly singleton vault or a
@@ -10,7 +10,7 @@
 # instantiations, vtables and function-local statics that the comms/utils
 # objects themselves emit from those libraries' headers.
 #
-# Everything else -- the whole of comms/utils and comms/observatory -- stays
+# Everything else -- the whole of comms/utils -- stays
 # exported, including comms/utils' own symbols whose signatures mention folly
 # types (a nested N5folly after the first component does not match below). The
 # two folly specializations under global are comms/utils' own (for its

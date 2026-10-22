@@ -30,11 +30,10 @@ option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
 option(USE_TRANSPORT_CCA_HOOK "Build the minimal RDMA CCA-hook extension" ON)
 option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
-# There is one libcommsutils.so and one libobservatory.so per process. Turn
-# this off wherever the environment already supplies them (the commsutils
-# package), or the wheel brings a second copy and each backend gets its own
-# configuration table and registry.
-option(TORCHCOMMS_BUNDLE_COMMSUTILS "Ship libcommsutils.so and libobservatory.so beside the NCCLX extension" ON)
+# There is one libcommsutils.so per process. Turn this off wherever the
+# environment already supplies it (the commsutils package), or the wheel brings
+# a second copy and each backend gets its own configuration table.
+option(TORCHCOMMS_BUNDLE_COMMSUTILS "Ship libcommsutils.so beside the NCCLX extension" ON)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
 message(STATUS "  USE_NCCLX : ${USE_NCCLX}")
 message(STATUS "  USE_GLOO  : ${USE_GLOO}")
