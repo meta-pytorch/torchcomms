@@ -67,6 +67,31 @@ extern "C" hipError_t hipLaunchKernel(
                     : hipErrorSharedObjectSymbolNotFound;
 }
 
+static size_t eventCreates = 0, eventRecords = 0;
+std::pair<size_t, size_t> hipipcTestEventCounts() {
+  return {eventCreates, eventRecords};
+}
+extern "C" hipError_t hipEventCreateWithFlags(
+    hipEvent_t* event,
+    unsigned flags) {
+  ++eventCreates;
+  static auto real = reinterpret_cast<decltype(&hipEventCreateWithFlags)>(
+      dlsym(RTLD_NEXT, "hipEventCreateWithFlags"));
+  return real(event, flags);
+}
+extern "C" hipError_t hipEventRecord(hipEvent_t event, hipStream_t stream) {
+  ++eventRecords;
+  static auto real = reinterpret_cast<decltype(&hipEventRecord)>(
+      dlsym(RTLD_NEXT, "hipEventRecord"));
+  return real(event, stream);
+}
+void runHipIpcGraphCases(
+    rcclx::relay::hipipc::Workspace&,
+    int,
+    int,
+    hipStream_t,
+    const std::string&);
+
 namespace {
 using namespace rcclx::relay::hipipc;
 constexpr size_t kBytes = 2ULL << 20;
@@ -524,7 +549,9 @@ void worker(
     return;
   }
   bootstrap(*workspace, socket, stream, rank);
-  if (mode == "normal") {
+  if (mode.rfind("graph_", 0) == 0) {
+    runHipIpcGraphCases(*workspace, rank, socket, stream, mode);
+  } else if (mode == "normal") {
     normalCases(*workspace, rank, socket, stream, config.peerDevice);
   } else if (mode == "unsupported") {
     unsupportedCase(*workspace, rank, socket, stream);
@@ -534,7 +561,9 @@ void worker(
     expect(*releases == 0, "destructor freed unacknowledged exported owner");
     exchange(socket, uint64_t{2});
   }
-  if (mode == "normal" || mode == "unsupported") {
+  if ((mode == "normal" || mode == "unsupported" ||
+       mode.rfind("graph_", 0) == 0) &&
+      workspace && !workspace->poisoned()) {
     hipCheck(hipStreamDestroy(stream));
   }
 }
@@ -631,7 +660,7 @@ int main(int argc, char** argv) {
     ::close(sockets[0]);
     ::close(sockets[1]);
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(180);
+        std::chrono::steady_clock::now() + std::chrono::seconds(170);
     bool success = true;
     size_t remaining = 2;
     while (remaining && std::chrono::steady_clock::now() < deadline) {
