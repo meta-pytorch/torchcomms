@@ -102,7 +102,7 @@ struct RegisteredAllToAllLayout {
 
 // relay_fraction is the share of every pair's rows relayed through the node's
 // other GPUs (0 exchanges everything directly). Zero-valued kernel sizes select
-// the RCCLX defaults.
+// the backend defaults.
 struct RegisteredAllToAllOptions : OptionsBase<RegisteredAllToAllOptions> {
   float relay_fraction{0.0f};
   int chunk_rows{0};
