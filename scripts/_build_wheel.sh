@@ -28,18 +28,11 @@ pip install -r requirements.txt
 # runtime wheel resolves from the PyTorch index alone.
 pip install pyyaml
 
-export NCCL_SKIP_CONDA_INSTALL=1
-export CLEAN_BUILD=1
-# Match the NCCLX feedstock and TorchComms iter build. NCCLX headers require
-# C++20, and fmt needs its NVCC C++20 compatibility patch applied after the
-# environment's dependency installation.
-export CXXSTD="-std=c++20"
-export NCCL_PATCH_FMT_NVCC_CXX20=1
-# CUDA device compilation can exhaust memory at full host parallelism. The
-# NCCLX build runs during CMake configuration, before the top-level build, so
-# cap both sequential phases independently. Four-way parallelism makes the
-# AArch64 wheel builds exceed their two-hour timeout.
+# NCCLX is deprecated and excluded from wheels. Transport needs its folly
+# build, so it is excluded too.
+export USE_NCCLX=0
+export USE_TRANSPORT=0
+# CUDA device compilation can exhaust memory at full host parallelism.
 export CMAKE_BUILD_PARALLEL_LEVEL=8
-export NCCL_BUILD_JOBS=8
 
 python setup.py bdist_wheel

@@ -27,7 +27,7 @@ uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/
 uv pip install setuptools packaging pyyaml
 uv pip install pytest numpy psutil lintrunner parameterized pydot
 
-# Install torchcomms from source (default: NCCL + NCCLX + Gloo + Transport)
+# Install torchcomms from source (default: NCCL + Gloo)
 uv pip install --no-build-isolation -v .
 ```
 
@@ -45,7 +45,7 @@ conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt conda
 
 # Install torchcomms from source (USE_SYSTEM_LIBS=1 required with conda to link shared libs)
 pip install -r requirements.txt
-USE_NCCLX=OFF USE_SYSTEM_LIBS=1 pip install --no-build-isolation -v .
+USE_SYSTEM_LIBS=1 pip install --no-build-isolation -v .
 ```
 
 ### Installing from PyPI (nightly wheels, no source build needed)
@@ -61,21 +61,17 @@ Backend selection is controlled by environment variables (ON/OFF or 1/0) set bef
 | Variable | Default | Description |
 |---|---|---|
 | `USE_NCCL` | ON | Standard NCCL (uses PyTorch's bundled library, no extra build needed) |
-| `USE_NCCLX` | ON | Meta's extended NCCL fork (built from vendored source in `comms/ncclx/`) |
+| `USE_NCCLX` | OFF | Deprecated. Meta's extended NCCL fork (built from vendored source in `comms/ncclx/`) |
 | `USE_GLOO` | ON | CPU backend |
 | `USE_RCCL` | OFF | AMD ROCm |
 | `USE_RCCLX` | OFF | Meta's extended RCCL |
 | `USE_XCCL` | OFF | Intel XPU |
-| `USE_TRANSPORT` | ON (OFF on ROCm) | RDMA transport layer |
+| `USE_TRANSPORT` | `USE_NCCLX` (OFF on ROCm) | RDMA transport layer; needs the folly build from `build_ncclx.sh` |
 | `USE_SYSTEM_LIBS` | unset | When set, uses conda/system libs instead of building from source |
 
-### NCCL-only (fastest build — skips NCCLX third-party dep compilation)
+### NCCLX build (deprecated)
 
-```bash
-USE_NCCLX=OFF pip install --no-build-isolation -v .
-```
-
-### NCCLX build
+NCCLX is deprecated for OSS usage. Enable with `USE_NCCLX=ON`.
 
 `build_ncclx.sh` is the main build script. It builds ~20 third-party dependencies from source (fmt, zlib, boost, openssl, glog, gflags, folly, fbthrift, etc.), generates nccl_cvars files, builds the comms tracing service, and then compiles the vendored NCCL fork via `make`.
 

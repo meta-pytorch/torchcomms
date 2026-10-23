@@ -83,7 +83,9 @@ cd torchcomms
 
 No build needed - uses the library provided by PyTorch
 
-##### NCCLX Backend
+##### NCCLX Backend (deprecated)
+
+NCCLX is deprecated for OSS usage and must be explicitly enabled with `USE_NCCLX=ON`.
 
 If you want to install the third-party dependencies directly from conda, run the following command:
 ```bash
@@ -196,7 +198,7 @@ You can customize the build by setting environment variables before running pip 
 ```bash
 # Enable/disable specific backends (ON/OFF or 1/0)
 export USE_NCCL=ON    # Default: ON
-export USE_NCCLX=ON   # Default: ON
+export USE_NCCLX=OFF  # Default: OFF (deprecated)
 export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF

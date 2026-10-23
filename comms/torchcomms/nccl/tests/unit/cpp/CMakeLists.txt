@@ -37,6 +37,8 @@ target_compile_features(TorchCommNCCLBootstrapTest PRIVATE cxx_std_20)
 target_link_libraries(TorchCommNCCLBootstrapTest PRIVATE
     torchcomms
     ${TORCH_LIBRARIES}
+    glog::glog_headers
+    fmt::fmt
     GTest::gtest_main
     GTest::gmock
 )

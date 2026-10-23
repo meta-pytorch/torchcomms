@@ -41,7 +41,7 @@ Registering Hooks
 
     # Create a communicator
     device = torch.device("cuda:0")
-    comm = torchcomms.new_comm("ncclx", device)
+    comm = torchcomms.new_comm("nccl", device)
 
     # Define hook callbacks
     def my_pre_hook(args: PreHookArgs) -> None:
@@ -98,7 +98,7 @@ FlightRecorderHook Example
 
     # Create a communicator
     device = torch.device("cuda:0")
-    comm = torchcomms.new_comm("ncclx", device)
+    comm = torchcomms.new_comm("nccl", device)
 
     # Create and register a flight recorder hook
     recorder = FlightRecorderHook(max_entries=1024)
@@ -158,7 +158,7 @@ NanCheckHook Example
 
     # Create a communicator
     device = torch.device("cuda:0")
-    comm = torchcomms.new_comm("ncclx", device)
+    comm = torchcomms.new_comm("nccl", device)
 
     # Create and register the NaN check hook
     nan_check = NanCheckHook()
