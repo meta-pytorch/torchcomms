@@ -8,15 +8,22 @@
 #ifndef NCCL_COMPILER_GCC_H
 #define NCCL_COMPILER_GCC_H
 
-// Helper macros to convert C++ memory ordering to GCC atomic ordering
-#define NCCL_CONVERT_ORDER(order) \
-  ((order) == std::memory_order_relaxed ? __ATOMIC_RELAXED : \
-   (order) == std::memory_order_consume ? __ATOMIC_CONSUME : \
-   (order) == std::memory_order_acquire ? __ATOMIC_ACQUIRE : \
-   (order) == std::memory_order_release ? __ATOMIC_RELEASE : \
-   (order) == std::memory_order_acq_rel ? __ATOMIC_ACQ_REL : \
-   (order) == std::memory_order_seq_cst ? __ATOMIC_SEQ_CST : \
-   __ATOMIC_SEQ_CST)
+#include <atomic>
+
+// Helper macros to convert C++ memory ordering to GCC atomic ordering.
+// std::memory_order and the __ATOMIC_* constants are specified with the same
+// underlying values, so the conversion is a plain cast; the static_asserts
+// below pin that down. Testing `order` against each enumerator instead is a
+// self-comparison at every call site that passes a literal, and a constexpr
+// helper is not folded at -O0, which emits a runtime switch on every atomic op.
+#define NCCL_CONVERT_ORDER(order) (static_cast<int>(order))
+
+static_assert(static_cast<int>(std::memory_order_relaxed) == __ATOMIC_RELAXED, "memory order mismatch");
+static_assert(static_cast<int>(std::memory_order_consume) == __ATOMIC_CONSUME, "memory order mismatch");
+static_assert(static_cast<int>(std::memory_order_acquire) == __ATOMIC_ACQUIRE, "memory order mismatch");
+static_assert(static_cast<int>(std::memory_order_release) == __ATOMIC_RELEASE, "memory order mismatch");
+static_assert(static_cast<int>(std::memory_order_acq_rel) == __ATOMIC_ACQ_REL, "memory order mismatch");
+static_assert(static_cast<int>(std::memory_order_seq_cst) == __ATOMIC_SEQ_CST, "memory order mismatch");
 
 #define COMPILER_ATOMIC_LOAD(ptr, order) \
   __atomic_load_n((ptr), NCCL_CONVERT_ORDER(order))
