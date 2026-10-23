@@ -16,13 +16,13 @@ both the high level collectives API as well as several out of the box backends.
 > [PyTorch Distributed (c10d)](https://docs.pytorch.org/docs/main/distributed.html);
 > new code should use `torch.distributed` directly.
 
-| torchcomms | PyTorch Distributed | Available |
-| --- | --- | --- |
-| Windows (one-sided put/signal) | [One-sided communication](https://docs.pytorch.org/docs/main/distributed.html#one-sided-communication-experimental) (`dist._new_window`) | nightly |
-| Reconfigure | [Fault-tolerant reconfiguration](https://docs.pytorch.org/docs/main/distributed.html#fault-tolerant-reconfiguration) (`dist._reconfigure`) | 2.15 |
-| `split` | [Groups](https://docs.pytorch.org/docs/main/distributed.html#groups) (`dist.split_group`) | 2.15 |
-| Hooks | [Hooks](https://docs.pytorch.org/docs/main/distributed.html#hooks) (`ProcessGroup.register_pre_hook` / `register_post_hook`) | nightly |
-| Transport | [One-sided tensor transports](https://docs.pytorch.org/docs/main/distributed/transport.html) (`torch.distributed._transport`) | nightly |
+| torchcomms | PyTorch Distributed |
+| --- | --- |
+| Windows (one-sided put/signal) | [One-sided communication](https://docs.pytorch.org/docs/main/distributed.html#one-sided-communication-experimental) (`dist._new_window`) |
+| Reconfigure | [Fault-tolerant reconfiguration](https://docs.pytorch.org/docs/main/distributed.html#fault-tolerant-reconfiguration) (`dist._reconfigure`) |
+| `split` | [Groups](https://docs.pytorch.org/docs/main/distributed.html#groups) (`dist.split_group`) |
+| Hooks | [Hooks](https://docs.pytorch.org/docs/main/distributed.html#hooks) (`ProcessGroup.register_pre_hook` / `register_post_hook`) |
+| Transport | [One-sided tensor transports](https://docs.pytorch.org/docs/main/distributed/transport.html) (`torch.distributed._transport`) |
 
 * [Documentation](https://meta-pytorch.org/torchcomms/main/index.html)
 * [Examples](./comms/torchcomms/examples)
