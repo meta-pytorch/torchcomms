@@ -13,9 +13,9 @@
 #include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_TCPDM_ENABLE
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.cuh"
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel_device.h"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel.cuh"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel.h"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel_device.h"
 #endif
 
 namespace ctran::allreduce::ring {

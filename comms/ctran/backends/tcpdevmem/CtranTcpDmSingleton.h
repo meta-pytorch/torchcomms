@@ -4,8 +4,8 @@
 
 #include <memory>
 
-#include "comms/tcp_devmem/transport.h"
 #include "folly/Singleton.h"
+#include "neteng/omnitcp/transport.h"
 
 namespace ctran {
 
