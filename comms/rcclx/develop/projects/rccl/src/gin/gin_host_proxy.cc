@@ -21,6 +21,12 @@ NCCL_PARAM(GinProxyQueueSize, "GIN_PROXY_QUEUE_SIZE", -1);
 extern int64_t ncclParamIbDataDirect();
 extern int64_t ncclParamDmaBufEnable();
 
+// [RCCL] GIN registers cuMem (VMM) GPU memory, which peermem cannot pin: with
+// NCCL_DMABUF_ENABLE=0 the fallback ibv_reg_mr fails ("Cannot allocate memory") and the
+// devComm cannot be created. rocmwrap.cc already turns DMA-BUF on for hipMem when cuMem is on
+// and NCCL_DMABUF_ENABLE=0; honor that here too.
+static bool ginProxyDmaBufEnabled() { return ncclParamDmaBufEnable() != 0 || ncclCuMemEnable(); }
+
 struct ginProxyGfdState {
   ncclGinProxyOp_t op;
   uint16_t counterId;
@@ -84,7 +90,7 @@ struct ginProxyCtx {
 static ncclRma_t* rmaBackend;
 
 static ncclResult_t getDmaBufFd(void* addr, size_t length, int* fd, bool forceNonDataDirect = false) {
-  if (ncclParamDmaBufEnable() == 0) return ncclInvalidUsage;
+  if (!ginProxyDmaBufEnabled()) return ncclInvalidUsage;
 
   // GIN's symmetric windows are cuMem/VMM allocations registered with the NIC via ibv_reg_dmabuf_mr.
   // the cuMem/hipMemGetHandleForAddressRange that exports the DMA-BUF FD requires this HIP version.
@@ -426,7 +432,7 @@ static ncclResult_t ncclGinProxyRegMrSym(void* ginCtx, void* addr, size_t size, 
     NCCLCHECK(rmaBackend->regMrSym(cComm->collComm, addr, size, type, mrFlags, mhandle));
   } else if (type == NCCL_PTR_CUDA) {
     ncclResult_t dmabufResult = ncclInvalidUsage;
-    if (ncclParamDmaBufEnable() && (cComm->props.ptrSupport & NCCL_PTR_DMABUF)) {
+    if (ginProxyDmaBufEnabled() && (cComm->props.ptrSupport & NCCL_PTR_DMABUF)) {
       ncclResult_t registrationResult = ncclSuccess;
       int dmabufFd = -1;
       dmabufResult = getDmaBufFd(addr, size, &dmabufFd);

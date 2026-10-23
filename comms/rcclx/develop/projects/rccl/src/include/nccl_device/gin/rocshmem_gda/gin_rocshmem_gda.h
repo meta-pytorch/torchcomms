@@ -11,6 +11,12 @@
 #include "gin_rocshmem_device_host_common_gda.h"
 #include "queue_pair_device.h"
 
+// The plugin gives every GIN context of a connection a GPU context of its own (its own QP set);
+// the handle is the array of them.
+NCCL_DEVICE_INLINE ncclGinRocshmemGdaGPUContext* ncclGinRocshmemGdaCtx(const ncclGinCtx& ctx) {
+  return (ncclGinRocshmemGdaGPUContext*)ctx.handle + ctx.contextId;
+}
+
 template <>
 struct ncclGinApi_Put<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
   template <typename Coop>
@@ -25,12 +31,14 @@ struct ncclGinApi_Put<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
 
     coop.sync();
     if (coop.thread_rank() == 0) {
-      ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+      ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
       rocshmem::QueuePair* qp = loadConst(loadConst(&rsCtx->qps) + peer);
       rocshmem::ActiveWFInfo wf_info(peer, rocshmem::ThreadScope::thread);
 
-      if ((required == cuda::thread_scope_system) && (given > required)) {
-        __threadfence_system();
+      // HIP thread_scope (hip_compat.h): system is the MAX value, so a caller that
+      // only guaranteed a weaker scope has given < required -> add a system fence.
+      if ((required == cuda::thread_scope_system) && (given < required)) {
+        NCCL_GIN_THREADFENCE_SYSTEM();
       }
 
       // Skip zero-length RDMA writes (0-byte put_nbi can stall quiet()/flush() -> deadlock); signal still delivered, matching native rocSHMEM/PROXY.
@@ -77,7 +85,7 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
 
     coop.sync();
     if (coop.thread_rank() == 0) {
-      ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+      ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
       rocshmem::QueuePair* qp = loadConst(loadConst(&rsCtx->qps) + peer);
       rocshmem::ActiveWFInfo wf_info(peer, rocshmem::ThreadScope::thread);
 
@@ -85,8 +93,10 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
       uintptr_t dstAddr = loadConst(loadConst(&dstMh->remote_vas) + peer) + dstOff;
       uint32_t dstRkey = loadConst(loadConst(&dstMh->rkeys) + peer);
 
-      if ((required == cuda::thread_scope_system) && (given > required)) {
-        __threadfence_system();
+      // HIP thread_scope (hip_compat.h): system is the MAX value, so a caller that
+      // only guaranteed a weaker scope has given < required -> add a system fence.
+      if ((required == cuda::thread_scope_system) && (given < required)) {
+        NCCL_GIN_THREADFENCE_SYSTEM();
       }
 
       // lkey=0: put_nbi copies srcVal inline into the WQE
@@ -108,7 +118,7 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
 template <>
 struct ncclGinApi_GetCounterPtr<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
   NCCL_DEVICE_INLINE static ncclGinOffsetPtr call(ncclGinCtx ctx, ncclGinCounter_t counterId) {
-    ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+    ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
     return {nccl::utility::loadConst(&rsCtx->counters) + counterId, 0};
   }
 };
@@ -116,7 +126,7 @@ struct ncclGinApi_GetCounterPtr<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
 template <>
 struct ncclGinApi_ResetCounter<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
   NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, ncclGinCounter_t counterId) {
-    ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+    ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
     nccl::utility::loadConst(&rsCtx->counters)[counterId] = 0;
   }
 };
@@ -124,7 +134,7 @@ struct ncclGinApi_ResetCounter<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
 template <>
 struct ncclGinApi_GetSignalPtr<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
   NCCL_DEVICE_INLINE static ncclGinOffsetPtr call(ncclGinCtx ctx, ncclGinSignal_t signalId) {
-    ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+    ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
     return {nccl::utility::loadConst(&rsCtx->signals) + signalId, 0};
   }
 };
@@ -132,7 +142,7 @@ struct ncclGinApi_GetSignalPtr<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
 template <>
 struct ncclGinApi_ResetSignal<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
   NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, ncclGinSignalDescriptor signal) {
-    ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+    ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
     if (signal.type == NCCL_GIN_SIGNAL_TYPE_INDEXED)
       nccl::utility::loadConst(&rsCtx->signals)[signal.indexedSignal.signalId] = 0;
   }
@@ -148,7 +158,7 @@ struct ncclGinApi_Flush<NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA> {
     (void)ord;
     (void)abortFlag;
     using nccl::utility::loadConst;
-    ncclGinRocshmemGdaGPUContext* rsCtx = (ncclGinRocshmemGdaGPUContext*)ctx.handle;
+    ncclGinRocshmemGdaGPUContext* rsCtx = ncclGinRocshmemGdaCtx(ctx);
     rocshmem::QueuePair** qps = loadConst(&rsCtx->qps);
 #pragma unroll 1
     for (int peer = coop.thread_rank(); peer < ctx.nRanks; peer += coop.size()) {
