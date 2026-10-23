@@ -11,6 +11,19 @@
 torchcomms is a new experimental communications API for PyTorch. This provides
 both the high level collectives API as well as several out of the box backends.
 
+> [!WARNING]
+> torchcomms is deprecated. Its features have been upstreamed into
+> [PyTorch Distributed (c10d)](https://docs.pytorch.org/docs/main/distributed.html);
+> new code should use `torch.distributed` directly.
+
+| torchcomms | PyTorch Distributed | Available |
+| --- | --- | --- |
+| Windows (one-sided put/signal) | [One-sided communication](https://docs.pytorch.org/docs/main/distributed.html#one-sided-communication-experimental) (`dist._new_window`) | nightly |
+| Reconfigure | [Fault-tolerant reconfiguration](https://docs.pytorch.org/docs/main/distributed.html#fault-tolerant-reconfiguration) (`dist._reconfigure`) | 2.15 |
+| `split` | [Groups](https://docs.pytorch.org/docs/main/distributed.html#groups) (`dist.split_group`) | 2.15 |
+| Hooks | [Hooks](https://docs.pytorch.org/docs/main/distributed.html#hooks) (`ProcessGroup.register_pre_hook` / `register_post_hook`) | nightly |
+| Transport | [One-sided tensor transports](https://docs.pytorch.org/docs/main/distributed/transport.html) (`torch.distributed._transport`) | nightly |
+
 * [Documentation](https://meta-pytorch.org/torchcomms/main/index.html)
 * [Examples](./comms/torchcomms/examples)
 
