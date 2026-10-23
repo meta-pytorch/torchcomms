@@ -197,9 +197,9 @@ INCLUDES += -I$(CONDA_INCLUDE_DIR)
 
 ifeq ($(ENABLE_TCPDM),1)
 ## TCP DevMem transport
-## Kept in sync with comms/tcp_devmem/CMakeLists.txt (and BUCK).
+## Kept in sync with neteng/omnitcp/CMakeLists.txt (and BUCK).
 CXXFLAGS    += -DTCP_DEVMEM_AGENT
-DEVMEM_DIR  := $(BASE_DIR)/comms/tcp_devmem
+DEVMEM_DIR  := $(BASE_DIR)/neteng/omnitcp
 
 ## ctran <-> tcp_devmem backend glue
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/backends/tcpdevmem/*.cc)
