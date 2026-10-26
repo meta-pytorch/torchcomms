@@ -153,6 +153,43 @@ __global__ void deviceWaitForTimeoutKernel(
   *observedIsAborted = 0;
 }
 
+__device__ __forceinline__ uint64_t globalTimerNs() {
+  uint64_t ns;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(ns));
+  return ns;
+}
+
+// Starts the timeout, idles `idleNs` without polling, then polls until the
+// deadline is seen. Records how long that took after the idle: a deadline that
+// counts from `startTimeout()` is already past, so the first poll sees it.
+__global__ void deviceIdleThenWaitForTimeoutKernel(
+    AbortDevice abort,
+    uint64_t idleNs,
+    int* observedMode,
+    uint64_t* nsAfterIdle,
+    int maxIterations) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+  const uint64_t idleEnd = globalTimerNs() + idleNs;
+  while (globalTimerNs() < idleEnd) {
+    __nanosleep(1000);
+  }
+  const uint64_t pollStart = globalTimerNs();
+  for (int i = 0; i < maxIterations; ++i) {
+    if (abort.isAborted()) {
+      *observedMode = static_cast<int>(abort.reason());
+      *nsAfterIdle = globalTimerNs() - pollStart;
+      return;
+    }
+    __nanosleep(64);
+  }
+  *observedMode = static_cast<int>(AbortReason::NONE);
+  *nsAfterIdle = globalTimerNs() - pollStart;
+}
+
 // Many block leaders race the same `NONE -> TIMED_OUT` deadline CAS.
 //
 // This is the shape `comms::prims::groupAborted()` produces in production: one
@@ -380,6 +417,18 @@ cudaError_t launchDeviceWaitForTimeout(
     cudaStream_t stream) {
   deviceWaitForTimeoutKernel<<<1, 1, 0, stream>>>(
       abort, observedMode, observedIsAborted, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceIdleThenWaitForTimeout(
+    AbortDevice abort,
+    uint64_t idleNs,
+    int* observedMode,
+    uint64_t* nsAfterIdle,
+    int maxIterations,
+    cudaStream_t stream) {
+  deviceIdleThenWaitForTimeoutKernel<<<1, 1, 0, stream>>>(
+      abort, idleNs, observedMode, nsAfterIdle, maxIterations);
   return cudaGetLastError();
 }
 

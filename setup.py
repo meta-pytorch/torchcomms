@@ -102,7 +102,6 @@ USE_TRANSPORT = flag_enabled("USE_TRANSPORT", USE_NCCLX and not IS_ROCM)
 USE_TRANSPORT_CCA_HOOK = flag_enabled(
     "USE_TRANSPORT_CCA_HOOK", USE_NCCLX and not IS_ROCM
 )
-USE_TRITON = flag_enabled("USE_TRITON", False)
 # The from-source NCCLX build provides libcommsutils.so and libobservatory.so
 # but no package ships them, so the wheel has to. Turn this off wherever the
 # environment already supplies the process's one copy of each (the commsutils
@@ -210,7 +209,6 @@ class build_ext(build_ext_orig):
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
-            f"-DUSE_TRITON={flag_str(USE_TRITON)}",
             f"-DTORCHCOMMS_BUNDLE_COMMSUTILS={flag_str(TORCHCOMMS_BUNDLE_COMMSUTILS)}",
         ]
         parallel_level = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "").strip()
@@ -276,9 +274,6 @@ setup(
     version=get_version(),
     packages=find_packages("comms"),
     package_dir={"": "comms"},
-    package_data={
-        "torchcomms.triton.fb": ["*.bc"],
-    },
     entry_points={
         "torchcomms.backends": backend_entry_points,
     },
