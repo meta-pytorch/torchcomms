@@ -350,7 +350,7 @@ static ncclResult_t symMemoryImportAndMapSegmentsForRank(
   for (int segment = 0; segment < numSegments; segment++) {
     symLsaMessage* msg = messages + r * maxSegments + segment;
     bool reuseLocal = (r == devr->lsaSelf) ||
-                      (ncclParamSymReuseSysmemHandles() && msg->type == CU_MEM_LOCATION_TYPE_HOST_NUMA);
+                      (ncclParamSymReuseSysmemHandles() && ncclMemLocationIsHostNuma(msg->type));
     CUmemGenericAllocationHandle handle = reuseLocal ? memHandles[segment] : (CUmemGenericAllocationHandle) 0ULL;
     NCCLCHECKGOTO(symMemoryImportAndMapSegmentHandle(comm, r, reinterpret_cast<CUdeviceptr>(addr), msg, handle, reuseLocal), ret, fail);
     addr += msg->segmentSize;
@@ -613,7 +613,7 @@ static ncclResult_t symMemoryRegisterGin(struct ncclComm* comm, struct ncclDevrM
     size_t offset = 0;
     for (int segment = 0; segment < mem->numSegments; segment++) {
       CUmemLocationType locType = segmentTypes[segment];
-      int ptrType = (locType == CU_MEM_LOCATION_TYPE_HOST_NUMA) ? NCCL_PTR_HOST : NCCL_PTR_CUDA;
+      int ptrType = ncclMemLocationIsHostNuma(locType) ? NCCL_PTR_HOST : NCCL_PTR_CUDA;
       NCCLCHECKGOTO(ncclGinRegister(comm, (char*)mem->primaryAddr + offset, mem->segmentSizes[segment],
                                     mem->ginSegmentInfos[segment].ginHostWins,
                                     mem->ginSegmentInfos[segment].ginDevWins,
@@ -1109,7 +1109,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(
     CUCHECKGOTO(cuMemRetainAllocationHandle(&memHandles[segment], (void *) (reinterpret_cast<char*>(memAddr) + offset)), ret, fail_locReg);
     CUmemAllocationProp prop;
     CUCHECKGOTO(cuMemGetAllocationPropertiesFromHandle(&prop, memHandles[segment]), ret, fail_locReg);
-    if (prop.location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA && prop.location.type != CU_MEM_LOCATION_TYPE_DEVICE) {
+    if (!ncclMemLocationIsHostNuma(prop.location.type) && prop.location.type != CU_MEM_LOCATION_TYPE_DEVICE) {
       WARN("Segment %d has unsupported location type %d. Symmetric memory currently only supports CU_MEM_LOCATION_TYPE_HOST_NUMA and CU_MEM_LOCATION_TYPE_DEVICE.", segment, (int)prop.location.type);
       ret = ncclInvalidArgument;
       goto fail_locReg;
