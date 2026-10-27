@@ -5,7 +5,7 @@
 #include <memory>
 #include <utility>
 
-#include "comms/tcp_devmem/transport.h"
+#include "neteng/omnitcp/transport.h"
 
 namespace ctran {
 
