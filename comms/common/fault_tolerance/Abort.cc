@@ -96,6 +96,10 @@ bool Abort::setAbort(AbortReason newReason, std::string_view context) {
   return trySetAbort(newReason, std::string{context.data(), context.size()});
 }
 
+bool Abort::cancelForTeardown() noexcept {
+  return state_ != nullptr && trySetAbort(AbortReason::ABORTED, {}, false);
+}
+
 std::optional<AbortInfo> Abort::getAbortInfo() {
   if (state_ == nullptr) {
     return std::nullopt;
@@ -242,11 +246,15 @@ int Abort::loadAbortReason() const {
 }
 
 bool Abort::isContextReady() const {
-  return std::atomic_ref<int>{state_->contextReady}.load(
-             std::memory_order_acquire) != 0;
+  return state_ != nullptr &&
+      std::atomic_ref<int>{state_->contextReady}.load(
+          std::memory_order_acquire) != 0;
 }
 
-bool Abort::trySetAbort(AbortReason newReason, std::string context) {
+bool Abort::trySetAbort(
+    AbortReason newReason,
+    std::string context,
+    bool reportTransition) noexcept {
   int expected = encode(AbortReason::NONE);
   const bool won = std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
       expected,
@@ -261,8 +269,12 @@ bool Abort::trySetAbort(AbortReason newReason, std::string context) {
   // readiness only after the swap so getAbortInfo() cannot return a terminal
   // reason with a transiently incomplete host context.
   context_.swap(context);
+  teardownCancellation_.store(!reportTransition, std::memory_order_release);
   std::atomic_ref<int>{state_->contextReady}.store(
       1, std::memory_order_release);
+  if (!reportTransition) {
+    return true;
+  }
   const auto reasonString = abortReasonToString(newReason);
   std::fprintf(
       stderr,
