@@ -17,8 +17,9 @@
  * Marker prefixing every first-writer abort log line, on either side.
  *
  * The winner of the reason CAS logs once and every later observer stays silent,
- * so exactly one of these lines exists per communicator and it names whatever
- * declared the abort. Defined here rather than spelled out at the emitting
+ * so exactly one of these lines exists per failed communicator and it names
+ * whatever declared the abort. Normal teardown cancellation deliberately emits
+ * none. Defined here rather than spelled out at the emitting
  * sites (`Abort::trySetAbort` on the host, `detail::deviceLogFirstWriter` on
  * the device) so host and device cannot drift apart and stop answering to the
  * same grep.
@@ -195,6 +196,19 @@ class Abort final {
       AbortReason newReason = AbortReason::ABORTED,
       std::string_view context = {});
 
+  // Cancel device waits during normal teardown without reporting a failure.
+  // Returns true only when teardown wins the terminal-reason transition.
+  bool cancelForTeardown() noexcept;
+
+  // True after the terminal reason and its reporting policy are published.
+  // False for disabled controllers or incomplete publication.
+  bool isContextReady() const;
+
+  // Published with AbortInfo readiness; an earlier real abort remains false.
+  bool isTeardownCancellation() const noexcept {
+    return teardownCancellation_.load(std::memory_order_acquire);
+  }
+
   /**
    * Returns an immutable snapshot of the winning abort reason and context, or
    * std::nullopt when this controller has not been aborted.
@@ -305,8 +319,10 @@ class Abort final {
   }
 
   int loadAbortReason() const;
-  bool isContextReady() const;
-  bool trySetAbort(AbortReason newReason, std::string context);
+  bool trySetAbort(
+      AbortReason newReason,
+      std::string context,
+      bool reportTransition = true) noexcept;
 
   AbortState* state_{nullptr};
   bool stateMapped_{false};
@@ -317,6 +333,7 @@ class Abort final {
   // Only the host reason-CAS winner writes context_. Readers copy it only after
   // an acquire load observes contextReady == 1, so no mutex is needed.
   std::string context_;
+  std::atomic<bool> teardownCancellation_{false};
   AbortBehavior behavior_{AbortBehavior::SKIP};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
