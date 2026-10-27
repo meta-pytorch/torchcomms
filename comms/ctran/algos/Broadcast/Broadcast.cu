@@ -9,9 +9,9 @@
 #include "comms/utils/colltrace/common/ColltraceDeviceHandle.h"
 
 #ifndef CTRAN_DISABLE_TCPDM
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.cuh"
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel_device.h"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel.cuh"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel.h"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel_device.h"
 
 __shared__ UnpackBlockState broadcastUnpack;
 #endif
