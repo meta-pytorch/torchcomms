@@ -40,7 +40,7 @@ NCCL_PARAM(RMADisable, "RMA_DISABLE", 0);
 // alloc.h). Treat both as a CPU-backed (sysmem) segment so the elastic-buffer
 // consumer paths recognize AMD host segments.
 static inline bool ncclSymIsHostSegment(CUmemLocationType type) {
-  if (type == CU_MEM_LOCATION_TYPE_HOST_NUMA) return true;
+  if (ncclMemLocationIsHostNuma(type)) return true;
 #if defined(__HIP_PLATFORM_AMD__) && ROCM_VERSION >= 71200
   if (type == CU_MEM_LOCATION_TYPE_HOST) return true;
 #endif
