@@ -59,8 +59,8 @@ jobs:
           - name: RCCL
             runs-on: linux.rocm.gpu.meta-pytorch.mi350.4
             gpu-arch-type: "rocm"
-            gpu-arch-version: "10.0"
-            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm10.0'
+            gpu-arch-version: "10.1"
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm10.1'
             cmake-version: "latest"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
