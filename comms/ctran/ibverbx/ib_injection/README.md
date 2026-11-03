@@ -323,9 +323,8 @@ reaching the ctran code under test.
 **Reaches every ibverbx consumer, because it is a plain env var and not a cvar.**
 A cvar is empty until `ncclCvarInit()` runs, which would restrict selection to
 the binaries that call it, in the right order: ctranx has its own cvar system and
-never calls it, prims deliberately never calls it, and
-`uniflow-light/RdmaTransportFactory.cpp` calls it *after* `ibvInit()`. Reading
-the variable with `getenv` at the point of use covers all of them with one name.
+never calls it, and prims deliberately never calls it. Reading the variable with
+`getenv` at the point of use covers all of them with one name.
 For a path handed straight to `dlopen` a cvar adds nothing anyway — there is
 nothing to type-check or range-check, and `/etc/nccl.conf` layering is actively
 unwanted for an injection shim.
