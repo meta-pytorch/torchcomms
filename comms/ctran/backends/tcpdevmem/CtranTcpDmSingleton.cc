@@ -3,8 +3,8 @@
 #include <sys/utsname.h>
 #include <filesystem>
 #include "comms/ctran/utils/Checks.h"
-#include "comms/tcp_devmem/bond_transport.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "neteng/omnitcp/bond_transport.h"
 
 namespace ctran {
 

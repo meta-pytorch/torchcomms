@@ -14,8 +14,8 @@
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h" // @manual=//comms/ctran:mapper_types
-#include "comms/tcp_devmem/transport.h"
 #include "comms/utils/commSpecs.h"
+#include "neteng/omnitcp/transport.h"
 
 namespace ctran {
 

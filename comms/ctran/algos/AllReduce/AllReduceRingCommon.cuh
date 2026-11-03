@@ -13,7 +13,7 @@
 
 #ifndef CTRAN_DISABLE_TCPDM
 #define CTRAN_TCPDM_ENABLE
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
+#include "neteng/omnitcp/unpack/batch_unpack_kernel.h"
 #else
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
 #endif

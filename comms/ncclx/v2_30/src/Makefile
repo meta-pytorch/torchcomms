@@ -163,12 +163,12 @@ INCLUDES += -I$(CONDA_INCLUDE_DIR)
 
 ifeq ($(ENABLE_TCPDM),1)
 ## TCP DevMem transport
-## Kept in sync with comms/tcp_devmem/CMakeLists.txt (and BUCK).
+## Kept in sync with neteng/omnitcp/CMakeLists.txt (and BUCK).
 ## The device-manager client uses a header-only "nanothrift" backend
-## (comms/tcp_devmem/devmgr/nanothrift/gen/*.h), so no thrift codegen step is
+## (neteng/omnitcp/devmgr/nanothrift/gen/*.h), so no thrift codegen step is
 ## needed here. FBThrift (gen-cpp2) is only pulled in when -DUSE_FBTHRIFT is set.
 CXXFLAGS    += -DTCP_DEVMEM_AGENT
-DEVMEM_DIR  := $(BASE_DIR)/comms/tcp_devmem
+DEVMEM_DIR  := $(BASE_DIR)/neteng/omnitcp
 
 ## ctran <-> tcp_devmem backend glue
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/backends/tcpdevmem/*.cc)
