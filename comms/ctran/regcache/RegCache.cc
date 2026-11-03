@@ -244,6 +244,23 @@ void ctran::RegCache::init() {
 }
 
 commResult_t ctran::RegCache::destroy() {
+  // Quiesce the async registration thread before touching the state it reads,
+  // so the ordering is an invariant of the destructor rather than a
+  // consequence of which members happen to be lock-protected. Nothing drains
+  // the queue beforehand: regAsync is fire-and-forget.
+  if (asyncRegThread_.joinable()) {
+    AsyncRegCmd cmd;
+    cmd.stopFlag = true;
+
+    asyncRegQueue_.lock()->push(cmd);
+    asyncRegCv_.notify_one();
+    asyncRegThread_.join();
+    // Clear the queue after thread terminates
+    std::queue<AsyncRegCmd>().swap(*asyncRegQueue_.lock());
+    // Reset thread object to default state so it can be restarted by init()
+    asyncRegThread_ = std::thread{};
+  }
+
   {
     // Warn if user missed any buffer registration.
     // RegCache holds a shared_ptr to CtranIbSingleton which guarantees
@@ -280,37 +297,31 @@ commResult_t ctran::RegCache::destroy() {
     for (auto avlHdl : segmentsAvl->getAllElems()) {
       auto seg = reinterpret_cast<ctran::regcache::Segment*>(
           segmentsAvl->lookup(avlHdl));
+      // Every segment in the tree has refCount >= 1 by construction, so a
+      // remaining one always names a communicator the user never destroyed.
+      const int64_t refCount = seg->stateMnger.rlock()->refCount;
       CTRAN_LOG_TRACE(
           ALLOC,
-          "Remaining avlHdl {} range {} ncclManaged {} in segmentsAvl",
-          (void*)avlHdl,
-          seg->range.toString(),
-          seg->ncclManaged);
+          "Remaining segment {} at destroy time: {}",
+          (void*)seg,
+          seg->toString(refCount));
       segmentsAvl->remove(avlHdl);
       delete seg;
     }
-  }
 
-  if (asyncRegThread_.joinable()) {
-    AsyncRegCmd cmd;
-    cmd.stopFlag = true;
-
-    asyncRegQueue_.lock()->push(cmd);
-    asyncRegCv_.notify_one();
-    asyncRegThread_.join();
-    // Clear the queue after thread terminates
-    std::queue<AsyncRegCmd>().swap(*asyncRegQueue_.lock());
-    // Reset thread object to default state so it can be restarted by init()
-    asyncRegThread_ = std::thread{};
+    // Cleared under segmentsAvl_ because the cached registration path reads
+    // externalRegMemFn_ with that lock held. Two readers are not covered:
+    // regRange, the dynamic path, reads it unlocked, and
+    // registerExternalRegMemFn writes it unlocked. Both are caller-thread
+    // races that are unchanged by this clear.
+    externalRegMemFn_ = nullptr;
+    externalDeregMemFn_ = nullptr;
   }
 
   // Report snapshot at destroy if enabled
   if (NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT >= 0) {
     profiler.rlock()->reportSnapshot();
   }
-
-  externalRegMemFn_ = nullptr;
-  externalDeregMemFn_ = nullptr;
 
   return commSuccess;
 }

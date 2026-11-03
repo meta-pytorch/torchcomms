@@ -109,19 +109,24 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
 
   this->comm = comm;
 
+  // Pin both registration caches for this mapper's lifetime before anything
+  // registers into them, so they outlive every handle taken below.
+  this->regCache_ = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(this->regCache_);
+  this->ipcRegCache_ = ctran::IpcRegCache::getInstance();
+  ctran::CHECK_VALID_IPC_REGCACHE(this->ipcRegCache_);
+
   if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
     CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-MAPPER: IpcRegCache socket server enabled, initializing");
     // Initialize IpcRegCache singleton (idempotent - only initializes once)
-    auto ipcRegCache = ctran::IpcRegCache::getInstance();
-    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-    ipcRegCache->init();
+    this->ipcRegCache_->init();
 
     // Register this mapper as an IpcExportClient so globalDeregister
     // can iterate all active mappers to send remote releases.
-    ipcRegCache->registerExportClient(this);
+    this->ipcRegCache_->registerExportClient(this);
 
     // AllGather IPC server addresses after comm is set
     FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
@@ -495,9 +500,7 @@ CtranMapper::~CtranMapper() {
 
   // Deregister from IpcRegCache so globalDeregister won't call this mapper
   // after it's destroyed.
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-  ipcRegCache->deregisterExportClient(this);
+  ipcRegCache_->deregisterExportClient(this);
 
   // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
@@ -528,9 +531,7 @@ commResult_t CtranMapper::allGatherIpcServerAddrs() {
   const int myRank = comm->statex_->rank();
   peerIpcServerAddrs_.resize(nRanks);
 
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-  ipcRegCache->getServerAddr().getAddress(&peerIpcServerAddrs_[myRank]);
+  ipcRegCache_->getServerAddr().getAddress(&peerIpcServerAddrs_[myRank]);
   auto resFuture = comm->bootstrap_->allGather(
       peerIpcServerAddrs_.data(), sizeof(sockaddr_storage), myRank, nRanks);
   FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
@@ -580,9 +581,7 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
     std::unique_ptr<regcache::IpcReqCb> req =
         std::make_unique<regcache::IpcReqCb>();
-    auto ipcRegCache = ctran::IpcRegCache::getInstance();
-    ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-    FB_COMMCHECK(ipcRegCache->notifyRemoteIpcRelease(
+    FB_COMMCHECK(ipcRegCache_->notifyRemoteIpcRelease(
         comm->statex_->gPid(),
         peerAddr,
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
@@ -610,9 +609,6 @@ commResult_t CtranMapper::regMem(
     bool forceRegist,
     bool ncclManaged,
     void** regHdl) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
   const int cudaDev = comm->statex_->cudaDev();
   // Cache the buffer.
   // regMem only allows for single-segment buffers.
@@ -621,7 +617,7 @@ commResult_t CtranMapper::regMem(
 
   std::vector<ctran::regcache::Segment*> segments;
   std::vector<void*> segHdls;
-  FB_COMMCHECK(regCache->cacheSegment(
+  FB_COMMCHECK(regCache_->cacheSegment(
       buf,
       len,
       cudaDev,
@@ -651,7 +647,7 @@ commResult_t CtranMapper::regMem(
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceRegist) {
     bool didRegister = false;
     auto* segment = segments.front();
-    FB_COMMCHECK(regCache->regRangeCached(
+    FB_COMMCHECK(regCache_->regRangeCached(
         segment->range.buf,
         segment->range.len,
         cudaDev,
@@ -671,32 +667,23 @@ commResult_t CtranMapper::regMem(
 }
 
 DevMemType CtranMapper::segmentType(void* segHdl) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
-  ctran::regcache::Segment* segment = regCache->getSegment(segHdl);
+  ctran::regcache::Segment* segment = regCache_->getSegment(segHdl);
   return segment->getType();
 }
 
 const void* CtranMapper::segmentBuf(void* segHdl) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
-  ctran::regcache::Segment* segment = regCache->getSegment(segHdl);
+  ctran::regcache::Segment* segment = regCache_->getSegment(segHdl);
   return segment ? segment->range.buf : nullptr;
 }
 
 commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
   // Fast return for nullptr handle
   if (segHdl == nullptr) {
     return commSuccess;
   }
 
   auto timerBegin = std::chrono::steady_clock::now();
-  auto regElems = regCache->getRegElems(segHdl);
+  auto regElems = regCache_->getRegElems(segHdl);
   if (!skipRemRelease) {
     // Release remote registration associated with each regElem.
     // No epoch lock needed - remReleaseMem delegates to IpcRegCache which uses
@@ -725,7 +712,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   bool freed = false, ncclManaged = false;
   std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
   FB_COMMCHECK(
-      regCache->freeSegment(segHdl, freed, ncclManaged, regElemsFreed));
+      regCache_->freeSegment(segHdl, freed, ncclManaged, regElemsFreed));
 
   // freed is true means all segments are deregistered
   if (freed) {
@@ -746,9 +733,6 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
 }
 
 commResult_t CtranMapper::deregDynamic(void* regHdl) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
   auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
 
   // Remote Release
@@ -758,7 +742,7 @@ commResult_t CtranMapper::deregDynamic(void* regHdl) {
   FB_COMMCHECK(this->remReleaseMem(regElem));
 
   // Deregister dynamic registration
-  FB_COMMCHECK(regCache->deregDynamic(regElem));
+  FB_COMMCHECK(regCache_->deregDynamic(regElem));
 
   return commSuccess;
 }
@@ -774,12 +758,10 @@ commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
       FB_CHECKABORT(
           ctranNvl != nullptr,
           "Unexpected rkey with NVL backend but ctranNvl is not initialized");
-      auto ipcRegCache = ctran::IpcRegCache::getInstance();
-      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-      FB_COMMCHECK(ipcRegCache->releaseRemReg(
+      FB_COMMCHECK(ipcRegCache_->releaseRemReg(
           rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
       // actual release of deferred deregistrations
-      ipcRegCache->cleanupInvalidImports();
+      ipcRegCache_->cleanupInvalidImports();
       break;
     }
     default:
@@ -795,11 +777,8 @@ commResult_t CtranMapper::regAsync(const void* buf, const size_t len) {
     return commSuccess;
   }
 
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
   // Already registered
-  if (regCache->isRegistered(buf, len)) {
+  if (regCache_->isRegistered(buf, len)) {
     return commSuccess;
   }
 
@@ -820,7 +799,7 @@ commResult_t CtranMapper::regAsync(const void* buf, const size_t len) {
     CTRAN_LOG_TRACE(COLL, "regAsync registered buf {} len {}", buf, len);
     return commSuccess;
   } else {
-    FB_COMMCHECK(regCache->asyncRegRange(
+    FB_COMMCHECK(regCache_->asyncRegRange(
         buf, len, cudaDev, logMetaData_, enableBackends_));
     CTRAN_LOG_TRACE(COLL, "regAsync submitted buf {} len {}", buf, len);
     return commInProgress;
@@ -833,9 +812,6 @@ commResult_t CtranMapper::searchRegHandle(
     void** regHdl,
     bool* dynamicRegist,
     bool allowDynamic) {
-  auto regCache = ctran::RegCache::getInstance();
-  ctran::CHECK_VALID_REGCACHE(regCache);
-
   const int cudaDev = comm->statex_->cudaDev();
   *dynamicRegist = false;
 
@@ -847,7 +823,7 @@ commResult_t CtranMapper::searchRegHandle(
   // global lock.
   ctran::regcache::RegElem* regHdl_ = nullptr;
   bool didRegister = false;
-  FB_COMMCHECK(regCache->regRangeCached(
+  FB_COMMCHECK(regCache_->regRangeCached(
       buf,
       len,
       cudaDev,
@@ -870,7 +846,7 @@ commResult_t CtranMapper::searchRegHandle(
     // Oops, this is not a known cached segment, we have to do dynamic
     // registration with the given buf, len range. Caller is responsible for
     // immediate deregisgration after current use.
-    FB_COMMCHECK(regCache->regDynamic(
+    FB_COMMCHECK(regCache_->regDynamic(
         buf, len, cudaDev, enableBackends_, &regHdl_, &logMetaData_));
     *dynamicRegist = true;
     CTRAN_LOG(

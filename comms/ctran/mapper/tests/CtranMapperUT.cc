@@ -1626,3 +1626,34 @@ TEST(CtranMapperUT, IpcRegCacheDisabledSkipsSocketInit) {
   // NVL backend should still be available (for window operations)
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
 }
+
+// A live CtranMapper must keep the RegCache and IpcRegCache singletons alive.
+// Without an owning reference folly is free to destroy either while the mapper
+// still holds segment handles into it.
+TEST(CtranMapperUT, PinsRegCacheSingletonsForItsLifetime) {
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
+  ncclCvarInit();
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
+
+  auto regCache = ctran::RegCache::getInstance();
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(regCache, nullptr);
+  ASSERT_NE(ipcRegCache, nullptr);
+  const auto regCacheBefore = regCache.use_count();
+  const auto ipcRegCacheBefore = ipcRegCache.use_count();
+
+  {
+    auto mapper = std::make_unique<CtranMapper>(dummyComm);
+    EXPECT_GT(regCache.use_count(), regCacheBefore);
+    EXPECT_GT(ipcRegCache.use_count(), ipcRegCacheBefore);
+  }
+
+  // Deterministic, not timing-dependent: the only owning references are the
+  // mapper's two members, released synchronously by ~CtranMapper. The
+  // IpcRegCache socket callback and the RegCache async registration thread
+  // both capture `this` raw, and exportClientRegistry_ holds raw pointers, so
+  // no background thread can hold a transient reference here.
+  EXPECT_EQ(regCache.use_count(), regCacheBefore);
+  EXPECT_EQ(ipcRegCache.use_count(), ipcRegCacheBefore);
+}

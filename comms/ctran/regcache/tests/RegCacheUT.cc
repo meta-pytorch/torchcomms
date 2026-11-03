@@ -1,12 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/init/Init.h>
+#include <folly/synchronization/Baton.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <thread>
 
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
@@ -631,6 +635,105 @@ TEST_F(RegCacheTest, HoldsCtranIbSingletonReference) {
   // After re-init, IB singleton should still be accessible
   auto ibSingletonAfterInit = CtranIbSingleton::getInstance();
   EXPECT_NE(ibSingletonAfterInit, nullptr);
+}
+
+// destroy() must quiesce the async registration thread and leave the cache in
+// a restartable state: an in-flight registration completes rather than being
+// abandoned, and the thread is joined so init() can start a fresh one.
+TEST_F(RegCacheTest, DestroyQuiescesInFlightAsyncRegistration) {
+  EnvRAII env(NCCL_CTRAN_REGISTER, NCCL_CTRAN_REGISTER::async);
+  regCache->destroy();
+  regCache->init();
+
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  folly::Baton<> destroyAboutToRun;
+  folly::Baton<> releaseRegMem;
+  folly::Baton<> regMemEntered;
+  std::atomic<bool> regMemReturned{false};
+  // folly::Baton asserts on a second post(), and phase 2 reuses this
+  // callback, so only the first invocation touches the batons.
+  std::atomic<bool> firstRegMem{true};
+
+  // The external backend keeps this off the real IB/NVL registration path,
+  // which is environment dependent. Named so phase 2 can re-register them,
+  // since destroy() clears the callbacks and init() does not restore them.
+  auto regMemFn =
+      [&](const void* b, const size_t len, const int dev, void** regElem) {
+        *regElem = reinterpret_cast<void*>(0xDEAD);
+        if (firstRegMem.exchange(false, std::memory_order_acq_rel)) {
+          regMemEntered.post();
+          releaseRegMem.wait();
+          regMemReturned.store(true, std::memory_order_release);
+        }
+        return commSuccess;
+      };
+  auto deregMemFn = [](void*) { return commSuccess; };
+  regCache->registerExternalRegMemFn(regMemFn, deregMemFn);
+
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  ASSERT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  struct CommLogData logMetaData = {};
+  std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+  backends[CommBackend::EXTERNAL] = true;
+  ASSERT_EQ(
+      regCache->asyncRegRange(buf, bufSize, cudaDev, logMetaData, backends),
+      commSuccess);
+
+  // Park the async thread inside regMem so a registration is genuinely in
+  // flight when destroy() runs.
+  ASSERT_TRUE(regMemEntered.try_wait_for(std::chrono::seconds(30)));
+
+  // Release only once destroy() is entered, so the in-flight window is ordered
+  // by a happens-before edge rather than by a timer.
+  std::thread releaser([&] {
+    destroyAboutToRun.wait();
+    releaseRegMem.post();
+  });
+
+  destroyAboutToRun.post();
+  EXPECT_EQ(regCache->destroy(), commSuccess);
+  // destroy() joined rather than abandoned the thread, so the in-flight
+  // registration ran to completion.
+  EXPECT_TRUE(regMemReturned.load(std::memory_order_acquire));
+  EXPECT_EQ(regCache->getSegments().size(), 0);
+
+  releaser.join();
+
+  // The thread was reset, not just signalled: a fresh one starts and serves a
+  // new request. Restore the callbacks so this pass also stays on the external
+  // backend; firstRegMem is already false, so it does not touch the batons.
+  regCache->init();
+  regCache->registerExternalRegMemFn(regMemFn, deregMemFn);
+
+  std::vector<ctran::regcache::Segment*> segments2;
+  std::vector<void*> segHdls2;
+  ASSERT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments2, segHdls2),
+      commSuccess);
+  EXPECT_EQ(
+      regCache->asyncRegRange(buf, bufSize, cudaDev, logMetaData, backends),
+      commSuccess);
+  regCache->waitAsyncRegComplete();
+
+  // Release the segment before freeing the device memory, so the fixture's
+  // TearDown does not deregister memory that is already gone.
+  bool freed = false, ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls2[0], freed, ncclManaged, regElemsFreed),
+      commSuccess);
+  EXPECT_TRUE(freed);
+
+  CUDACHECK_TEST(cudaFree(buf));
 }
 
 // Test multiple deregAll/regAll cycles to verify no resource leaks or

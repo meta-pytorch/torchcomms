@@ -1381,14 +1381,12 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
-      auto ipcRegCache = ctran::IpcRegCache::getInstance();
-      ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
       if (extraSegments) {
-        FB_COMMCHECK(ipcRegCache->exportMem(
+        FB_COMMCHECK(ipcRegCache_->exportMem(
             buf, regElem->ipcRegElem, msg.ipcDesc, *extraSegments));
       } else {
         std::vector<ctran::utils::CtranIpcSegDesc> tmpExtraSegments;
-        FB_COMMCHECK(ipcRegCache->exportMem(
+        FB_COMMCHECK(ipcRegCache_->exportMem(
             buf, regElem->ipcRegElem, msg.ipcDesc, tmpExtraSegments));
         if (!tmpExtraSegments.empty()) {
           CTRAN_ERR(
@@ -1460,9 +1458,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         }
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
-        auto ipcRegCache = ctran::IpcRegCache::getInstance();
-        ctran::CHECK_VALID_IPC_REGCACHE(ipcRegCache);
-        FB_COMMCHECK(ipcRegCache->importMem(
+        FB_COMMCHECK(ipcRegCache_->importMem(
             peerId,
             msg.ipcDesc,
             comm->statex_->cudaDev(),
@@ -2364,6 +2360,18 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   commResult_t remReleaseMem(ctran::regcache::RegElem* regElem) override;
 
   bool atDestruction{false};
+
+  // Own a reference so neither singleton can be destroyed while this mapper
+  // still holds segment handles and IPC registrations into them; same pattern
+  // as RegCache's own ibSingleton_. Declared before the backends below so
+  // reverse-order member destruction releases these last.
+  //
+  // TODO: a leaked comm keeps these pinned past destroyInstances(), costing
+  // ~15s at exit (folly waits 5s each for IpcRegCache, RegCache and the
+  // still-pinned CtranIbSingleton) plus a LOG(DFATAL). Switch both caches to
+  // folly::LeakySingleton in a follow-up to make that cost zero.
+  std::shared_ptr<ctran::RegCache> regCache_;
+  std::shared_ptr<ctran::IpcRegCache> ipcRegCache_;
 
   std::unique_ptr<class CtranIb> ctranIb{nullptr};
   std::unique_ptr<class CtranNvl> ctranNvl{nullptr};
