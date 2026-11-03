@@ -795,4 +795,39 @@ TEST(AbortTest, defaultTimeoutDisabledSetterNoop) {
   EXPECT_EQ(abort.getDefaultTimeout(), std::nullopt);
 }
 
+TEST(AbortTest, TeardownCancellationIsQuietAndTerminal) {
+  Abort abort{/*enabled=*/true};
+  ::testing::internal::CaptureStderr();
+  const bool won = abort.cancelForTeardown();
+  const std::string out = ::testing::internal::GetCapturedStderr();
+  ASSERT_TRUE(won);
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_TRUE(abort.isTeardownCancellation());
+  EXPECT_EQ(abort.reason(), AbortReason::ABORTED);
+  EXPECT_THAT(out, ::testing::Not(::testing::HasSubstr(kFirstWriterMarker)));
+  EXPECT_FALSE(abort.setAbort(AbortReason::NETWORK_ERROR, "later failure"));
+}
+
+TEST(AbortTest, TeardownCancellationPreservesEarlierFailure) {
+  Abort abort{/*enabled=*/true};
+  ASSERT_TRUE(abort.setAbort(AbortReason::NETWORK_ERROR, "earlier failure"));
+  ::testing::internal::CaptureStderr();
+  const bool won = abort.cancelForTeardown();
+  const std::string out = ::testing::internal::GetCapturedStderr();
+  EXPECT_FALSE(won);
+  EXPECT_FALSE(abort.isTeardownCancellation());
+  const auto info = abort.getAbortInfo();
+  ASSERT_TRUE(info.has_value());
+  EXPECT_EQ(info->reason, AbortReason::NETWORK_ERROR);
+  EXPECT_EQ(info->context, "earlier failure");
+  EXPECT_THAT(out, ::testing::Not(::testing::HasSubstr(kFirstWriterMarker)));
+}
+
+TEST(AbortTest, TeardownCancellationOnDisabledControllerIsNoOp) {
+  Abort abort{/*enabled=*/false};
+  EXPECT_FALSE(abort.cancelForTeardown());
+  EXPECT_FALSE(abort.isAborted());
+  EXPECT_FALSE(abort.isTeardownCancellation());
+}
+
 } // namespace comms::fault_tolerance::testing
