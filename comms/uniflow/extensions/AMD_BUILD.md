@@ -44,7 +44,7 @@ reports unsupported queries; shared discovery still provides GPU/NIC topology.
 ## Benchmarks and CI
 
 ~~~bash
-python3 fbcode/comms/uniflow/benchmarks/scripts/compare_rdma_bandwidth.py   --gpu mi350 --hosts <host0>,<host1>   --bench-target fbcode//neteng/network_ai/uniflow_extensions/benchmarks:uniflow_bench
+python3 fbcode/neteng/network_ai/uniflow/benchmarks/scripts/compare_rdma_bandwidth.py   --gpu mi350 --hosts <host0>,<host1>   --bench-target fbcode//neteng/network_ai/uniflow_extensions/benchmarks:uniflow_bench
 ~~~
 
 The MI350 serving package is

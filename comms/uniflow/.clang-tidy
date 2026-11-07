@@ -1,2 +1,0 @@
-InheritParentConfig: true
-Checks: '-facebook-security-vulnerable-memcpy,'
