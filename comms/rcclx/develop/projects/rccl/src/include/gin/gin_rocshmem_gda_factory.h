@@ -80,6 +80,18 @@ GIN_QP_API int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(
                                        void* allgather_ctx, rocshmem_gin_qp_set_t* out_qp_set, void*** out_gpu_qps);
 
 /**
+ * @brief Create another set of nRanks QPs on the device context, PDs and DV library of `parent`.
+ *
+ * Gives a GIN context queue pairs of its own without opening the device again. On ionic each
+ * added set starts on the other UDMA engine, so sets used side by side drive both engines.
+ * Destroy it before its parent. Ionic only.
+ *
+ * @return 0 on success, non-zero on failure (and for providers other than ionic).
+ */
+GIN_QP_API int rocshmem_gin_add_qps(rocshmem_gin_qp_set_t parent, int (*allgather)(void* ctx, void* buf, size_t size),
+                                    void* allgather_ctx, rocshmem_gin_qp_set_t* out_qp_set, void*** out_gpu_qps);
+
+/**
  * @brief Destroy a set of GIN QPs and release all IB resources.
  *
  * @param[in] qp_set Handle returned by rocshmem_gin_create_qps.

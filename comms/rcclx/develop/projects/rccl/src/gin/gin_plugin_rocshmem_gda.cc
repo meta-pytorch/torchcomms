@@ -20,7 +20,10 @@
 #include "bootstrap.h"
 #include "nccl_device/gin/rocshmem_gda/gin_rocshmem_device_host_common_gda.h"
 #include "gin/gin_rocshmem_gda_factory.h"
+#include <gda/gda_enums.hpp>
 #include <hip/hip_runtime.h>
+#include <algorithm>
+#include <vector>
 
 // collComm: per-connection state, returned by connect()
 struct ginRocshmemGdaCollCtx {
@@ -29,6 +32,10 @@ struct ginRocshmemGdaCollCtx {
   struct ncclComm* comm;
   rocshmem_gin_qp_set_t qpSet;
   void** gpu_qp_ptrs;
+  // QP sets added for contexts 1.. (rocshmem_gin_add_qps), on qpSet's device context; context c
+  // uses set c % (1 + moreSets.size()).
+  std::vector<rocshmem_gin_qp_set_t> moreSets;
+  std::vector<void**> moreGpuQps;
 };
 
 // ginCtx: per-context state, returned by createContext()
@@ -57,6 +64,12 @@ struct ginRocshmemGdaMemHandle {
 struct ginRocshmemGdaListenCtx {
   int dev;
 };
+
+// RCCL_GIN_GDA_MAX_QP_SETS: most QP sets (one QP per peer each) a connection gives its contexts.
+static int ginGdaMaxQpSets() {
+  const char* s = getenv("RCCL_GIN_GDA_MAX_QP_SETS");
+  return std::max(1, s ? atoi(s) : 8);
+}
 
 // Bootstrap allgather wrapper
 static int ginGdaBootstrapAllgather(void* ctx, void* buf, size_t perRankSize) {
@@ -120,6 +133,15 @@ static ncclResult_t ginRocshmemGdaConnect(void* ctx, void* handles[], int nranks
   cctx->rank = rank;
   cctx->comm = ictx->comm;
 
+  // The QP and memory-key exchanges below are bootstrap allgathers over the whole communicator,
+  // indexed by GIN rank: they only line up when every comm rank is a GIN peer (e.g. a RAIL
+  // connection on a communicator with one rank per node).
+  if (nranks != cctx->comm->nRanks) {
+    WARN("GIN rocshmem-gda: %d GIN peers on a %d-rank communicator is not supported", nranks, cctx->comm->nRanks);
+    delete cctx;
+    return ncclInvalidUsage;
+  }
+
   // Create QPs during connect (like GDAKI creates IB connections in connect)
   int rc = rocshmem_gin_create_qps(nranks, rank, ginGdaBootstrapAllgather, cctx->comm->bootstrap, &cctx->qpSet,
                                    &cctx->gpu_qp_ptrs);
@@ -129,8 +151,23 @@ static ncclResult_t ginRocshmemGdaConnect(void* ctx, void* handles[], int nranks
     return ncclSystemError;
   }
 
-  // Initialize rocshmem __constant__ device memory
+#if RCCL_GIN_GDA_PROVIDER
+  // The GIN code objects dispatch on the provider baked in at build time (gin_rocshmem_constmem.hip).
+  if (rocshmem_gin_get_provider(cctx->qpSet) != RCCL_GIN_GDA_PROVIDER) {
+    WARN("GIN rocshmem-gda: NIC provider %d, but the device code was built for provider %d",
+         rocshmem_gin_get_provider(cctx->qpSet), RCCL_GIN_GDA_PROVIDER);
+    rocshmem_gin_destroy_qps(cctx->qpSet);
+    delete cctx;
+    return ncclInvalidUsage;
+  }
+#else
+  // Initialize rocshmem __constant__ device memory. It reaches only a constmem registered with the
+  // executable's own fatbin (rocSHMEM linked with -fgpu-rdc --hip-link); when there is none,
+  // hipGetSymbolAddress fails and leaves that error pending for the caller's next
+  // hipGetLastError, so clear it.
   rocshmem_gin_init_constmem(rocshmem_gin_get_provider(cctx->qpSet), rank);
+  (void)hipGetLastError();
+#endif
 
   INFO(NCCL_INIT, "GIN rocshmem-gda: QPs created (%d ranks)", nranks);
   *collComm = cctx;
@@ -145,6 +182,7 @@ static ncclResult_t ginRocshmemGdaCloseListen(void* listenComm) {
 static ncclResult_t ginRocshmemGdaCloseColl(void* collComm) {
   struct ginRocshmemGdaCollCtx* cctx = (struct ginRocshmemGdaCollCtx*)collComm;
   if (cctx) {
+    for (auto* set : cctx->moreSets) rocshmem_gin_destroy_qps(set);  // before the set they borrow from
     if (cctx->qpSet) rocshmem_gin_destroy_qps(cctx->qpSet);
     delete cctx;
   }
@@ -248,6 +286,7 @@ static ncclResult_t ginRocshmemGdaCreateContext(void* collComm, ncclGinConfig_t*
   struct ginRocshmemGdaCollCtx* cctx = (struct ginRocshmemGdaCollCtx*)collComm;
   ncclResult_t ret = ncclSuccess;
 
+  int nCtx = 1, nSets = 1;
   auto* ctx = new ginRocshmemGdaGinCtx{};
   ctx->nRanks = cctx->nranks;
   ctx->rank = cctx->rank;
@@ -263,7 +302,23 @@ static ncclResult_t ginRocshmemGdaCreateContext(void* collComm, ncclGinConfig_t*
   ctx->devHandle->netDeviceVersion = NCCL_GIN_ROCSHMEM_VERSION;
   ctx->devHandle->needsProxyProgress = 0;
 
-  if (hipMalloc(&ctx->gpuCtxDev, sizeof(ncclGinRocshmemGdaGPUContext)) != hipSuccess) {
+  // One GPU context per GIN context of this connection, indexed by ncclGinCtx::contextId on the
+  // device, each with QPs of its own (up to RCCL_GIN_GDA_MAX_QP_SETS sets, default 8; ionic only):
+  // contexts that share QPs share their send queue, its lock and its UDMA engine.
+  nCtx = std::max(1, config->nContexts);
+  nSets = rocshmem_gin_get_provider(cctx->qpSet) == rocshmem::GDAProvider::IONIC ? std::min(nCtx, ginGdaMaxQpSets()) : 1;
+  while ((int)cctx->moreSets.size() + 1 < nSets) {
+    rocshmem_gin_qp_set_t set = nullptr;
+    void** gpuQps = nullptr;
+    if (rocshmem_gin_add_qps(cctx->qpSet, ginGdaBootstrapAllgather, cctx->comm->bootstrap, &set, &gpuQps) != 0) {
+      WARN("GIN rocshmem-gda: failed to add QP set %zu", cctx->moreSets.size() + 1);
+      ret = ncclSystemError;
+      goto fail;
+    }
+    cctx->moreSets.push_back(set);
+    cctx->moreGpuQps.push_back(gpuQps);
+  }
+  if (hipMalloc(&ctx->gpuCtxDev, nCtx * sizeof(ncclGinRocshmemGdaGPUContext)) != hipSuccess) {
     ret = ncclSystemError;
     goto fail;
   }
@@ -323,15 +378,23 @@ static ncclResult_t ginRocshmemGdaCreateContext(void* collComm, ncclGinConfig_t*
     (void)hipMemset(ctx->gpuCtxHost.counters, 0, sizeof(uint64_t) * config->nCounters);
   }
 
-  // Copy GPU context
-  (void)hipMemcpy(ctx->gpuCtxDev, &ctx->gpuCtxHost, sizeof(ncclGinRocshmemGdaGPUContext), hipMemcpyHostToDevice);
+  // Copy the GPU contexts: the same signals and counters, each context's own QP set.
+  {
+    std::vector<ncclGinRocshmemGdaGPUContext> host(nCtx, ctx->gpuCtxHost);
+    for (int c = 0; c < nCtx; ++c) {
+      const int k = c % nSets;
+      host[c].qps = (rocshmem::QueuePair**)(k == 0 ? cctx->gpu_qp_ptrs : cctx->moreGpuQps[k - 1]);
+    }
+    (void)hipMemcpy(ctx->gpuCtxDev, host.data(), nCtx * sizeof(ncclGinRocshmemGdaGPUContext), hipMemcpyHostToDevice);
+  }
 
   ctx->devHandle->handle = ctx->gpuCtxDev;
-  ctx->devHandle->size = sizeof(ncclGinRocshmemGdaGPUContext);
+  ctx->devHandle->size = nCtx * sizeof(ncclGinRocshmemGdaGPUContext);
 
   *outGinCtx = ctx;
   *outDevHandle = ctx->devHandle;
-  INFO(NCCL_INIT, "GIN rocshmem-gda: context created (%d signals, %d counters)", config->nSignals, config->nCounters);
+  INFO(NCCL_INIT, "GIN rocshmem-gda: context created (%d contexts on %d QP sets, %d signals, %d counters)", nCtx, nSets,
+       config->nSignals, config->nCounters);
   return ncclSuccess;
 
 fail:

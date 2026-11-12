@@ -184,6 +184,7 @@ set(SRC_FILES
   include/gin/gin_host_proxy.h
   include/gin/gin_host_rocshmem_gda.h
   include/gin/gin_rocshmem_gda_factory.h
+  include/dv_dlopen.h
   include/gin/gin_host_anvil_sdma.h
   include/hip_rocm_version_info.h
   include/ibvcore.h
@@ -1365,7 +1366,7 @@ if(ENABLE_ROCSHMEM)
   target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM)
 endif()
 if(ENABLE_ROCSHMEM_GIN)
-  target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM_GIN)
+  target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM_GIN RCCL_GIN_GDA_PROVIDER=${RCCL_GIN_GDA_PROVIDER})
 endif()
 # Uncached (fine-grained) VMM/cuMem allocation type. Available natively on
 # HIP >= 7.12.60540 and via the ROCm 7.0.2.x backport range [7.0.51831, 7.0.60000).
@@ -1745,6 +1746,58 @@ elseif(ENABLE_ROCSHMEM_GIN)
   # into the per-arch device link step via DeviceLinker.cmake.
   # Host symbols from GIN plugins are left unresolved via --allow-shlib-undefined.
   target_link_options(rccl PRIVATE "LINKER:--allow-shlib-undefined")
+  if(RCCL_GIN_LINK_ROCSHMEM)
+    # Pull the rocSHMEM host objects the GIN plugins call (the QueuePair factory, ibv wrapper, NIC
+    # topology, env, SDMA factory) out of librocshmem.a, so a librccl.so loaded with dlopen (e.g. by
+    # Python) needs nothing from the executable. gin_rocshmem_host_shadow.cc defines rocSHMEM's
+    # device-global host shadows, which would otherwise pull in rocshmem_gpu.cpp, an RDC object
+    # whose fatbin only exists in an -fgpu-rdc --hip-link. --exclude-libs keeps every pulled
+    # symbol local, so an executable that also links rocSHMEM does not interpose ours.
+    set(_gin_host_syms
+      _ZN8rocshmem3ibvE
+      _ZN8rocshmem9QueuePairC1EP6ibv_pdi
+      rocshmem_gin_init_constmem
+      _ZN8rocshmem18GetClosestNicToGpuEiPKcPNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE
+      _ZN8rocshmem6envvar3gda13traffic_classE
+      _ZN8rocshmem6envvar3gda7sq_sizeE
+      _ZN8rocshmem6envvar9log_flagsE
+      gin_anvil_sdma_create gin_anvil_sdma_destroy gin_anvil_sdma_get_channel_stride
+      gin_anvil_sdma_get_num_channels gin_anvil_sdma_probe)
+    set(_gin_host_undef "")
+    foreach(_sym ${_gin_host_syms})
+      list(APPEND _gin_host_undef -u ${_sym})
+    endforeach()
+    set(_gin_shadow_src "${CMAKE_SOURCE_DIR}/src/gin/gin_rocshmem_host_shadow.cc")
+    set(_gin_shadow_obj "${CMAKE_CURRENT_BINARY_DIR}/gin_rocshmem_host_shadow.o")
+    set(_gin_host_obj "${CMAKE_CURRENT_BINARY_DIR}/rocshmem_gin_host.o")
+    set(_gin_host_ar "${CMAKE_CURRENT_BINARY_DIR}/librocshmem_gin_host.a")
+    add_custom_command(
+      OUTPUT ${_gin_shadow_obj}
+      COMMAND ${CMAKE_CXX_COMPILER} -x c++ -fPIC -O2 -c ${_gin_shadow_src} -o ${_gin_shadow_obj}
+      DEPENDS ${_gin_shadow_src}
+      COMMENT "Compiling rocSHMEM host shadows for GIN"
+      VERBATIM)
+    if(TARGET rocshmem_static)
+      set(_gin_host_deps rocshmem_static)
+    else()
+      set(_gin_host_deps ${ROCSHMEM_LIBRARY})
+    endif()
+    add_custom_command(
+      OUTPUT ${_gin_host_ar}
+      COMMAND ${CMAKE_LINKER} -r ${_gin_host_undef} ${_gin_shadow_obj} ${ROCSHMEM_LIBRARY} -o ${_gin_host_obj}
+      COMMAND ${CMAKE_COMMAND} -E rm -f ${_gin_host_ar}
+      COMMAND ${CMAKE_AR} rcs ${_gin_host_ar} ${_gin_host_obj}
+      DEPENDS ${_gin_shadow_obj} ${_gin_host_deps}
+      COMMENT "Extracting GIN host objects from librocshmem.a"
+      VERBATIM)
+    add_custom_target(gin_rocshmem_host_objects DEPENDS ${_gin_host_ar})
+    add_dependencies(rccl gin_rocshmem_host_objects)
+    # The SDMA factory calls libhsakmt (static in ROCm) and the topology code libnuma.
+    find_library(_gin_hsakmt NAMES libhsakmt.a HINTS ${ROCM_PATH}/lib REQUIRED)
+    find_library(_gin_numa NAMES numa REQUIRED)
+    target_link_libraries(rccl PRIVATE ${_gin_host_ar} ${_gin_hsakmt} ${_gin_numa})
+    target_link_options(rccl PRIVATE "LINKER:--exclude-libs,librocshmem_gin_host.a:libhsakmt.a")
+  endif()
 endif()
 
 ## Set RCCL link options

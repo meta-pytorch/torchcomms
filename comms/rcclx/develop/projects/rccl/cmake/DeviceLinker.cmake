@@ -1074,6 +1074,11 @@ if(GENERATE_SYM_KERNELS)
     #     (these AMDGCN addrspace(1) appending globals clash with the
     #     host-side addrspace(0) equivalents in fat-object compilation)
     set(_cm_src "${CMAKE_SOURCE_DIR}/src/gin/gin_rocshmem_constmem.hip")
+    set(_qp_provider_bcs "")
+    foreach(_p IN LISTS ROCSHMEM_GDA_PROVIDERS)
+      string(TOLOWER "${_p}" _p_lc)
+      list(APPEND _qp_provider_bcs "${_bc_dir}/queue_pair_${_p_lc}.bc")
+    endforeach()
     set(_cm_bc  "${DEVICE_BUILD_DIR}/gin_rocshmem_constmem.bc")
     set(_qp_raw "${DEVICE_BUILD_DIR}/rocshmem_qp_raw.bc")
 
@@ -1083,6 +1088,7 @@ if(GENERATE_SYM_KERNELS)
         -x hip --cuda-device-only --offload-arch=${_bc_arch}
         -emit-llvm -Xclang -disable-llvm-passes
         -std=c++17 -fPIC
+        -DRCCL_GIN_GDA_PROVIDER=${RCCL_GIN_GDA_PROVIDER}
         -I${ROCSHMEM_SOURCE_DIR}/src
         -I${ROCSHMEM_SOURCE_DIR}/include
         -c -o ${_cm_bc} ${_cm_src}
@@ -1094,9 +1100,7 @@ if(GENERATE_SYM_KERNELS)
       OUTPUT ${_qp_bc}
       COMMAND ${_llvm_link}
         ${_bc_dir}/queue_pair.bc
-        ${_bc_dir}/queue_pair_mlx5.bc
-        ${_bc_dir}/queue_pair_bnxt.bc
-        ${_bc_dir}/queue_pair_ionic.bc
+        ${_qp_provider_bcs}
         ${_cm_bc}
         -o ${_qp_raw}
       COMMAND ${_llvm_dis} -o ${_qp_raw}.ll ${_qp_raw}

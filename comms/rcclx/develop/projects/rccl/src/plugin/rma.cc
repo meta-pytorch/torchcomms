@@ -20,6 +20,7 @@ typedef ncclRma_t* getNcclRma_t(void* rmaPluginLib);
 
 extern getNcclRma_t getNcclRma_v14;
 extern getNcclRma_t getNcclRma_v13;
+extern bool rcclUseAinic();
 NCCL_PARAM(RmaPluginRefCount, "RMA_PLUGIN_REF_COUNT", 0);
 #define NCCL_RMA_VERSION_COUNT 2
 int ncclRmaVersion[NCCL_RMA_VERSION_COUNT] = {14, 13};
@@ -212,13 +213,19 @@ static void initPluginLibsOnceFunc() {
   // Add internal ib plugin. IB-CAST uses its own RMA backend layered on the CAST
   // transport (also backs GIN over IB-CAST via the generic ncclGinProxy); all other
   // cases use the default IB RMA proxy.
+  // Mirror the NET selection in plugin/net.cc: NCCL_NET=ROCM-IB is an alias of
+  // IB-CAST, and on AINIC autodetect (NCCL_NET unset) the data path is IB-CAST
+  // too. Without this, GIN/RMA on AINIC fall back to the generic net_ib backend
+  // (a second, non-ionic-aware device enumeration), which faults on Pollara
+  // ("async fatal event on QP ... local access violation work queue error").
+  // Same rule ROCM-27070 (ROCm/rocm-systems#9085) added to plugin/gin.cc before
+  // the v14 split.
   {
     const char* envNet = ncclGetEnv("NCCL_NET");
-    if (envNet && strcasecmp(envNet, "IB-CAST") == 0) {
-      pluginLibs[pluginCounter].ncclRma = &IbCastRmaIbProxy;
-    } else {
-      pluginLibs[pluginCounter].ncclRma = &ncclRmaIbProxy;
-    }
+    if (envNet && strcasecmp(envNet, "ROCM-IB") == 0) envNet = "IB-CAST";
+    bool useCast = (envNet && strcasecmp(envNet, "IB-CAST") == 0) || (!envNet && rcclUseAinic());
+    pluginLibs[pluginCounter].ncclRma = useCast ? &IbCastRmaIbProxy : &ncclRmaIbProxy;
+    INFO(NCCL_INIT | NCCL_NET, "RMA/Plugin: internal RMA backend %s", useCast ? "IB-CAST" : "IB");
   }
   pluginLibs[pluginCounter].state = ncclRmaPluginStateInitReady;
   pluginLibs[pluginCounter].version = ncclRmaVersion[0];
