@@ -67,10 +67,6 @@ jobs:
       trigger-event: ${{ github.event_name }}
       architecture: aarch64
       #setup-miniconda: false
-      # OSDC (ARC) runners. Release refs build on the release-isolated pool,
-      # as runner-fleet: osdc does for matrix-picked runners; it has no 61-vCPU
-      # Graviton, so they get its 44-vCPU / 340 GiB one.
-      runner: >-
-        ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/nightly'
-        || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/v'))
-        && 'mt-rel-l-arm64g3-44-340' || 'mt-l-arm64g3-61-463' }}
+      # OSDC (ARC) runner on every ref: meta-pytorch can't use the release
+      # runners, whose allow-list it has no way to fill in.
+      runner: mt-l-arm64g3-61-463
