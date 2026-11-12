@@ -21,6 +21,8 @@ jobs:
       os: linux
       test-infra-repository: pytorch/test-infra
       test-infra-ref: main
+      # OSDC (ARC) runners. CUDA rows get a single A10G.
+      runner-fleet: osdc
       with-cuda: enable
       with-rocm: enable
       with-cpu: disable
@@ -37,9 +39,9 @@ jobs:
         run: |
           patched=$(python3 - <<'PY'
           import json, os
+          # ROCm wheels build on a CPU runner.
           runners = {
-              "cuda": "linux.g5.12xlarge.nvidia.gpu",
-              "rocm": "linux.4xlarge",
+              "rocm": "mt-l-x86iavx512-16-128",
           }
           matrix = json.loads(os.environ["MATRIX"])
           for entry in matrix["include"]:
