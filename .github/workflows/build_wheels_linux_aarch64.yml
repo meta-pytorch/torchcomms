@@ -67,4 +67,6 @@ jobs:
       trigger-event: ${{ github.event_name }}
       architecture: aarch64
       #setup-miniconda: false
-      runner: linux.arm64.r7g.12xlarge.memory
+      # OSDC (ARC) runner on every ref: meta-pytorch can't use the release
+      # runners, whose allow-list it has no way to fill in.
+      runner: mt-l-arm64g3-61-463
