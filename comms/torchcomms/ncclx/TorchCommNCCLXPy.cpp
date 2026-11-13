@@ -6,6 +6,8 @@
 #include <pybind11/stl.h>
 #include <torch/csrc/utils/pybind.h>
 
+#include "comms/torchcomms/AssertionError.hpp"
+#include "comms/torchcomms/AssertionErrorPy.hpp"
 #include "comms/torchcomms/ncclx/NcclxGlobalApi.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
@@ -18,6 +20,10 @@ using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>, TOptions...>;
 
 PYBIND11_MODULE(_comms_ncclx, m, py::mod_gil_not_used()) {
   m.doc() = "NCCLX specific python bindings for TorchComm";
+
+  // Local, so a catch-all translator registered later cannot shadow the
+  // global one registered by _comms.
+  py::register_local_exception_translator(&translateAssertionError);
 
   py::class_<TorchCommNCCLX, TorchCommBackend, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
@@ -92,7 +98,7 @@ Args:
         ``sendrecvAlgo``, ``allgatherAlgo``, ``allreduceAlgo``, etc.
 
 Raises:
-    RuntimeError: If any hint key is immutable, unrecognized, or the
+    AssertionError: If any hint key is immutable, unrecognized, or the
         underlying ncclx::commSetConfig call fails.
 )",
           py::arg("hints"),
@@ -108,7 +114,7 @@ Raises:
             map;
         auto result = api.commDumpAll(map, hints);
         if (result != ncclSuccess) {
-          throw std::runtime_error(
+          throw AssertionError(
               std::string("ncclCommDumpAll failed: ") +
               api.getErrorString(result));
         }

@@ -408,7 +408,7 @@ void TorchCommNCCLX::finalize() {
     TC_LOG(INFO, this) << "Aborting NCCL comm due to timeout";
     comm_state_ = CommState::TIMEOUT;
     abortNcclComm();
-    throw std::runtime_error("Work timed out during finalize");
+    throw AssertionError("Work timed out during finalize");
   } else if (work_status == TorchWorkNCCLX::WorkStatus::ERROR) {
     TC_LOG(INFO, this) << "Aborting NCCL comm due to error";
     comm_state_ = CommState::ERROR;
@@ -574,9 +574,8 @@ void TorchCommNCCLX::setConfig(
 
   ncclResult_t result = ncclx::commSetConfig(nccl_comm_, &config);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
-        fmt::format(
-            "ncclx::commSetConfig failed: {}", ncclGetErrorString(result)));
+    throw NCCLXException(
+        *nccl_api_, "ncclx::commSetConfig failed", result, nccl_comm_);
   }
 }
 

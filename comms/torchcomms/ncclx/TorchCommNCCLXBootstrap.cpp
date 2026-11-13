@@ -152,9 +152,8 @@ ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId(std::string_view name) {
     // Generate unique ID on rank 0
     ncclResult_t ncclErr = nccl_api_->getUniqueId(&uniqueId);
     if (ncclErr != ncclSuccess) {
-      throw std::runtime_error(
-          "Failed to get NCCL unique ID: " +
-          std::string(nccl_api_->getErrorString(ncclErr)));
+      throw NCCLXException(
+          *nccl_api_, "Failed to get NCCL unique ID", ncclErr, nullptr);
     }
 
     // Set the unique ID in the store
@@ -379,9 +378,11 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   ncclResult_t ncclErr = nccl_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);
   if (ncclErr != ncclSuccess || nccl_comm == nullptr) {
-    throw std::runtime_error(
-        "Failed to initialize NCCL communicator: " +
-        std::string(nccl_api_->getErrorString(ncclErr)));
+    throw NCCLXException(
+        *nccl_api_,
+        "Failed to initialize NCCL communicator",
+        ncclErr,
+        nccl_comm);
   }
 
   cleanupTCPStore(nccl_comm);

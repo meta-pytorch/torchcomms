@@ -125,6 +125,9 @@ class TorchCommNCCLXTest : public ::testing::Test {
   void setupWorkToTimeout(WorkEvent& work_event);
 
   void setupWorkToError(WorkEvent& work_event);
+
+  void setupCommAsyncError();
+
   c10::cuda::CUDACachingAllocator::TraceEntry createAllocation(uintptr_t addr);
   c10::cuda::CUDACachingAllocator::TraceEntry createDeallocation(
       uintptr_t addr);

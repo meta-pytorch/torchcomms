@@ -49,11 +49,11 @@ class SetConfigTest(unittest.TestCase):
         )
 
     def test_reject_immutable_hint(self):
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(AssertionError):
             self.ncclx_backend.set_config({"useCtran": "1"})
 
     def test_reject_invalid_key(self):
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(AssertionError):
             self.ncclx_backend.set_config({"nonExistentKey": "value"})
 
     def test_sendrecv_after_config_override(self):

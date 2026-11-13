@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/ncclx/NcclxGlobalApi.hpp"
+#include "comms/torchcomms/AssertionError.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 
 #include "comms/ncclx/headers/nccl.h"
@@ -29,13 +30,13 @@ void DefaultNcclxGlobalApi::initCachingAllocatorHook() {
   ncclUniqueId id;
   ncclResult_t result = ncclGetUniqueId(&id);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
+    throw AssertionError(
         std::string("ncclGetUniqueId failed: ") + ncclGetErrorString(result));
   }
   ncclComm_t comm;
   result = ncclCommInitRankConfig(&comm, 1, id, 0, nullptr);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
+    throw AssertionError(
         std::string("ncclCommInitRankConfig failed: ") +
         ncclGetErrorString(result));
   }

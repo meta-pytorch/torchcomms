@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <thread>
 
 #include <c10/core/Device.h>
 #include <torch/csrc/distributed/c10d/HashStore.hpp> // @manual=//caffe2:torch-cpp
@@ -341,6 +342,7 @@ TEST_F(TorchCommNCCLXTest, FinalizeWorkErrorThrowsNCCLXException) {
 
   auto& work_event = work_events_[0];
   setupWorkToError(work_event);
+  setupCommAsyncError();
 
   // Should throw NCCLXException
   EXPECT_THROW(
@@ -355,8 +357,8 @@ TEST_F(TorchCommNCCLXTest, FinalizeWorkErrorThrowsNCCLXException) {
       NCCLXException);
 }
 
-TEST_F(TorchCommNCCLXTest, FinalizeWorkTimeoutThrowsRuntimeError) {
-  // Test: if work times out, finalize throws std::runtime_error
+TEST_F(TorchCommNCCLXTest, FinalizeWorkTimeoutThrowsAssertionError) {
+  // Test: if work times out, finalize throws AssertionError
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -374,18 +376,18 @@ TEST_F(TorchCommNCCLXTest, FinalizeWorkTimeoutThrowsRuntimeError) {
   auto& work_event = work_events_[0];
   setupWorkToTimeout(work_event);
 
-  // Should throw runtime_error due to timeout
+  // Should throw AssertionError due to timeout
   EXPECT_THROW(
       {
         try {
           comm->finalize();
-        } catch (const std::runtime_error& e) {
+        } catch (const AssertionError& e) {
           std::string error_msg = e.what();
           EXPECT_TRUE(error_msg.find("timed out") != std::string::npos);
           throw;
         }
       },
-      std::runtime_error);
+      AssertionError);
 }
 
 // ============================================================================
@@ -394,7 +396,7 @@ TEST_F(TorchCommNCCLXTest, FinalizeWorkTimeoutThrowsRuntimeError) {
 // TODO: add more tests for other collectives
 TEST_F(TorchCommNCCLXTest, WorkErrorCausesAbortDuringCollective) {
   // Test: if work errors, calling TorchCommNCCLX method calls commAbort and
-  // throws NCCLXException
+  // throws std::runtime_error, not AssertionError
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -412,18 +414,25 @@ TEST_F(TorchCommNCCLXTest, WorkErrorCausesAbortDuringCollective) {
   auto work1 = comm->send(tensor, 1, true);
 
   comm->waitTillError();
+  setupCommAsyncError();
 
-  // Should throw NCCLXException due to error
-  EXPECT_THROW(
-      {
-        try {
-          auto work2 = comm->send(tensor, 1, true);
-        } catch (const NCCLXException& e) {
-          EXPECT_EQ(e.getResult(), ncclInternalError);
-          throw;
-        }
-      },
-      NCCLXException);
+  // Should throw std::runtime_error due to error, also once the comm is
+  // aborted
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_THROW(
+        {
+          try {
+            auto work2 = comm->send(tensor, 1, true);
+          } catch (const std::runtime_error& e) {
+            EXPECT_EQ(dynamic_cast<const AssertionError*>(&e), nullptr);
+            EXPECT_NE(
+                std::string(e.what()).find("NCCLX Async Error"),
+                std::string::npos);
+            throw;
+          }
+        },
+        std::runtime_error);
+  }
 
   // commDestroy should not be called since comm was aborted (set to nullptr)
   EXPECT_CALL(*nccl_mock_, commDestroy(_)).Times(0);
@@ -1305,6 +1314,55 @@ TEST_F(TorchCommNCCLXTest, NCCLXExceptionFromFailedSendIncludesLastError) {
         }
       },
       NCCLXException);
+
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, UnpolledAsyncErrorThrowsRuntimeError) {
+  // Test: an async error that the watchdog has not polled yet is reported as
+  // std::runtime_error, not by the failing NCCLX call as AssertionError
+  setupRankAndSize(0, 2);
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+  comm->init(*device_, "test_name", default_options_);
+  auto tensor = createTestTensor({10, 10});
+  // Hide the error from the watchdog thread, which would abort the process.
+  const auto caller = std::this_thread::get_id();
+  ON_CALL(*nccl_mock_, commGetAsyncError(_, _))
+      .WillByDefault([caller](ncclComm_t, ncclResult_t* async_error) {
+        *async_error = std::this_thread::get_id() == caller ? ncclRemoteError
+                                                            : ncclSuccess;
+        return ncclSuccess;
+      });
+  ON_CALL(*nccl_mock_, allReduce(_, _, _, _, _, _, _))
+      .WillByDefault(Return(ncclRemoteError));
+
+  EXPECT_THROW(
+      {
+        try {
+          comm->all_reduce(tensor, ReduceOp::SUM, false);
+        } catch (const std::runtime_error& e) {
+          EXPECT_EQ(dynamic_cast<const AssertionError*>(&e), nullptr);
+          throw;
+        }
+      },
+      std::runtime_error);
+
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, FailedNcclCallThrowsAssertionError) {
+  setupRankAndSize(0, 2);
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+  comm->init(*device_, "test_name", default_options_);
+  auto tensor = createTestTensor({10, 10});
+  EXPECT_CALL(*nccl_mock_, allReduce(_, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSystemError));
+
+  EXPECT_THROW(comm->all_reduce(tensor, ReduceOp::SUM, false), AssertionError);
 
   comm->finalize();
 }
