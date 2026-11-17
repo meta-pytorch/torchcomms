@@ -10,7 +10,7 @@ jobs:
   lint:
     if: github.repository_owner == 'meta-pytorch'
     name: lintrunner
-    runs-on: linux.4xlarge
+    runs-on: mt-l-x86iavx512-16-128
     container:
       image: nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04
     timeout-minutes: 30
