@@ -10,7 +10,7 @@ jobs:
   build-docs:
     if: github.repository_owner == 'meta-pytorch'
     name: Build Documentation
-    runs-on: linux.12xlarge
+    runs-on: mt-l-x86iavx512-48-384
     container:
       image: nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04
     timeout-minutes: 30
@@ -82,46 +82,42 @@ jobs:
           path: docs/build/html/
 
   upload:
-    runs-on: linux.12xlarge
-    permissions:
-      # Grant write permission here so that the doc can be pushed to gh-pages branch
-      contents: write
     needs: build-docs
     if: github.repository == 'meta-pytorch/torchcomms' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          persist-credentials: true
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docs
-          path: docs
-      - name: Move and commit changes
-        run: |
-          set -euo pipefail
-          # Get github.ref for the output doc folder. By default "main"
-          # If matches a tag like refs/tags/v1.12.0-rc3 or
-          # refs/tags/v1.12.0 convert to 1.12
-          GITHUB_REF=${{ github.ref }}
+    # Runs on OSDC through linux_job_v3, as pytorch/vision, rl, tensordict and
+    # executorch upload their docs. contents: write lets it push to gh-pages.
+    uses: pytorch/test-infra/.github/workflows/linux_job_v3.yml@main
+    permissions:
+      id-token: write
+      contents: write
+    with:
+      repository: meta-pytorch/torchcomms
+      download-artifact: docs
+      ref: gh-pages
+      test-infra-ref: main
+      timeout: 60
+      script: |
+        set -euo pipefail
+        # Get github.ref for the output doc folder. By default "main"
+        # If matches a tag like refs/tags/v1.12.0-rc3 or
+        # refs/tags/v1.12.0 convert to 1.12
+        GITHUB_REF=${{ github.ref }}
 
-          # Convert refs/tags/v1.12.0rc3 into 1.12.
-          # Adopted from https://github.com/pytorch/pytorch/blob/main/.github/workflows/_docs.yml#L150C11-L155C13
-          if [[ "${GITHUB_REF}" =~ ^refs/tags/v([0-9]+\.[0-9]+)\.* ]]; then
-            TARGET_FOLDER="${BASH_REMATCH[1]}"
-          else
-            TARGET_FOLDER="main"
-          fi
-          echo "Target Folder: ${TARGET_FOLDER}"
+        # Convert refs/tags/v1.12.0rc3 into 1.12.
+        # Adopted from https://github.com/pytorch/pytorch/blob/main/.github/workflows/_docs.yml#L150C11-L155C13
+        if [[ "${GITHUB_REF}" =~ ^refs/tags/v([0-9]+\.[0-9]+)\.* ]]; then
+          TARGET_FOLDER="${BASH_REMATCH[1]}"
+        else
+          TARGET_FOLDER="main"
+        fi
+        echo "Target Folder: ${TARGET_FOLDER}"
 
-          mkdir -p "${TARGET_FOLDER}"
-          rm -rf "${TARGET_FOLDER}"/*
-          mv docs/* "${TARGET_FOLDER}"
+        mkdir -p "${TARGET_FOLDER}"
+        rm -rf "${TARGET_FOLDER:?}"/*
+        mv "${RUNNER_ARTIFACT_DIR}"/* "${TARGET_FOLDER}"
 
-          git config user.name 'pytorchbot'
-          git config user.email 'soumith+bot@pytorch.org'
-          git add "${TARGET_FOLDER}" || true
-          git commit -m "auto-generating sphinx docs" || true
-          git push -f
+        git config user.name 'pytorchbot'
+        git config user.email 'soumith+bot@pytorch.org'
+        git add "${TARGET_FOLDER}" || true
+        git commit -m "auto-generating sphinx docs" || true
+        git push -f
