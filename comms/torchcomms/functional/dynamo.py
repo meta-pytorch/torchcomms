@@ -346,6 +346,7 @@ class AsyncWorkVariable(VariableTracker):
 
     # PyTorch 2.14+ dispatches attribute access to getattro_impl instead of
     # var_getattr (pytorch/pytorch#186013); support both.
+    tp_getattro_impl = var_getattr
     getattro_impl = var_getattr
 
     def call_method(
