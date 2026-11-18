@@ -339,7 +339,6 @@ class FlightRecorder {
   std::vector<Entry> entries_;
   size_t max_entries_ = 0;
   size_t id_ = 0;
-  size_t latest_op_id_ = 0; // tracks the latest op_id seen for buffer position
   size_t reset_epoch_ = 0;
   std::unordered_map<size_t, size_t>
       reset_epoch_start_idx_; // maps reset_epoch to the idx where it starts

@@ -290,8 +290,11 @@ void FlightRecorder::record(
     te.sizes_.insert(te.sizes_.end(), sizes.begin(), sizes.end());
   }
 
-  const auto idx = op_id % max_entries_;
-  latest_op_id_ = op_id;
+  // The slot comes from this recorder's own arrival counter, not the global
+  // op_id: op_ids are allocated before the pre-hook runs and are shared by
+  // every comm, so they can reach the recorder out of order or with gaps.
+  // getIdxFromId() is also what getEntry()/retire_id() use to find the entry.
+  const auto idx = getIdxFromId(id_, reset_epoch_);
 
   if (entries_.size() < max_entries_) {
     entries_.emplace_back(std::move(te));
@@ -356,7 +359,7 @@ std::vector<FlightRecorder::Entry> FlightRecorder::dump_entries() {
     auto filter = [this](const Entry& e) {
       return e.reset_epoch_ == reset_epoch_;
     };
-    const auto next = ((latest_op_id_ + 1) % max_entries_);
+    const auto next = getIdxFromId(id_, reset_epoch_);
     std::copy_if(
         entries_.begin() + static_cast<std::ptrdiff_t>(next),
         entries_.end(),
@@ -530,8 +533,9 @@ void FlightRecorder::reset_all() {
   if (!entries_.empty()) {
     // Soft delete: increment epoch to mark all existing entries as old
     // Store where the new epoch starts in the circular buffer
+    const auto next = getIdxFromId(id_, reset_epoch_);
     reset_epoch_++;
-    reset_epoch_start_idx_[reset_epoch_] = (latest_op_id_ + 1) % max_entries_;
+    reset_epoch_start_idx_[reset_epoch_] = next;
     id_ = 0;
   }
 }
