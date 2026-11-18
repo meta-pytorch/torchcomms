@@ -1051,8 +1051,11 @@ int ep_configure_v2(void* handle, int num_experts, int num_topk, int grouped_onl
   // ranks write y and cw -- each its own slot(rank, t) in a local owner's window, while rows for a
   // remote owner go to the forwarder's staging -- and the reduce epilogue reads only those. So
   // y and cw keep this node's sources alone, (num_ranks - node_size) * T rows smaller.
+  // Such a window always gets one y row per slot: the hybrid combine is grouped only (see
+  // ep_combine_v4), and the y base moves down by node_base * T layout rows, which with
+  // num_topk rows per slot would not line up with the combine's slot rows on any node but 0.
   const bool y_local = h->hybrid && h->hyb_multi && env_int("RCCL_EP_HYB_Y_LOCAL") == 1;
-  h->lay = EpWindowLayout::make(h->cfg, sizeof(bf16_t), h->grouped_only ? 1 : 0,
+  h->lay = EpWindowLayout::make(h->cfg, sizeof(bf16_t), (h->grouped_only || y_local) ? 1 : 0,
                                 y_local ? h->node_size : 0, y_local ? h->node_base : 0);
   h->win_bytes = h->lay.total_bytes;
   if (h->hybrid && h->hyb_multi) {
