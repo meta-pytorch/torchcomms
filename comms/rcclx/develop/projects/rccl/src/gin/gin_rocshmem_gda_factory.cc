@@ -39,6 +39,7 @@
  */
 
 #include "gin/gin_rocshmem_gda_factory.h"
+#include "dv_dlopen.h"
 #include <gda/queue_pair.hpp>
 #include <gda/ibv_wrapper.hpp>
 #include <gda/backend_gda.hpp>
@@ -121,6 +122,10 @@ struct rocshmem_gin_qp_set {
   int nRanks;
   int myRank;
   int provider;  // GDAProvider enum
+  int udma_base{0};  // ionic: UDMA engine of the QP to peer 0; peer i gets (udma_base + i) & 1
+  // A set added with rocshmem_gin_add_qps borrows its parent's device context, PDs and DV library.
+  bool borrows_nic{false};
+  int n_added{0};  // sets added to this one so far
 
   // NIC state (owned by this set)
   GinNicDevice nic;
@@ -245,6 +250,13 @@ static int gin_detect_provider(struct ibv_device_attr* attr) {
   return -1;
 }
 
+// QP knobs follow the NCCL_IB_* settings of RCCL's IB transports, which drive the same NICs, so
+// GDA traffic lands in the same traffic class / service level and gets the same retry budget.
+static int gin_env_int(const char* name, int def) {
+  const char* s = getenv(name);
+  return (s && *s) ? atoi(s) : def;
+}
+
 static int gin_open_ib_device(rocshmem_gin_qp_set* set) {
   struct ibv_device** dev_list = nullptr;
   int ndev = 0;
@@ -328,17 +340,28 @@ static int gin_open_ib_device(rocshmem_gin_qp_set* set) {
       ssize_t n = ibv.query_gid_table(ctx, gid_entries, gid_tbl_len, 0);
       int selected_idx = -1;
       uint32_t selected_type = IBV_GID_TYPE_ROCE_V1;
+      // NCCL_IB_GID_INDEX pins the GID like it does for RCCL's IB transports.
+      const int user_gid = gin_env_int("NCCL_IB_GID_INDEX", -1);
 
       for (int i = 0; i < n; i++) {
         union ibv_gid* g = &gid_entries[i].gid;
         uint32_t gtype = gid_entries[i].gid_type;
+        if (gid_entries[i].port_num != (uint32_t)port) continue;
+        if (user_gid >= 0) {
+          if ((int)gid_entries[i].gid_index != user_gid) continue;
+          selected_idx = i;
+          selected_type = gtype;
+          set->nic.gid = *g;
+          set->nic.gid_index = user_gid;
+          break;
+        }
 
         // IB mode: use immediately
         if (gtype == IBV_GID_TYPE_IB) {
           selected_idx = i;
           selected_type = gtype;
           set->nic.gid = *g;
-          set->nic.gid_index = i;
+          set->nic.gid_index = gid_entries[i].gid_index;  // the table is compacted: i is a position
           break;
         }
 
@@ -359,11 +382,17 @@ static int gin_open_ib_device(rocshmem_gin_qp_set* set) {
           selected_idx = i;
           selected_type = gtype;
           set->nic.gid = *g;
-          set->nic.gid_index = i;
+          set->nic.gid_index = gid_entries[i].gid_index;  // the table is compacted: i is a position
         }
       }
       set->nic.gid_type = selected_type;
       free(gid_entries);
+      if (selected_idx < 0) {
+        LOG_ERROR("GIN QP factory: %s port %d has no usable GID (NCCL_IB_GID_INDEX=%d)",
+                  ibv.get_device_name(dev_list[d]), port, user_gid);
+        ibv.close_device(ctx);
+        continue;
+      }
     }
 
     // Allocate PD
@@ -398,8 +427,9 @@ static int gin_load_dv_library(rocshmem_gin_qp_set* set) {
 #if defined(GDA_IONIC)
   case GDAProvider::IONIC:
     {
-      set->dv_handle = dlopen("libionic.so", RTLD_LAZY);
-      if (!set->dv_handle) set->dv_handle = dlopen("/usr/local/lib/libionic.so", RTLD_LAZY);
+      set->dv_handle = ncclDvDlopen("libionic.so", RTLD_LAZY);
+      if (!set->dv_handle) set->dv_handle = ncclDvDlopen("libionic.so.1", RTLD_LAZY);
+      if (!set->dv_handle) set->dv_handle = ncclDvDlopen("/usr/local/lib/libionic.so", RTLD_LAZY);
       if (!set->dv_handle) {
         LOG_ERROR("GIN QP factory: failed to load libionic.so: %s", dlerror());
         return -1;
@@ -419,8 +449,8 @@ static int gin_load_dv_library(rocshmem_gin_qp_set* set) {
 #if defined(GDA_BNXT)
   case GDAProvider::BNXT:
     {
-      set->dv_handle = dlopen("libbnxt_re.so", RTLD_LAZY);
-      if (!set->dv_handle) set->dv_handle = dlopen("/usr/local/lib/libbnxt_re.so", RTLD_LAZY);
+      set->dv_handle = ncclDvDlopen("libbnxt_re.so", RTLD_LAZY);
+      if (!set->dv_handle) set->dv_handle = ncclDvDlopen("/usr/local/lib/libbnxt_re.so", RTLD_LAZY);
       if (!set->dv_handle) {
         LOG_ERROR("GIN QP factory: failed to load libbnxt_re.so: %s", dlerror());
         return -1;
@@ -444,7 +474,7 @@ static int gin_load_dv_library(rocshmem_gin_qp_set* set) {
 #if defined(GDA_MLX5)
   case GDAProvider::MLX5:
     {
-      set->dv_handle = dlopen("libmlx5.so", RTLD_LAZY);
+      set->dv_handle = ncclDvDlopen("libmlx5.so", RTLD_LAZY);
       if (!set->dv_handle) {
         LOG_ERROR("GIN QP factory: failed to load libmlx5.so: %s", dlerror());
         return -1;
@@ -488,15 +518,22 @@ static int gin_create_parent_domain(rocshmem_gin_qp_set* set) {
     set->nic.pd_parent = ibv.alloc_parent_domain(set->nic.context, &pattr);
     if (!set->nic.pd_parent) return -1;
 
-    set->ionic_dv.pd_set_sqcmb(set->nic.pd_parent, false, false, false);
-    set->ionic_dv.pd_set_rqcmb(set->nic.pd_parent, false, false, false);
+    // A nonzero return means the dlopen'ed libionic is not the provider libibverbs loaded (it
+    // rejects this context); its queue and doorbell pointers would be garbage.
+    if (set->ionic_dv.pd_set_sqcmb(set->nic.pd_parent, false, false, false) ||
+        set->ionic_dv.pd_set_rqcmb(set->nic.pd_parent, false, false, false)) {
+      LOG_ERROR("GIN QP factory: libionic rejects this ibv context: libionic and libibverbs come from different "
+                "rdma-core installs");
+      return -1;
+    }
 
     for (int u = 0; u < 2; u++) {
       set->nic.pd_uxdma[u] = ibv.alloc_parent_domain(set->nic.context, &pattr);
       if (!set->nic.pd_uxdma[u]) return -1;
-      set->ionic_dv.pd_set_sqcmb(set->nic.pd_uxdma[u], false, false, false);
-      set->ionic_dv.pd_set_rqcmb(set->nic.pd_uxdma[u], false, false, false);
-      set->ionic_dv.pd_set_udma_mask(set->nic.pd_uxdma[u], 1u << u);
+      if (set->ionic_dv.pd_set_sqcmb(set->nic.pd_uxdma[u], false, false, false) ||
+          set->ionic_dv.pd_set_rqcmb(set->nic.pd_uxdma[u], false, false, false) ||
+          set->ionic_dv.pd_set_udma_mask(set->nic.pd_uxdma[u], 1u << u))
+        return -1;
     }
     return 0;
   }
@@ -539,7 +576,7 @@ static int gin_create_cqs(rocshmem_gin_qp_set* set) {
       }
 
       for (int i = 0; i < n; i++) {
-        cq_attr.parent_domain = set->nic.pd_uxdma[i & 1];
+        cq_attr.parent_domain = set->nic.pd_uxdma[(set->udma_base + i) & 1];
         struct ibv_cq_ex* cq_ex = nullptr;
         if (set->ionic_dv.create_cq_ex) cq_ex = set->ionic_dv.create_cq_ex(set->nic.context, &cq_attr, &ionic_cq_attr);
         if (!cq_ex) cq_ex = ibv_create_cq_ex(set->nic.context, &cq_attr);
@@ -665,13 +702,13 @@ static int gin_create_qps(rocshmem_gin_qp_set* set) {
       attr.cap.max_send_wr = set->sq_size;
       attr.cap.max_send_sge = 1;
       attr.cap.max_recv_sge = 1;
-      attr.cap.max_inline_data = set->inline_threshold;
+      attr.cap.max_inline_data = 32;  // = gpu_qp->inline_threshold (initialize_gpu_qp)
       attr.sq_sig_all = 0;
       attr.qp_type = IBV_QPT_RC;
       attr.comp_mask = IBV_QP_INIT_ATTR_PD;
 
       for (int i = 0; i < n; i++) {
-        attr.pd = set->nic.pd_uxdma[i & 1];
+        attr.pd = set->nic.pd_uxdma[(set->udma_base + i) & 1];
         attr.send_cq = set->ibv_cqs[i];
         attr.recv_cq = set->ibv_cqs[i];
         set->ibv_qps[i] = ibv.create_qp_ex(set->nic.context, &attr);
@@ -860,8 +897,11 @@ static int gin_modify_qps_init_to_rtr(rocshmem_gin_qp_set* set, struct gin_dest_
       attr.ah_attr.grh.sgid_index = set->nic.gid_index;
       attr.ah_attr.is_global = 1;
       attr.ah_attr.grh.hop_limit = 255;
-      attr.ah_attr.sl = 1;
-      attr.ah_attr.grh.traffic_class = envvar::gda::traffic_class;
+      attr.ah_attr.sl = gin_env_int("NCCL_IB_SL", 0);
+      // ROCSHMEM_GDA_TRAFFIC_CLASS (rocSHMEM's knob) wins when set, then NCCL_IB_TC.
+      attr.ah_attr.grh.traffic_class = getenv("ROCSHMEM_GDA_TRAFFIC_CLASS")
+                                         ? (int)envvar::gda::traffic_class
+                                         : gin_env_int("NCCL_IB_TC", (int)envvar::gda::traffic_class);
       memcpy(&attr.ah_attr.grh.dgid, &remote_info[i].gid, 16);
     } else {
       attr.ah_attr.is_global = 0;
@@ -890,8 +930,8 @@ static int gin_modify_qps_rtr_to_rts(rocshmem_gin_qp_set* set, struct gin_dest_i
   struct ibv_qp_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTS;
-  attr.timeout = 14;
-  attr.retry_cnt = 7;
+  attr.timeout = gin_env_int("NCCL_IB_TIMEOUT", 20);
+  attr.retry_cnt = gin_env_int("NCCL_IB_RETRY_CNT", 7);
   attr.rnr_retry = 7;
 
 #if defined(GDA_IONIC)
@@ -934,7 +974,7 @@ int rocshmem_gin_qp_set::initialize_gpu_qp(QueuePair* gpu_qp, int idx) {
   case GDAProvider::IONIC:
     {
       ionic_dv_ctx dvctx;
-      ionic_dv.get_ctx(&dvctx, nic.context);
+      if (ionic_dv.get_ctx(&dvctx, nic.context) != 0) return -1;
 
       int hip_dev_id = -1;
       if (hipGetDevice(&hip_dev_id) != hipSuccess) return -1;
@@ -949,7 +989,7 @@ int rocshmem_gin_qp_set::initialize_gpu_qp(QueuePair* gpu_qp, int idx) {
       uint8_t udma_idx = ionic_dv.qp_get_udma_idx(ibv_qps[idx]);
 
       ionic_dv_cq dvcq;
-      ionic_dv.get_cq(&dvcq, ibv_cqs[idx], udma_idx);
+      if (ionic_dv.get_cq(&dvcq, ibv_cqs[idx], udma_idx) != 0) return -1;
 
       gpu_qp->cq_dbreg = &gpu_db_ptr[dvctx.cq_qtype];
       gpu_qp->cq_dbval = dvcq.q.db_val;
@@ -957,7 +997,7 @@ int rocshmem_gin_qp_set::initialize_gpu_qp(QueuePair* gpu_qp, int idx) {
       gpu_qp->ionic_cq_buf = reinterpret_cast<ionic_v1_cqe*>(dvcq.q.ptr);
 
       ionic_dv_qp dvqp;
-      ionic_dv.get_qp(&dvqp, ibv_qps[idx]);
+      if (ionic_dv.get_qp(&dvqp, ibv_qps[idx]) != 0) return -1;
 
       gpu_qp->sq_dbreg = &gpu_db_ptr[dvctx.sq_qtype];
       gpu_qp->sq_dbval = dvqp.sq.db_val;
@@ -1058,47 +1098,22 @@ int rocshmem_gin_qp_set::initialize_gpu_qp(QueuePair* gpu_qp, int idx) {
 // Public API implementation
 ///////////////////////////////////////////////////////////////////////////////
 
-int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(void* ctx, void* buf, size_t size),
-                            void* allgather_ctx, rocshmem_gin_qp_set_t* out_qp_set, void*** out_gpu_qps) {
-  // Note: log_pe_number and device-side logd_constants must be initialized
-  // by the consumer binary (e.g. rccl-tests) which links rocshmem's device
-  // bitcode and can resolve HIP_SYMBOL(logd_constants).
-
-  auto* set = new rocshmem_gin_qp_set();
-  set->nRanks = nRanks;
-  set->myRank = myRank;
-
-  // 1. Open IB device and detect provider
-  if (gin_open_ib_device(set) != 0) {
-    delete set;
-    return -1;
-  }
-
-  // 2. Load provider-specific DV library
-  if (gin_load_dv_library(set) != 0) {
-    LOG_ERROR("GIN QP factory: failed to load DV library for provider %d", set->provider);
-    ibv.dealloc_pd(set->nic.pd_orig);
-    ibv.close_device(set->nic.context);
-    delete set;
-    return -1;
-  }
-
-  // 3. Create parent domains (IONIC, MLX5)
-  if (gin_create_parent_domain(set) != 0) {
-    LOG_ERROR("GIN QP factory: failed to create parent domain");
-    goto fail;
-  }
-
+// Steps 4-9 of rocshmem_gin_create_qps on a set whose device context, PDs and DV library are open:
+// one CQ and QP per peer, connected over `allgather`, then the GPU QueuePairs. On failure the
+// caller destroys the set.
+static int gin_build_qps(rocshmem_gin_qp_set* set, int (*allgather)(void* ctx, void* buf, size_t size),
+                         void* allgather_ctx, void*** out_gpu_qps) {
+  const int nRanks = set->nRanks, myRank = set->myRank;
   // 4. Create CQs
   if (gin_create_cqs(set) != 0) {
     LOG_ERROR("GIN QP factory: failed to create CQs");
-    goto fail;
+    return -1;
   }
 
   // 5. Create QPs
   if (gin_create_qps(set) != 0) {
     LOG_ERROR("GIN QP factory: failed to create QPs");
-    goto fail;
+    return -1;
   }
 
   {
@@ -1137,7 +1152,7 @@ int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(void* ctx, 
     memcpy(&all_infos[myRank * nRanks], local_infos.data(), nRanks * sizeof(gin_dest_info));
 
     // Allgather: each rank contributes nRanks entries
-    if (allgather(allgather_ctx, all_infos.data(), nRanks * sizeof(gin_dest_info)) != 0) goto fail;
+    if (allgather(allgather_ctx, all_infos.data(), nRanks * sizeof(gin_dest_info)) != 0) return -1;
 
     // Extract remote info: for my QP[i], the remote end is rank i's QP[myRank]
     std::vector<gin_dest_info> remote_info(nRanks);
@@ -1148,15 +1163,15 @@ int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(void* ctx, 
     // 7. State transitions
     if (gin_modify_qps_rst_to_init(set) != 0) {
       LOG_ERROR("GIN QP factory: QP state RST->INIT failed (check IB permissions/MTU)");
-      goto fail;
+      return -1;
     }
     if (gin_modify_qps_init_to_rtr(set, remote_info.data()) != 0) {
       LOG_ERROR("GIN QP factory: QP state INIT->RTR failed (check remote dest_info / GID)");
-      goto fail;
+      return -1;
     }
     if (gin_modify_qps_rtr_to_rts(set, remote_info.data()) != 0) {
       LOG_ERROR("GIN QP factory: QP state RTR->RTS failed");
-      goto fail;
+      return -1;
     }
 
     // Dump QP state for comparison with GDABackend
@@ -1176,17 +1191,17 @@ int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(void* ctx, 
     // 8. Construct QueuePair objects and copy to GPU
     size_t qp_size = sizeof(QueuePair) * nRanks;
 
-    if (hipMalloc(&set->gpu_qps, qp_size) != hipSuccess) goto fail;
+    if (hipMalloc(&set->gpu_qps, qp_size) != hipSuccess) return -1;
     set->host_qps = (QueuePair*)malloc(qp_size);
-    if (!set->host_qps) goto fail;
+    if (!set->host_qps) return -1;
 
     for (int i = 0; i < nRanks; i++) {
       new (&set->host_qps[i]) QueuePair(set->nic.pd_orig, set->provider);
       if (hipMemcpy(&set->gpu_qps[i], &set->host_qps[i], sizeof(QueuePair), hipMemcpyHostToDevice) != hipSuccess)
-        goto fail;
+        return -1;
 
       // 9. Initialize GPU-specific state (doorbells, CQ/SQ buffers)
-      if (set->initialize_gpu_qp(&set->gpu_qps[i], i) != 0) goto fail;
+      if (set->initialize_gpu_qp(&set->gpu_qps[i], i) != 0) return -1;
     }
 
     // Build array of QueuePair pointers for the GPU context
@@ -1196,17 +1211,53 @@ int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(void* ctx, 
     void** gpu_ptr_array = nullptr;
     if (hipMalloc(&gpu_ptr_array, nRanks * sizeof(void*)) != hipSuccess) {
       free(host_ptrs);
-      goto fail;
+      return -1;
     }
     if (hipMemcpy(gpu_ptr_array, host_ptrs, nRanks * sizeof(void*), hipMemcpyHostToDevice) != hipSuccess) {
       free(host_ptrs);
       (void)hipFree(gpu_ptr_array);
-      goto fail;
+      return -1;
     }
     free(host_ptrs);
 
     *out_gpu_qps = gpu_ptr_array;
   }
+
+  return 0;
+}
+
+int rocshmem_gin_create_qps(int nRanks, int myRank, int (*allgather)(void* ctx, void* buf, size_t size),
+                            void* allgather_ctx, rocshmem_gin_qp_set_t* out_qp_set, void*** out_gpu_qps) {
+  // Note: log_pe_number and device-side logd_constants must be initialized
+  // by the consumer binary (e.g. rccl-tests) which links rocshmem's device
+  // bitcode and can resolve HIP_SYMBOL(logd_constants).
+
+  auto* set = new rocshmem_gin_qp_set();
+  set->nRanks = nRanks;
+  set->myRank = myRank;
+
+  // 1. Open IB device and detect provider
+  if (gin_open_ib_device(set) != 0) {
+    delete set;
+    return -1;
+  }
+
+  // 2. Load provider-specific DV library
+  if (gin_load_dv_library(set) != 0) {
+    LOG_ERROR("GIN QP factory: failed to load DV library for provider %d", set->provider);
+    ibv.dealloc_pd(set->nic.pd_orig);
+    ibv.close_device(set->nic.context);
+    delete set;
+    return -1;
+  }
+
+  // 3. Create parent domains (IONIC, MLX5)
+  if (gin_create_parent_domain(set) != 0) {
+    LOG_ERROR("GIN QP factory: failed to create parent domain");
+    goto fail;
+  }
+
+  if (gin_build_qps(set, allgather, allgather_ctx, out_gpu_qps) != 0) goto fail;
 
   LOG_TRACE("GIN QP factory: %d QPs ready on %s (rank %d/%d)", nRanks, set->nic.nic_name.c_str(), myRank, nRanks);
   *out_qp_set = set;
@@ -1216,6 +1267,41 @@ fail:
   LOG_ERROR("GIN QP factory: rocshmem_gin_create_qps failed (rank %d/%d)", myRank, nRanks);
   rocshmem_gin_destroy_qps(set);
   return -1;
+}
+
+int rocshmem_gin_add_qps(rocshmem_gin_qp_set_t parent, int (*allgather)(void* ctx, void* buf, size_t size),
+                         void* allgather_ctx, rocshmem_gin_qp_set_t* out_qp_set, void*** out_gpu_qps) {
+  // Ionic only: other providers keep per-set state (bnxt's QP allocator) a borrowing set lacks.
+  if (!parent || parent->provider != GDAProvider::IONIC) return -1;
+  auto* set = new rocshmem_gin_qp_set();
+  set->nRanks = parent->nRanks;
+  set->myRank = parent->myRank;
+  set->provider = parent->provider;
+  set->nic = parent->nic;
+  set->dv_handle = parent->dv_handle;
+#if defined(GDA_IONIC)
+  set->ionic_dv = parent->ionic_dv;
+#endif
+#if defined(GDA_BNXT)
+  set->bnxt_re_dv = parent->bnxt_re_dv;
+#endif
+#if defined(GDA_MLX5)
+  set->mlx5dv = parent->mlx5dv;
+#endif
+  set->inline_threshold = parent->inline_threshold;
+  set->sq_size = parent->sq_size;
+  set->borrows_nic = true;
+  // An ionic queue pair runs on one of two UDMA engines, and one engine moves well below line rate
+  // (~28 GB/s on Pollara). Added set k sends to peer i on engine (k + i) & 1, so contexts that
+  // send to one peer side by side use both engines.
+  set->udma_base = parent->udma_base + ++parent->n_added;
+  if (gin_build_qps(set, allgather, allgather_ctx, out_gpu_qps) != 0) {
+    LOG_ERROR("GIN QP factory: rocshmem_gin_add_qps failed (rank %d/%d)", set->myRank, set->nRanks);
+    rocshmem_gin_destroy_qps(set);
+    return -1;
+  }
+  *out_qp_set = set;
+  return 0;
 }
 
 void rocshmem_gin_destroy_qps(rocshmem_gin_qp_set_t qp_set) {
@@ -1282,6 +1368,11 @@ void rocshmem_gin_destroy_qps(rocshmem_gin_qp_set_t qp_set) {
       if (qp) ibv.destroy_qp(qp);
     for (auto* cq : qp_set->ibv_cqs)
       if (cq) ibv.destroy_cq(cq);
+  }
+
+  if (qp_set->borrows_nic) {  // the parent set owns the device context, PDs and DV library
+    delete qp_set;
+    return;
   }
 
   // PDs and device

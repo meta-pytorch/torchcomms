@@ -154,6 +154,10 @@ def _lib():
         lib.ep_configure_v2.argtypes = [ctypes.c_void_p, I, I, I]
         lib.ep_hybrid_enable.restype = I
         lib.ep_hybrid_enable.argtypes = [ctypes.c_void_p, I]
+        # Older builds have no GIN rail; report send/recv for them.
+        if hasattr(lib, "ep_rail_gin"):
+            lib.ep_rail_gin.restype = I
+            lib.ep_rail_gin.argtypes = [ctypes.c_void_p]
         lib.ep_hplan.restype = I
         lib.ep_hplan.argtypes = [ctypes.c_void_p, P, I, P, P, P, P, P, P, P]
         lib.ep_hcounts.restype = I
@@ -457,10 +461,12 @@ class ElasticBuffer:
                 raise RuntimeError("ep_hybrid_enable failed")
             self.scaleout_rank_idx = self.rank_idx // node_size
             self.scaleup_rank_idx = self.rank_idx % node_size
+        # RCCL_EP_GIN moves the hybrid rail onto RCCL GIN puts (ep_hybrid_enable decides).
+        self.rail_gin = bool(self.hybrid and hasattr(lib, "ep_rail_gin") and lib.ep_rail_gin(self._h))
         if self.internode and self.rank_idx % node_size == 0:
             print(f"[rccl_ep] internode ({'hybrid' if self.hybrid else 'direct'}): "
                   f"{world // node_size} nodes x {node_size} ranks, rank {self.rank_idx}; "
-                  f"remote peers via RCCL send/recv", flush=True)
+                  f"remote peers via {'RCCL GIN' if self.rail_gin else 'RCCL send/recv'}", flush=True)
 
     # ---- informational -------------------------------------------------
     def get_logical_domain_size(self, *a, **k):
