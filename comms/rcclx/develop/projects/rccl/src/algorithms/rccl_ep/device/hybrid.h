@@ -32,6 +32,8 @@ struct HybInfo {
   int rec_bytes;              // record stride
   int off_sf, off_topk, off_w, off_src, off_slots;  // sections of a record
   int chunk, nchunks;         // this launch covers chunk `chunk` of every node's records
+  int tok_split;              // combine: chunks are owner-token ranges (hyb_comb_range), not record ranges
+  int taper;                  // dispatch records: the last chunk is half the others (hyb_rec_chunk)
 };
 
 __device__ __forceinline__ int hyb_np(const HybInfo& hi, int n) { return n < hi.D ? n : n - 1; }
@@ -41,6 +43,64 @@ __device__ __forceinline__ int hyb_np(const HybInfo& hi, int n) { return n < hi.
 __host__ __device__ __forceinline__ void hyb_chunk(int cnt, int c, int C, int& p0, int& p1) {
   p0 = (int)((long long)cnt * c / C);
   p1 = (int)((long long)cnt * (c + 1) / C);
+}
+
+// A dispatch's chunk c of C over cnt records: hyb_chunk, or under hi.taper (RCCL_EP_GIN_STREAM)
+// 2C - 1 equal parts with the last chunk taking one and the others two, so the forward of the
+// last chunk to land, which nothing overlaps, is half as long. Both ends of the rail use it.
+__host__ __device__ __forceinline__ void hyb_rec_chunk(const HybInfo& hi, int cnt, int c, int& p0, int& p1) {
+  if (!hi.taper) {
+    hyb_chunk(cnt, c, hi.nchunks, p0, p1);
+    return;
+  }
+  const long long U = 2LL * hi.nchunks - 1;
+  p0 = (int)(cnt * (2LL * c) / U);
+  p1 = (int)(cnt * (c + 1 < hi.nchunks ? 2LL * (c + 1) : U) / U);
+}
+
+// Owner tokens [t0, t1) of chunk c of C, over num_max_tokens_per_rank T: 2C - 1 equal parts, the
+// first chunk taking one and the others two, so the first range's push and fold, before which
+// nothing is on the rail, are half as long.
+__host__ __device__ __forceinline__ void hyb_tok_chunk(int T, int c, int C, int& t0, int& t1) {
+  const long long U = 2LL * C - 1;
+  t0 = (int)(T * (c == 0 ? 0 : 2LL * c - 1) / U);
+  t1 = (int)(T * (2LL * c + 1) / U);
+}
+
+// The records of chunk hi.chunk that a combine folds and returns to node n: under hi.tok_split,
+// those whose owner token (fwd_meta[np][p][0], ascending in p, as the records follow the owner's
+// token order) lies in the chunk's token range, found by binary search; else hyb_chunk's record
+// range. Token ranges let each local rank push a chunk's partials with no record numbering
+// (combine_impl's tok_lo / tok_hi), so a chunk can fold and leave before the next is pushed.
+__device__ __forceinline__ void hyb_comb_range(const HybInfo& hi, const int32_t* __restrict__ fwd_meta, int n,
+                                               int T, int K, int& p0, int& p1) {
+  if (!hi.tok_split) {
+    hyb_chunk(hi.nrecv[n], hi.chunk, hi.nchunks, p0, p1);
+    return;
+  }
+  int t0, t1;
+  hyb_tok_chunk(T, hi.chunk, hi.nchunks, t0, t1);
+  const int32_t* fm = fwd_meta + (size_t)hyb_np(hi, n) * T * (1 + K);
+  int lo = 0, hi_ = hi.nrecv[n];
+  while (lo < hi_) {  // first record with owner token >= t0
+    const int mid = (lo + hi_) >> 1;
+    if (fm[(size_t)mid * (1 + K)] < t0) lo = mid + 1; else hi_ = mid;
+  }
+  p0 = lo;
+  hi_ = hi.nrecv[n];
+  while (lo < hi_) {  // first record with owner token >= t1
+    const int mid = (lo + hi_) >> 1;
+    if (fm[(size_t)mid * (1 + K)] < t1) lo = mid + 1; else hi_ = mid;
+  }
+  p1 = lo;
+}
+
+// nrecv[n] for this rank out of the gathered count matrix (ep_hcounts: row q = [sendc (R) | node
+// counts (SO) | ...], W ints): what its rail peer on node n sends this node.
+__global__ void k_hyb_nrecv(const int32_t* __restrict__ xchg, int W, int R, int SU, int SO, int u, int D,
+                            int32_t* __restrict__ nrecv) {
+  const int n = threadIdx.x;
+  if (n < SO) nrecv[n] = n == D ? 0 : xchg[(size_t)(n * SU + u) * W + R + D];
 }
 
 // sendc with every remote destination zeroed: the local push's counts.
@@ -91,21 +151,23 @@ __global__ void k_ep_hplan(EpConfig rc, EpConfig nc, const int32_t* __restrict__
 // One record per (token, remote node holding one of its experts), in token order, into
 // so_send[np]: [payload | sf (fp8) | topk ids | topk weights | src_token_global_idx | slot
 // per local rank of that node, -1 if none]. with_meta 0 leaves the top-k sections unwritten.
+// Covers chunks hi.chunk .. hi.chunk + span - 1.
 template <bool kFp8>
 __global__ void k_hyb_pack(EpConfig cfg, HybInfo hi, const void* __restrict__ x,
                            const float* __restrict__ sf, const int32_t* __restrict__ topk_idx,
                            const float* __restrict__ topk_w, int num_tokens,
                            const int32_t* __restrict__ node_list,  // [SO, num_tokens]
                            const int32_t* __restrict__ slot_of,    // [num_ranks, num_tokens]
-                           uint8_t* __restrict__ so_send, int with_meta) {
+                           uint8_t* __restrict__ so_send, int with_meta, int span) {
   const int n = blockIdx.x;
   if (n >= hi.SO || n == hi.D) return;
   const int np = hyb_np(hi, n);
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int K = cfg.num_topk, T = cfg.num_max_tokens_per_rank, nsf = cfg.hidden_sf();
   const int row_bytes = kFp8 ? cfg.hidden : cfg.hidden * (int)sizeof(bf16_t);
-  int p0, p1;
-  hyb_chunk(hi.nsend[n], hi.chunk, hi.nchunks, p0, p1);
+  int p0, p1, d;
+  hyb_rec_chunk(hi, hi.nsend[n], hi.chunk, p0, d);
+  hyb_rec_chunk(hi, hi.nsend[n], hi.chunk + span - 1, d, p1);
   for (int p = p0 + blockIdx.y * nwarps + warp; p < p1; p += nwarps * gridDim.y) {
     const int t = node_list[(size_t)n * num_tokens + p];
     uint8_t* rec = so_send + ((size_t)np * T + p) * hi.rec_bytes;
@@ -125,21 +187,24 @@ __global__ void k_hyb_pack(EpConfig cfg, HybInfo hi, const void* __restrict__ x,
 }
 
 // k_hyb_pack (bf16, with metadata) with each node's record count read from the node plan's
-// node_cnt on the device, so it can run before the count exchange (RCCL_EP_HYB_PREFIX). A copy
-// rather than a shared body, so k_hyb_pack's code stays as it is.
+// node_cnt on the device, so it can run before the count exchange (RCCL_EP_HYB_PREFIX,
+// RCCL_EP_GIN_STREAM). A copy rather than a shared body, so k_hyb_pack's code stays as it is.
+// Covers chunks hi.chunk .. hi.chunk + span - 1.
 __global__ void k_hyb_pack_dev(EpConfig cfg, HybInfo hi, const void* __restrict__ x,
                                const int32_t* __restrict__ topk_idx, const float* __restrict__ topk_w,
                                int num_tokens, const int32_t* __restrict__ node_list,
                                const int32_t* __restrict__ slot_of, const int32_t* __restrict__ node_cnt,
-                               uint8_t* __restrict__ so_send) {
+                               uint8_t* __restrict__ so_send, int span) {
   const int n = blockIdx.x;
   if (n >= hi.SO || n == hi.D) return;
   const int np = hyb_np(hi, n);
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int K = cfg.num_topk, T = cfg.num_max_tokens_per_rank;
   const int row_bytes = cfg.hidden * (int)sizeof(bf16_t);
-  const int cnt = node_cnt[n];
-  for (int p = blockIdx.y * nwarps + warp; p < cnt; p += nwarps * gridDim.y) {
+  int p0, p1, d;
+  hyb_rec_chunk(hi, node_cnt[n], hi.chunk, p0, d);
+  hyb_rec_chunk(hi, node_cnt[n], hi.chunk + span - 1, d, p1);
+  for (int p = p0 + blockIdx.y * nwarps + warp; p < p1; p += nwarps * gridDim.y) {
     const int t = node_list[(size_t)n * num_tokens + p];
     uint8_t* rec = so_send + ((size_t)np * T + p) * hi.rec_bytes;
     wave_copy_local_bytes<false, 1>(rec, (const uint8_t*)x + (size_t)t * row_bytes, row_bytes);
@@ -208,6 +273,84 @@ __global__ void k_hyb_forward(EpConfig cfg, HybInfo hi, const uint8_t* __restric
   }
 }
 
+// wave_copy_bytes with kUnroll 16-byte loads in flight per lane before their stores (plain
+// stores: the destination is a peer's window).
+template <int kUnroll>
+__device__ __forceinline__ void wave_copy_peer_bytes(uint8_t* __restrict__ dst, const uint8_t* __restrict__ src,
+                                                     int n) {
+  const int lane = get_lane_idx();
+  const int nvec = n / 16;
+  const auto* s4 = reinterpret_cast<const uint4*>(src);
+  auto* d4 = reinterpret_cast<uint4*>(dst);
+  int i = lane;
+  for (; i + (kUnroll - 1) * kWarpSize < nvec; i += kUnroll * kWarpSize) {
+    uint4 v[kUnroll];
+#pragma unroll
+    for (int u = 0; u < kUnroll; ++u) v[u] = s4[i + u * kWarpSize];
+#pragma unroll
+    for (int u = 0; u < kUnroll; ++u) d4[i + u * kWarpSize] = v[u];
+  }
+  for (; i < nvec; i += kWarpSize) d4[i] = s4[i];
+  for (int j = nvec * 16 + lane; j < n; j += kWarpSize) dst[j] = src[j];
+}
+
+// k_hyb_forward's writes, one wave per (record, local rank) pair instead of one per record, with
+// four loads in flight per lane. RCCL_EP_GIN_STREAM forwards each chunk as it lands, and a chunk
+// is a few hundred records: one wave per record left most waves idle and the rest copying their
+// record to 3-4 ranks one latency-bound load at a time. Pair (p, 0) also writes fwd_meta.
+template <bool kFp8>
+__global__ void k_hyb_forward_pairs(EpConfig cfg, HybInfo hi, const uint8_t* __restrict__ so_recv,
+                                    const WindowView* __restrict__ local_views,  // [SU], LSA
+                                    int with_meta, int32_t* __restrict__ fwd_meta,
+                                    const int32_t* __restrict__ dev_nrecv) {  // or null: hi.nrecv
+  const int n = blockIdx.x;
+  if (n >= hi.SO || n == hi.D) return;
+  const int np = hyb_np(hi, n);
+  const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
+  const int K = cfg.num_topk, T = cfg.num_max_tokens_per_rank, nsf = cfg.hidden_sf(), SU = hi.SU;
+  const int src_rank = n * SU + hi.u;
+  int p0, p1;
+  hyb_rec_chunk(hi, dev_nrecv ? dev_nrecv[n] : hi.nrecv[n], hi.chunk, p0, p1);
+  for (int q = p0 * SU + blockIdx.y * nwarps + warp; q < p1 * SU; q += nwarps * gridDim.y) {
+    const int p = q / SU, v = q - p * SU;
+    const uint8_t* rec = so_recv + ((size_t)np * T + p) * hi.rec_bytes;
+    const int slot_v = reinterpret_cast<const int32_t*>(rec + hi.off_slots)[v];  // wave-uniform
+    const bool meta_row = fwd_meta && with_meta && v == 0;
+    if (slot_v < 0 && !meta_row) continue;
+    int e = -1;
+    float w = 0.f;
+    if (with_meta && lane < K) {
+      e = reinterpret_cast<const int32_t*>(rec + hi.off_topk)[lane];
+      w = reinterpret_cast<const float*>(rec + hi.off_w)[lane];
+    }
+    const int src = with_meta ? *reinterpret_cast<const int32_t*>(rec + hi.off_src) : 0;
+    if (slot_v >= 0) {
+      const size_t slot = EpWindowLayout::slot(cfg, src_rank, slot_v);
+      const WindowView dv = local_views[v];
+      if (kFp8) {
+        wave_copy_peer_bytes<4>((uint8_t*)(dv.x_fp8() + slot * cfg.hidden), rec, cfg.hidden);
+        for (int j = lane; j < nsf; j += kWarpSize)
+          dv.sf()[slot * nsf + j] = reinterpret_cast<const float*>(rec + hi.off_sf)[j];
+      } else {
+        wave_copy_peer_bytes<4>((uint8_t*)(dv.x() + slot * cfg.hidden), rec, cfg.hidden * (int)sizeof(bf16_t));
+      }
+      if (with_meta) {
+        const int dst = hi.D * SU + v;
+        if (lane < K) {
+          dv.topk_idx()[slot * K + lane] = (e >= cfg.expert_begin(dst) && e < cfg.expert_end(dst)) ? e : -1;
+          dv.topk_w()[slot * K + lane] = w;
+        }
+        if (lane == 0) dv.src_idx()[slot] = src;
+      }
+    }
+    if (meta_row) {
+      int32_t* fm = fwd_meta + ((size_t)np * T + p) * (1 + K);
+      if (lane == 0) fm[0] = src % T;
+      if (lane < K) fm[1 + lane] = e;
+    }
+  }
+}
+
 // Lane k of a token's top-k: its expert's rank and node, and whether k is the LAST k with
 // that rank / that node -- where the reference's grouped reduction leaves each group's sum.
 struct HybSlot {
@@ -246,7 +389,7 @@ __global__ void k_hyb_fold(EpConfig cfg, HybInfo hi, const int32_t* __restrict__
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int K = cfg.num_topk, T = cfg.num_max_tokens_per_rank;
   int p0, p1;
-  hyb_chunk(hi.nrecv[n], hi.chunk, hi.nchunks, p0, p1);
+  hyb_comb_range(hi, fwd_meta, n, T, K, p0, p1);
   for (int p = p0 + blockIdx.y * nwarps + warp; p < p1; p += nwarps * gridDim.y) {
     const int32_t* fm = fwd_meta + ((size_t)np * T + p) * (1 + K);
     const int t = fm[0];
@@ -282,12 +425,17 @@ __global__ void hybrid_combine_reduce_epilogue_impl(EpConfig cfg, HybInfo hi, Wi
                                                     const float* __restrict__ land_w,
                                                     const bf16_t* __restrict__ bias0,
                                                     const bf16_t* __restrict__ bias1,
-                                                    bf16_t* __restrict__ out, float* __restrict__ out_w) {
+                                                    bf16_t* __restrict__ out, float* __restrict__ out_w,
+                                                    int t_lo, int t_hi,  // tokens [t_lo, t_hi) only
+                                                    int nsplit) {        // waves per token, splitting hidden
   const int warp = get_warp_idx(), nwarps = get_num_warps(), lane = get_lane_idx();
   const int K = cfg.num_topk, T = cfg.num_max_tokens_per_rank;
   constexpr int kPerVec = 8;
   const int nvec = cfg.hidden / kPerVec;
-  for (int t = blockIdx.x * nwarps + warp; t < num_tokens; t += nwarps * gridDim.x) {
+  const int t_end = t_hi < num_tokens ? t_hi : num_tokens;
+  const int q = (blockIdx.x * nwarps + warp) % nsplit;  // this wave's part of each token's hidden
+  const int v_lo = nvec * q / nsplit, v_hi = nvec * (q + 1) / nsplit;
+  for (int t = t_lo + (blockIdx.x * nwarps + warp) / nsplit; t < t_end; t += nwarps * gridDim.x / nsplit) {
     const HybSlot s = hyb_slot(cfg, hi.SU, lane < K ? topk_idx[(size_t)t * K + lane] : -1, lane);
     const bool local = s.node == hi.D;
     // This node's rank rows, ascending last k.
@@ -315,7 +463,7 @@ __global__ void hybrid_combine_reduce_epilogue_impl(EpConfig cfg, HybInfo hi, Wi
     const bf16_t* ybase = self.y();
     bf16_t* o = out + (size_t)t * cfg.hidden;
 #pragma unroll 1
-    for (int v = lane; v < nvec; v += kWarpSize) {
+    for (int v = v_lo + lane; v < v_hi; v += kWarpSize) {
       const int h0 = v * kPerVec;
       float part[kPerVec];
 #pragma unroll
@@ -366,7 +514,7 @@ __global__ void hybrid_combine_reduce_epilogue_impl(EpConfig cfg, HybInfo hi, Wi
       for (int u = 0; u < kPerVec; ++u) oo[u] = __float2bfloat16(acc[u]);
       *reinterpret_cast<uint4*>(o + h0) = ov;
     }
-    if (out_w && lane < K) {
+    if (out_w && q == 0 && lane < K) {
       float w = 0.f;
       if (s.node == hi.D) {
         w = self.cw()[EpWindowLayout::slot(cfg, s.r, t) * K + lane];

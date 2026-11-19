@@ -518,6 +518,13 @@ __global__ void dispatch_impl(EpConfig cfg, const fp8_t* __restrict__ x,
 // adds, so order-independent). The caller zeroes `counts` first; null skips counting.
 constexpr int kEpiMaxExperts = 256;
 
+// Which source ranks' rows a copy epilogue launch covers: sel 0 all of them, 1 those outside
+// [sel_lo, sel_hi), 2 those inside it. The hybrid dispatch copies this node's sources while the
+// rail moves and the remote ones after barrier B (RCCL_EP_HYB_SPLIT_EPI).
+__device__ __forceinline__ bool epilogue_skips(int sel, int src, int sel_lo, int sel_hi) {
+  return sel != 0 && (sel == 2) != (src >= sel_lo && src < sel_hi);
+}
+
 struct EpilogueCounts {
   int32_t* counts;  // [experts_per_rank] or nullptr
   int epr;
@@ -577,9 +584,11 @@ __global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self,
                                             bf16_t* __restrict__ out_x, int32_t* __restrict__ out_topk_idx,
                                             float* __restrict__ out_topk_w, int32_t* __restrict__ out_src_idx,
                                             int32_t* __restrict__ expert_counts,       // [epr] or nullptr
-                                            int offsets_inclusive) {  // 1: a handle's inclusive prefix
+                                            int offsets_inclusive,  // 1: a handle's inclusive prefix
+                                            int sel, int sel_lo, int sel_hi) {
   const int src = blockIdx.x;
   if (src >= cfg.num_ranks) return;  // block-uniform, so the barriers in `cnt` are safe
+  if (epilogue_skips(sel, src, sel_lo, sel_hi)) return;  // block-uniform too
 
   const int n = self.counts()[src];
   const int dst_base = offsets_inclusive ? (src ? recv_offsets[src - 1] : 0) : recv_offsets[src];
@@ -712,9 +721,11 @@ __global__ void dispatch_copy_epilogue_impl(EpConfig cfg, WindowView self, const
                                             fp8_t* __restrict__ out_x, float* __restrict__ out_sf,
                                             int32_t* __restrict__ out_topk_idx, float* __restrict__ out_topk_w,
                                             int32_t* __restrict__ out_src_idx,
-                                            int32_t* __restrict__ expert_counts) {     // [epr] or nullptr
+                                            int32_t* __restrict__ expert_counts,       // [epr] or nullptr
+                                            int sel, int sel_lo, int sel_hi) {
   const int src = blockIdx.x;
   if (src >= cfg.num_ranks) return;
+  if (epilogue_skips(sel, src, sel_lo, sel_hi)) return;
   const int n = self.counts()[src];
   const int dst_base = recv_offsets[src];
   __shared__ int hist[kEpiMaxExperts];

@@ -122,6 +122,24 @@ if(ENABLE_ROCSHMEM AND ENABLE_ROCSHMEM_GIN)
   message(FATAL_ERROR "ENABLE_ROCSHMEM and ENABLE_ROCSHMEM_GIN are mutually exclusive")
 endif()
 set(ROCSHMEM_CMAKE_OPTIONS "" CACHE STRING     "Extra cmake options passed to the rocSHMEM ExternalProject build")
+# GIN GDA device code dispatches on the NIC provider. Building rocSHMEM for one provider lets that
+# provider be baked into the device code: the rocSHMEM constmem its QueuePair code reads is a
+# per-code-object stub that no host code can write (src/gin/gin_rocshmem_constmem.hip).
+set(ROCSHMEM_GDA_PROVIDERS "MLX5;BNXT;IONIC" CACHE STRING "rocSHMEM GDA providers built for ENABLE_ROCSHMEM_GIN (MLX5, BNXT, IONIC)")
+option(RCCL_GIN_LINK_ROCSHMEM                  "ENABLE_ROCSHMEM_GIN: link the rocSHMEM host code the GIN plugins need into librccl.so, so a dlopen'ed librccl is self-contained" OFF)
+# rocshmem::gda::provider value baked into the GIN GDA device code: 0 (UNSET, every QueuePair
+# operation asserts) unless exactly one provider is built.
+set(RCCL_GIN_GDA_PROVIDER 0)
+list(LENGTH ROCSHMEM_GDA_PROVIDERS _rccl_gda_nprov)
+if(_rccl_gda_nprov EQUAL 1)
+  if(ROCSHMEM_GDA_PROVIDERS STREQUAL "IONIC")
+    set(RCCL_GIN_GDA_PROVIDER 1)
+  elseif(ROCSHMEM_GDA_PROVIDERS STREQUAL "BNXT")
+    set(RCCL_GIN_GDA_PROVIDER 2)
+  elseif(ROCSHMEM_GDA_PROVIDERS STREQUAL "MLX5")
+    set(RCCL_GIN_GDA_PROVIDER 3)
+  endif()
+endif()
 option(GIN_ANVIL_UNIT_TESTS                    "Build GIN Anvil device unit tests with ENABLE_ROCSHMEM on test targets only (no full librocshmem in librccl)" OFF)
 
 # Third-party dependency paths

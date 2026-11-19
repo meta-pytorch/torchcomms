@@ -19,10 +19,13 @@
  ************************************************************************/
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
@@ -33,6 +36,7 @@
 #include "device/dispatch.h"
 #include "device/ep_common.h"
 #include "device/expand.h"
+#include "device/gin_rail.h"
 #include "device/hip_prims.h"
 #include "device/hybrid.h"
 #include "device/internode.h"
@@ -113,9 +117,11 @@ struct EpHandle {
   // tokens.
   struct {
     bool on{false};
+    bool fwd{false};  // barrier A and the forwards too (RCCL_EP_GIN_STREAM)
     uintptr_t x{};
     int num_tokens{0};
   } rail_posted;
+  int32_t* d_nrecv{};  // RCCL_EP_GIN_STREAM: nrecv on the device, from the count exchange
   InterCounts bound{};
   const int32_t* bound_send_list{};
   int bound_num_tokens{0};
@@ -150,6 +156,42 @@ struct EpHandle {
   // (hyb_call_layout). Off: hybrid_alloc's full layout for every call.
   bool hyb_compact{false};
   hipEvent_t ev_a[kMaxChunks]{}, ev_b[kMaxChunks]{};
+  // RCCL_EP_GIN_STREAM: ev_bar, the caller's stream past barrier A, which the side stream's
+  // forwards wait for; ev_fwd, the side stream past its last forward; ev_cnt, the caller's stream
+  // past d_nrecv (ep_hcounts_post).
+  hipEvent_t ev_bar{}, ev_fwd{}, ev_cnt{};
+  // RCCL_EP_GIN_STREAM: the side stream past the dispatch's last put launch (every chunk posted);
+  // past the dispatch's / combine's flush, which the next call's pack / fold waits for.
+  hipEvent_t ev_post{}, ev_dflush{}, ev_cflush{};
+  // The rail over RCCL GIN (RCCL_EP_GIN, device/gin_rail.h): the hybrid buffers live in one
+  // window registered on rail_comm, and each chunk is a put from the side stream instead of a
+  // send/recv. gseq_d / gseq_c count this handle's hybrid dispatches / combines; every rank
+  // makes the same calls, so the counts, and the flag tokens they predict, agree.
+  bool gin{false}, gdc_made{false};
+  int glanes{1};  // contexts each transfer is striped over (RCCL_EP_GIN_LANES)
+  // RCCL_EP_GIN_STREAM=1: a call posts every chunk's put before its first arrival wait and flushes
+  // once at the end, so the chunks leave back to back instead of one round each; the combine also
+  // pushes, folds and sends its remote owners' partials one owner-token range at a time
+  // (with RCCL_EP_HYB_COMB_SPLIT). Every rank must set it alike.
+  bool gstream{false};
+  // Arrival and credit flags are RDMA writes into this window (device/gin_rail.h); false with
+  // RCCL_EP_GIN_SIGNAL=signal, which uses GIN signal fetch-and-adds instead.
+  bool gwflag{false};
+  void* gfbuf{};
+  ncclWindow_t gfwin{};
+  uint64_t gtimeout{0};  // wall-clock ticks a GIN wait may take before it reports and traps
+  ncclDevComm gdc{};
+  ncclWindow_t gwin{};
+  void* gbuf{};
+  GinRailOffs goff{};
+  uint64_t gseq_d{0}, gseq_c{0};
+  // The GIN kernels' progress (host-mapped) and the host watchdog that reports a stall from it
+  // (gin_watch). gtok / gack: the last transfer token and credited call issued per direction.
+  GinProgress* gprog{};
+  int gwatch_s{0};
+  std::thread gwatch;
+  std::atomic<bool> gwatch_stop{false};
+  std::atomic<uint64_t> gtok[2]{}, gack[2]{};
   const int32_t *bound_slot_of{}, *bound_node_list{}, *bound_node_pos{};
   int32_t* bound_fwd_meta{};
   // A hybrid combine issued with defer (ep_combine_v4): its rail transfer is in flight and the
@@ -158,6 +200,7 @@ struct EpHandle {
     bool on{false};
     uintptr_t topk_idx{}, bias0{}, bias1{}, out{}, out_w{};
     int num_tokens{0}, cta_reduce{0};
+    bool tok_stream{false};  // RCCL_EP_GIN_STREAM's owner-token chunks: reduce each as it lands
   } pend;
   // The same for a hybrid dispatch (ep_dispatch_defer_next): the local push is queued and the
   // rail transfer in flight; forwarding, barrier B and the epilogue wait for ep_dispatch_finish.
@@ -175,6 +218,7 @@ struct EpHandle {
     bool on{false};
     int payload_later{0};
     int use_fp8{0}, with_meta{1}, cta{0}, hcta{0}, run_epilogue{1}, notified{0}, streamed{0};
+    int split_epi{0};  // the local sources' rows were copied right after the local push
     uintptr_t psum_incl{}, expert_counts{}, out_x{}, out_sf{}, out_topk{}, out_tw{}, out_src{};
   } pend_d;
 };
@@ -276,6 +320,16 @@ inline void release_window(EpHandle* h, bool registered) {
     h->devcomm = false;
   }
   if (registered) ncclCommWindowDeregister(h->lsa, h->win);
+  // GIN: the hybrid buffers are carved out of the rail window, not allocated one by one.
+  if (h->gbuf) {
+    if (h->gwin) ncclCommWindowDeregister(h->rail_comm, h->gwin);
+    ncclMemFree(h->gbuf);
+    h->gbuf = nullptr;
+    h->gwin = nullptr;
+    h->so_send = h->so_recv = nullptr;
+    h->comb_x = h->land_x = nullptr;
+    h->comb_w = h->land_w = nullptr;
+  }
   if (h->d_plan_agg) {
     hipFree(h->d_plan_agg);
     h->d_plan_agg = nullptr;
@@ -297,8 +351,24 @@ inline void release_window(EpHandle* h, bool registered) {
   }
 }
 
+// The GIN rail's watchdog, progress record, flag window and device communicator (gin_rail_setup).
+inline void release_gin_rail(EpHandle* h) {
+  h->gwatch_stop = true;
+  if (h->gwatch.joinable()) h->gwatch.join();
+  if (h->gprog) hipHostFree(h->gprog);
+  h->gprog = nullptr;
+  if (h->gfwin) ncclCommWindowDeregister(h->rail_comm, h->gfwin);
+  if (h->gfbuf) ncclMemFree(h->gfbuf);
+  h->gfwin = nullptr;
+  h->gfbuf = nullptr;
+  h->gwflag = false;
+  if (h->gdc_made) ncclDevCommDestroy(h->rail_comm, &h->gdc);
+  h->gdc_made = h->gin = false;
+}
+
 // The per-node communicator and the count-exchange scratch, taken in ep_create_v2.
 inline void release_inter_comm(EpHandle* h) {
+  release_gin_rail(h);
   if (h->rail_comm) ncclCommDestroy(h->rail_comm);
   h->rail_comm = nullptr;
   if (h->side) hipStreamDestroy(h->side);
@@ -306,6 +376,10 @@ inline void release_inter_comm(EpHandle* h) {
     if (h->ev_a[c]) hipEventDestroy(h->ev_a[c]);
     if (h->ev_b[c]) hipEventDestroy(h->ev_b[c]);
     h->ev_a[c] = h->ev_b[c] = nullptr;
+  }
+  for (hipEvent_t* e : {&h->ev_bar, &h->ev_fwd, &h->ev_cnt, &h->ev_post, &h->ev_dflush, &h->ev_cflush}) {
+    if (*e) hipEventDestroy(*e);
+    *e = nullptr;
   }
   if (h->ev_hc) hipEventDestroy(h->ev_hc);
   h->ev_hc = nullptr;
@@ -318,6 +392,8 @@ inline void release_inter_comm(EpHandle* h) {
   h->host_scratch = nullptr;
   hipFree(h->d_xchg);
   h->d_xchg = nullptr;
+  if (h->d_nrecv) hipFree(h->d_nrecv);
+  h->d_nrecv = nullptr;
   if (h->host_xchg) hipHostFree(h->host_xchg);
   h->host_xchg = nullptr;
   h->xchg_ints = 0;
@@ -490,6 +566,11 @@ static void hyb_call_layout(const EpHandle* h, HybInfo& hi, int use_fp8, int wit
   hi.rec_bytes = (int)align_up(o + (size_t)hi.SU * sizeof(int32_t), 16);
 }
 
+// This rank's flag window for the GIN kernels, or null with RCCL_EP_GIN_SIGNAL=signal.
+inline const uint64_t* gin_flags(const EpHandle* h) { return h->gwflag ? (const uint64_t*)h->gfbuf : nullptr; }
+
+static int gin_dispatch_puts(EpHandle* h, HybInfo hi, const int32_t* cnt, int k0, int nk);
+
 // Hybrid dispatch, first half: pack one record per (token, remote node) and hand them to the
 // side stream, which moves them to the rail peers while the caller's stream goes on to the
 // local push. Every rank posts the same sends and receives in the same node order.
@@ -501,20 +582,63 @@ int hybrid_dispatch_begin(EpHandle* h, uintptr_t x, uintptr_t x_sf, uintptr_t to
   hi.nchunks = h->nchunks;
   hyb_call_layout(h, hi, use_fp8, with_meta);
   const size_t T = c.num_max_tokens_per_rank, rb = hi.rec_bytes;
+  if (h->gin) ++h->gseq_d;
+  if (h->gin && h->gstream) {
+    // Chunk 0 is packed and posted first, so it leaves while the rest is packed; then one pack and
+    // one put launch cover every other chunk. The pack waits for the previous dispatch's flush.
+    hi.taper = 1;
+    HC(hipStreamWaitEvent(s, h->ev_dflush, 0));
+    for (int part = 0; part < 2 && part < hi.nchunks; ++part) {
+      hi.chunk = part;
+      const int span = part == 0 ? 1 : hi.nchunks - 1;
+      if (use_fp8)
+        hipLaunchKernelGGL(k_hyb_pack<true>, dim3(hi.SO, cta), dim3(kEpWaves * kWarpSize), 0, s, c, hi,
+                           (const void*)x, (const float*)x_sf, (const int32_t*)topk_idx,
+                           (const float*)topk_w, num_tokens, h->bound_node_list, h->bound_slot_of, h->so_send,
+                           with_meta, span);
+      else
+        hipLaunchKernelGGL(k_hyb_pack<false>, dim3(hi.SO, cta), dim3(kEpWaves * kWarpSize), 0, s, c, hi,
+                           (const void*)x, (const float*)nullptr, (const int32_t*)topk_idx,
+                           (const float*)topk_w, num_tokens, h->bound_node_list, h->bound_slot_of, h->so_send,
+                           with_meta, span);
+      HC(hipEventRecord(h->ev_a[part], s));
+      HC(hipStreamWaitEvent(h->side, h->ev_a[part], 0));
+      if (gin_dispatch_puts(h, hi, nullptr, part, span) != 0) return -1;
+    }
+    return 0;
+  }
   for (int k = 0; k < hi.nchunks; ++k) {
     hi.chunk = k;
     if (use_fp8)
       hipLaunchKernelGGL(k_hyb_pack<true>, dim3(hi.SO, cta), dim3(kEpWaves * kWarpSize), 0, s, c, hi,
                          (const void*)x, (const float*)x_sf, (const int32_t*)topk_idx,
                          (const float*)topk_w, num_tokens, h->bound_node_list, h->bound_slot_of, h->so_send,
-                         with_meta);
+                         with_meta, 1);
     else
       hipLaunchKernelGGL(k_hyb_pack<false>, dim3(hi.SO, cta), dim3(kEpWaves * kWarpSize), 0, s, c, hi,
                          (const void*)x, (const float*)nullptr, (const int32_t*)topk_idx,
                          (const float*)topk_w, num_tokens, h->bound_node_list, h->bound_slot_of, h->so_send,
-                         with_meta);
+                         with_meta, 1);
     HC(hipEventRecord(h->ev_a[k], s));
     HC(hipStreamWaitEvent(h->side, h->ev_a[k], 0));
+    if (h->gin) {
+      // Chunk 0 first takes each peer's credit for the previous dispatch's records. The wait for
+      // the peers' chunk runs here too, so ev_b[k] means "sent and received" as for send/recv,
+      // and the caller's stream only ever waits on events: every spinning kernel stays on the
+      // side stream. A spin on the caller's stream can sit in a hardware queue it shares with
+      // other streams' collectives (GPU_MAX_HW_QUEUES=2) and deadlock across ranks.
+      const uint64_t ack = (k == 0 && h->gseq_d > 1) ? h->gseq_d - 1 : 0;
+      const uint64_t tok = (h->gseq_d - 1) * hi.nchunks + k + 1;
+      hipLaunchKernelGGL(k_gin_rail_put<false>, dim3(hi.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc,
+                         h->gwin, hi, h->goff, T, (size_t)0, (size_t)0, 0, 0, h->glanes, ack, h->gtimeout, c.rank,
+                         h->gprog, tok, h->gfwin, gin_flags(h), (const int32_t*)nullptr, (const int32_t*)nullptr, 1, 1);
+      hipLaunchKernelGGL(k_gin_rail_wait, dim3(1), dim3(kMaxNodes * h->glanes), 0, h->side, h->gdc, 0, h->glanes,
+                         hi.SO, hi.D, tok, h->gtimeout, c.rank, (int)kGinDispatchData, h->gprog, gin_flags(h));
+      HC(hipGetLastError());
+      HC(hipEventRecord(h->ev_b[k], h->side));
+      h->gtok[0] = tok;
+      continue;
+    }
     NC(ncclGroupStart());
     ncclResult_t gr = ncclSuccess;
     for (int n = 0; n < hi.SO; ++n) {
@@ -534,6 +658,70 @@ int hybrid_dispatch_begin(EpHandle* h, uintptr_t x, uintptr_t x_sf, uintptr_t to
   return 0;
 }
 
+// RCCL_EP_GIN_STREAM, the dispatch's posting paths: one launch posts chunks k0 .. k0 + nk - 1
+// unflushed and back to back (chunk 0 first takes each peer's credit for the previous dispatch),
+// `cnt` (device) or hi.nsend giving each node's records. Few launches rather than one per chunk:
+// the side stream ran those one after another, ~20 us each, ahead of the first arrival wait.
+static int gin_dispatch_puts(EpHandle* h, HybInfo hi, const int32_t* cnt, int k0, int nk) {
+  const EpConfig& c = h->cfg;
+  const size_t T = c.num_max_tokens_per_rank;
+  hi.chunk = k0;
+  const uint64_t ack = (k0 == 0 && h->gseq_d > 1) ? h->gseq_d - 1 : 0;
+  const uint64_t tok = (h->gseq_d - 1) * hi.nchunks + k0 + 1;
+  hipLaunchKernelGGL(k_gin_rail_put<false>, dim3(hi.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc, h->gwin,
+                     hi, h->goff, T, (size_t)0, (size_t)0, 0, 0, h->glanes, ack, h->gtimeout, c.rank, h->gprog, tok,
+                     h->gfwin, gin_flags(h), (const int32_t*)nullptr, cnt, 0, nk);
+  HC(hipGetLastError());
+  h->gtok[0] = tok + nk - 1;
+  if (k0 + nk == hi.nchunks) HC(hipEventRecord(h->ev_post, h->side));
+  return 0;
+}
+
+// RCCL_EP_GIN_STREAM: after the unflushed puts, the side stream forwards each chunk as soon as it
+// has arrived (its wait, then k_hyb_forward_pairs), while the caller's stream runs the local push:
+// the two xGMI legs overlap instead of queueing one behind the other. The first forward also waits
+// for barrier A on the caller's stream (ev_bar), as it writes the local ranks' windows; ev_fwd
+// marks the last one done. dev_nrecv: each node's record count on the device (ep_hcounts_post,
+// before the host has it), or null for the bound counts.
+static int gin_dispatch_forwards(EpHandle* h, int use_fp8, int with_meta, int cta, int32_t* fwd_meta,
+                                 const int32_t* dev_nrecv) {
+  const EpConfig& c = h->cfg;
+  HybInfo hi = h->hyb;
+  hi.nchunks = h->nchunks;
+  hi.taper = 1;
+  hyb_call_layout(h, hi, use_fp8, with_meta);
+  const WindowView* local = h->d_views_inter + kViewHybLocal * c.num_ranks + h->node_base;
+  // The forward runs beside the local push, which leaves most CUs idle, so it takes 128 CTAs per
+  // node rather than the record kernels' budget (64 per node at 2 nodes): 2-4% off a cached fp8
+  // dispatch at 2 and 4 nodes.
+  const int fcta = std::max(cta, 128);
+  HC(hipStreamWaitEvent(h->side, h->ev_bar, 0));
+  for (int k = 0; k < hi.nchunks; ++k) {
+    hi.chunk = k;
+    const uint64_t tok = (h->gseq_d - 1) * hi.nchunks + k + 1;
+    hipLaunchKernelGGL(k_gin_rail_wait, dim3(1), dim3(kMaxNodes * h->glanes), 0, h->side, h->gdc, 0, h->glanes,
+                       hi.SO, hi.D, tok, h->gtimeout, c.rank, (int)kGinDispatchData, h->gprog, gin_flags(h));
+    if (use_fp8)
+      hipLaunchKernelGGL(k_hyb_forward_pairs<true>, dim3(hi.SO, fcta), dim3(kEpWaves * kWarpSize), 0, h->side, c,
+                         hi, h->so_recv, local, with_meta, fwd_meta, dev_nrecv);
+    else
+      hipLaunchKernelGGL(k_hyb_forward_pairs<false>, dim3(hi.SO, fcta), dim3(kEpWaves * kWarpSize), 0, h->side, c,
+                         hi, h->so_recv, local, with_meta, fwd_meta, dev_nrecv);
+    HC(hipGetLastError());
+  }
+  HC(hipEventRecord(h->ev_fwd, h->side));
+  // Off the caller's path: so_recv is read, so each peer gets its credit back from here; and the
+  // flush, which the next dispatch's pack waits for (ev_dflush) before it rewrites so_send.
+  hipLaunchKernelGGL(k_gin_rail_ack, dim3(1), dim3(kMaxNodes), 0, h->side, h->gdc, 0, hi.SO, hi.D, h->gprog, 0,
+                     h->gseq_d, h->gfwin, (int)h->gwflag);
+  hipLaunchKernelGGL(k_gin_rail_flush<false>, dim3(hi.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc, hi, 0,
+                     h->gprog, (h->gseq_d - 1) * hi.nchunks + hi.nchunks);
+  HC(hipGetLastError());
+  h->gack[0] = h->gseq_d;
+  HC(hipEventRecord(h->ev_dflush, h->side));
+  return 0;
+}
+
 // Hybrid dispatch, second half: once the records are in, forward each to the local ranks it
 // names (k_hyb_forward), and publish the remote sources' counts in this window.
 int hybrid_dispatch_end(EpHandle* h, int use_fp8, int with_meta, int cta, hipStream_t s) {
@@ -542,6 +730,13 @@ int hybrid_dispatch_end(EpHandle* h, int use_fp8, int with_meta, int cta, hipStr
   hi.nchunks = h->nchunks;
   hyb_call_layout(h, hi, use_fp8, with_meta);
   const WindowView* local = h->d_views_inter + kViewHybLocal * c.num_ranks + h->node_base;
+  const bool gs = h->gin && h->gstream;
+  if (gs) {  // gin_dispatch_forwards forwarded on the side stream and returned the credits
+    hipLaunchKernelGGL(k_inter_set_counts, dim3(1), dim3(kMaxWorldRanks), 0, s, c.num_ranks, h->bound,
+                       (int32_t*)((uint8_t*)h->win_buf + h->lay.off_counts));
+    HC(hipStreamWaitEvent(s, h->ev_fwd, 0));
+    return 0;
+  }
   for (int k = 0; k < hi.nchunks; ++k) {
     hi.chunk = k;
     HC(hipStreamWaitEvent(s, h->ev_b[k], 0));
@@ -554,6 +749,13 @@ int hybrid_dispatch_end(EpHandle* h, int use_fp8, int with_meta, int cta, hipStr
   }
   hipLaunchKernelGGL(k_inter_set_counts, dim3(1), dim3(kMaxWorldRanks), 0, s, c.num_ranks, h->bound,
                      (int32_t*)((uint8_t*)h->win_buf + h->lay.off_counts));
+  // GIN: the forward has read so_recv, so each peer gets its credit back. Only posts signals.
+  if (h->gin) {
+    hipLaunchKernelGGL(k_gin_rail_ack, dim3(1), dim3(kMaxNodes), 0, s, h->gdc, 0, hi.SO, hi.D, h->gprog, 0, h->gseq_d,
+                       h->gfwin, (int)h->gwflag);
+    HC(hipGetLastError());
+    h->gack[0] = h->gseq_d;
+  }
   return 0;
 }
 
@@ -565,15 +767,34 @@ int hybrid_combine_finish(EpHandle* h, hipStream_t s) {
   }
   h->pend.on = false;
   note_stream(h, s);
-  // The side stream runs the chunks in order, so the last one landing means all have.
-  HC(hipStreamWaitEvent(s, h->ev_b[h->nchunks - 1], 0));
+  // The side stream runs the chunks in order, so the last one landing means all have. With
+  // owner-token chunks, chunk k from every node holds exactly the node partials of this rank's
+  // tokens in range k, so all ranges but the last are reduced once the one before last has landed
+  // (under the last chunk's transfer, when the rail is the longer path), and the last range alone
+  // after it, its hidden split over 4 waves per token: a launch that small is latency-bound.
+  const int C = h->nchunks;
+  const bool two = h->pend.tok_stream && C > 1;
   note_rdv(h);
   h->rdv_y = false;
-  hipLaunchKernelGGL(hybrid_combine_reduce_epilogue_impl, dim3(h->pend.cta_reduce), dim3(kEpWaves * kWarpSize),
-                     0, s, h->cfg, h->hyb, h->self_view, (const int32_t*)h->pend.topk_idx,
-                     h->pend.num_tokens, h->bound_node_pos, h->land_x, h->land_w,
-                     (const bf16_t*)h->pend.bias0, (const bf16_t*)h->pend.bias1, (bf16_t*)h->pend.out,
-                     (float*)h->pend.out_w);
+  for (int part = two ? 0 : 1; part < 2; ++part) {
+    int t0 = 0, t1 = INT_MAX, d;
+    if (two) {
+      hyb_tok_chunk((int)h->cfg.num_max_tokens_per_rank, part == 0 ? 0 : C - 1, C, t0, d);
+      if (part == 0) hyb_tok_chunk((int)h->cfg.num_max_tokens_per_rank, C - 1, C, t1, d);
+    }
+    HC(hipStreamWaitEvent(s, h->ev_b[part == 0 ? C - 2 : C - 1], 0));
+    hipLaunchKernelGGL(hybrid_combine_reduce_epilogue_impl, dim3(h->pend.cta_reduce), dim3(kEpWaves * kWarpSize),
+                       0, s, h->cfg, h->hyb, h->self_view, (const int32_t*)h->pend.topk_idx,
+                       h->pend.num_tokens, h->bound_node_pos, h->land_x, h->land_w,
+                       (const bf16_t*)h->pend.bias0, (const bf16_t*)h->pend.bias1, (bf16_t*)h->pend.out,
+                       (float*)h->pend.out_w, t0, t1, two && part == 1 ? 4 : 1);
+  }
+  if (h->gin) {  // land_x / land_w are read: the peers may send the next combine's partials
+    hipLaunchKernelGGL(k_gin_rail_ack, dim3(1), dim3(kMaxNodes), 0, s, h->gdc, h->glanes, h->hyb.SO, h->hyb.D,
+                       h->gprog, 1, h->gseq_c, h->gfwin, (int)h->gwflag);
+    HC(hipGetLastError());
+    h->gack[1] = h->gseq_c;
+  }
   return 0;
 }
 
@@ -603,30 +824,63 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
   static const bool split = env_int("RCCL_EP_HYB_COMB_SPLIT") == 1;
   WindowView* comb_views = h->d_views_inter + kViewHybComb * c.num_ranks;
   const int node_hi = h->node_base + h->node_size;
-  if (split)
+  // RCCL_EP_GIN_STREAM with the split: the remote owners' partials go one owner-token range per
+  // chunk -- push, node barrier, fold, put -- so the rail starts after the first range's push,
+  // not the whole push. Each range is the same rows, in the same order, as the whole push.
+  const bool tok_stream = h->gin && h->gstream && split;
+  if (split && !tok_stream)
     hipLaunchKernelGGL(combine_impl<1>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
                        (const int64_t*)expert_rows, (const float*)scales, fma_mode,
                        (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
-                       1, h->self_view, comb_views, h->node_base, node_hi);
-  else
+                       1, h->self_view, comb_views, h->node_base, node_hi, 0, INT_MAX);
+  else if (!split)
     hipLaunchKernelGGL(combine_impl<0>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
                        (const int64_t*)expert_rows, (const float*)scales, fma_mode,
                        (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
-                       1, h->self_view, comb_views, 0, 0);
-  hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
+                       1, h->self_view, comb_views, 0, 0, 0, INT_MAX);
+  if (!tok_stream) hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
   uint8_t* win = (uint8_t*)h->win_buf;
   const size_t T = c.num_max_tokens_per_rank, H = c.hidden, K = c.num_topk;
   HybInfo hk = hi;
   hk.nchunks = h->nchunks;
+  hk.tok_split = tok_stream ? 1 : 0;
+  if (h->gin) ++h->gseq_c;
+  // RCCL_EP_GIN_STREAM: the previous combine's flush, before the folds rewrite comb_x / comb_w.
+  if (h->gin && h->gstream) HC(hipStreamWaitEvent(s, h->ev_cflush, 0));
   for (int k = 0; k < hk.nchunks; ++k) {
     hk.chunk = k;
+    if (tok_stream) {
+      int t0, t1;
+      hyb_tok_chunk((int)T, k, hk.nchunks, t0, t1);
+      hipLaunchKernelGGL(combine_impl<1>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
+                         c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
+                         (const int64_t*)expert_rows, (const float*)scales, fma_mode,
+                         (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
+                         1, h->self_view, comb_views, h->node_base, node_hi, t0, t1);
+      hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
+    }
     hipLaunchKernelGGL(k_hyb_fold, dim3(hk.SO, hcta), dim3(kEpWaves * kWarpSize), 0, s, c, hk,
                        (const int32_t*)h->bound_fwd_meta, (const bf16_t*)(win + h->stage_off_x),
                        (const float*)(win + h->stage_off_w), with_w, h->comb_x, h->comb_w);
     HC(hipEventRecord(h->ev_a[k], s));
     HC(hipStreamWaitEvent(h->side, h->ev_a[k], 0));
+    if (h->gin) {  // as in hybrid_dispatch_begin: put, then wait for the peers' chunk, on `side`
+      const uint64_t ack = (k == 0 && h->gseq_c > 1) ? h->gseq_c - 1 : 0;
+      const uint64_t tok = (h->gseq_c - 1) * hk.nchunks + k + 1;
+      hipLaunchKernelGGL(k_gin_rail_put<true>, dim3(hk.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc,
+                         h->gwin, hk, h->goff, T, H, K, with_w, h->glanes, h->glanes, ack, h->gtimeout, c.rank,
+                         h->gprog, tok, h->gfwin, gin_flags(h), (const int32_t*)h->bound_fwd_meta,
+                         (const int32_t*)nullptr, h->gstream ? 0 : 1, 1);
+      h->gtok[1] = tok;
+      if (h->gstream) continue;  // one arrival wait and the flush follow the last put, below
+      hipLaunchKernelGGL(k_gin_rail_wait, dim3(1), dim3(kMaxNodes * h->glanes), 0, h->side, h->gdc, h->glanes,
+                         h->glanes, hk.SO, hk.D, tok, h->gtimeout, c.rank, (int)kGinCombineData, h->gprog, gin_flags(h));
+      HC(hipGetLastError());
+      HC(hipEventRecord(h->ev_b[k], h->side));
+      continue;
+    }
     NC(ncclGroupStart());
     ncclResult_t gr = ncclSuccess;
     for (int n = 0; n < hk.SO; ++n) {
@@ -649,12 +903,29 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
     NCG_END(gr);
     HC(hipEventRecord(h->ev_b[k], h->side));
   }
+  // RCCL_EP_GIN_STREAM: the chunks went back to back. With owner-token chunks the owner reduces
+  // all but the last range once the one before last has landed, so waits for both of those
+  // (ev_b[C-2], ev_b[C-1]); otherwise one wait for the last chunk's flags (each lane's flags
+  // follow its data in order). Then the flush that lets the next combine's fold rewrite comb_x / comb_w.
+  if (h->gin && h->gstream) {
+    const uint64_t tok0 = (h->gseq_c - 1) * hk.nchunks;
+    for (int k = tok_stream ? std::max(0, hk.nchunks - 2) : hk.nchunks - 1; k < hk.nchunks; ++k) {
+      hipLaunchKernelGGL(k_gin_rail_wait, dim3(1), dim3(kMaxNodes * h->glanes), 0, h->side, h->gdc, h->glanes,
+                         h->glanes, hk.SO, hk.D, tok0 + k + 1, h->gtimeout, c.rank, (int)kGinCombineData, h->gprog,
+                         gin_flags(h));
+      HC(hipEventRecord(h->ev_b[k], h->side));
+    }
+    hipLaunchKernelGGL(k_gin_rail_flush<true>, dim3(hk.SO, h->glanes), dim3(kWarpSize), 0, h->side, h->gdc, hk,
+                       h->glanes, h->gprog, tok0 + hk.nchunks);
+    HC(hipGetLastError());
+    HC(hipEventRecord(h->ev_cflush, h->side));
+  }
   if (split) {
     hipLaunchKernelGGL(combine_impl<2>, dim3(c.num_ranks, cta), dim3(kEpWaves * kWarpSize), 0, s,
                        c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
                        (const int64_t*)expert_rows, (const float*)scales, fma_mode,
                        (const int32_t*)recv_topk, (const int32_t*)recv_src, num_recv,
-                       1, h->self_view, comb_views, h->node_base, node_hi);
+                       1, h->self_view, comb_views, h->node_base, node_hi, 0, INT_MAX);
     hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
   }
   h->pend.on = true;
@@ -665,6 +936,7 @@ int hybrid_combine(EpHandle* h, uintptr_t y, uintptr_t in_w, uintptr_t row_map, 
   h->pend.out_w = out_w;
   h->pend.num_tokens = num_tokens;
   h->pend.cta_reduce = cta_reduce;
+  h->pend.tok_stream = tok_stream;
   return defer ? 0 : hybrid_combine_finish(h, s);
 }
 
@@ -799,17 +1071,206 @@ static int hybrid_alloc(EpHandle* h) {
   o = align_up(o + sizeof(int32_t), 16);
   hi.off_slots = (int)o;
   hi.rec_bytes = (int)align_up(o + (size_t)hi.SU * sizeof(int32_t), 16);
-  if (hipMalloc(&h->so_send, rn * T * hi.rec_bytes) != hipSuccess ||
-      hipMalloc(&h->so_recv, rn * T * hi.rec_bytes) != hipSuccess ||
-      hipMalloc(&h->comb_x, rn * T * H * sizeof(bf16_t)) != hipSuccess ||
-      hipMalloc(&h->land_x, rn * T * H * sizeof(bf16_t)) != hipSuccess ||
-      hipMalloc(&h->comb_w, rn * T * K * sizeof(float)) != hipSuccess ||
-      hipMalloc(&h->land_w, rn * T * K * sizeof(float)) != hipSuccess ||
-      hipMalloc(&h->sink, 4096) != hipSuccess ||
-      hipMalloc(&h->d_local_sendc, c.num_ranks * sizeof(int32_t)) != hipSuccess) {
+  const size_t rec = rn * T * hi.rec_bytes, xb = rn * T * H * sizeof(bf16_t), wb = rn * T * K * sizeof(float);
+  if (h->gin) {
+    // One rail window holds all six, so a put can address any of them on the peer.
+    // Registration is collective over rail_comm, as ep_configure is over every rank.
+    size_t off = 0;
+    auto take = [&off](size_t b) { const size_t at = off; off = align_up(off + b, 4096); return at; };
+    GinRailOffs& g = h->goff;
+    g.so_send = take(rec);
+    g.so_recv = take(rec);
+    g.comb_x = take(xb);
+    g.land_x = take(xb);
+    g.comb_w = take(wb);
+    g.land_w = take(wb);
+    if (ncclMemAlloc(&h->gbuf, off) != ncclSuccess ||
+        ncclCommWindowRegister(h->rail_comm, h->gbuf, off, &h->gwin, NCCL_WIN_DEFAULT) != ncclSuccess ||
+        h->gwin == nullptr) {
+      fprintf(stderr, "[rccl_ep] GIN rail window (%zu bytes) failed\n", off);
+      return -1;
+    }
+    uint8_t* b = (uint8_t*)h->gbuf;
+    h->so_send = b + g.so_send;
+    h->so_recv = b + g.so_recv;
+    h->comb_x = (bf16_t*)(b + g.comb_x);
+    h->land_x = (bf16_t*)(b + g.land_x);
+    h->comb_w = (float*)(b + g.comb_w);
+    h->land_w = (float*)(b + g.land_w);
+  } else if (hipMalloc(&h->so_send, rec) != hipSuccess || hipMalloc(&h->so_recv, rec) != hipSuccess ||
+             hipMalloc(&h->comb_x, xb) != hipSuccess || hipMalloc(&h->land_x, xb) != hipSuccess ||
+             hipMalloc(&h->comb_w, wb) != hipSuccess || hipMalloc(&h->land_w, wb) != hipSuccess) {
     fprintf(stderr, "[rccl_ep] hybrid buffers (%zu records of %d bytes per node) failed\n", T, hi.rec_bytes);
     return -1;
   }
+  if (hipMalloc(&h->sink, 4096) != hipSuccess ||
+      hipMalloc(&h->d_local_sendc, c.num_ranks * sizeof(int32_t)) != hipSuccess) {
+    fprintf(stderr, "[rccl_ep] hybrid count buffers failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+// RCCL_EP_GIN_WATCH_S (default 60, 0 = off): a host thread that reports, once per stall, GIN
+// transfers that have stopped moving for that long: per peer node, the last token each stage of
+// this rank's put, wait and credit kernels reached (lowest over lanes), against what the host has
+// issued, and the rail communicator's async error (a dead GIN proxy thread shows only there). It
+// also prints the record of a wait that timed out on the device, whose own printf dies with the trap.
+static void gin_watch(EpHandle* h) {
+  const int SO = h->hyb.SO, D = h->hyb.D, L = h->glanes, rank = h->cfg.rank;
+  static const char* const kinds[] = {"dispatch data", "combine data", "dispatch credit", "combine credit"};
+  GinProgress last{}, now{};
+  int idle = 0, tick = 0;
+  bool reported = false, to_reported = false, err_reported = false;
+  while (!h->gwatch_stop) {
+    for (int i = 0; i < 10 && !h->gwatch_stop; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    memcpy(&now, (const void*)h->gprog, sizeof(now));
+    if (now.to_set == 1 && !to_reported) {
+      fprintf(stderr, "[rccl_ep] GIN wait timed out on rank %d: %s from node %llu, context %llu, signal %llu at %llu of %llu\n",
+              rank, kinds[now.to_kind & 3], (unsigned long long)now.to_node, (unsigned long long)now.to_ctx,
+              (unsigned long long)now.to_sig, (unsigned long long)now.to_seen, (unsigned long long)now.to_need);
+      to_reported = true;
+    }
+    if (++tick % 10 == 0 && !err_reported) {
+      ncclResult_t ar = ncclSuccess;
+      if (ncclCommGetAsyncError(h->rail_comm, &ar) == ncclSuccess && ar != ncclSuccess && ar != ncclInProgress) {
+        fprintf(stderr, "[rccl_ep] GIN rail communicator async error on rank %d: %s\n", rank, ncclGetErrorString(ar));
+        err_reported = true;
+        // The GIN progress thread has exited, so nothing posted on this rail will complete: the
+        // job would hang until a watchdog. RCCL_EP_GIN_ABORT_ON_ERROR=0 keeps it up for inspection.
+        const char* ab = getenv("RCCL_EP_GIN_ABORT_ON_ERROR");
+        if (!(ab && ab[0] == '0')) {
+          fprintf(stderr, "[rccl_ep] aborting: the GIN rail cannot recover (RCCL_EP_GIN_ABORT_ON_ERROR=0 to wait instead)\n");
+          fflush(stderr);
+          abort();
+        }
+      }
+    }
+    if (memcmp(&now, &last, sizeof(now)) != 0) {
+      last = now;
+      idle = 0;
+      reported = false;
+      continue;
+    }
+    if (++idle < h->gwatch_s || reported) continue;
+    const uint64_t tok[2] = {h->gtok[0].load(), h->gtok[1].load()}, ack[2] = {h->gack[0].load(), h->gack[1].load()};
+    bool pending = false;
+    for (int d = 0; d < 2; ++d) {
+      pending |= now.ack_done[d] < ack[d];
+      for (int n = 0; n < SO; ++n)
+        for (int l = 0; l < L && n != D; ++l)
+          pending |= now.put_done[d][n * kGinMaxLanes + l] < tok[d] || now.wait_done[d][n * kGinMaxLanes + l] < tok[d];
+    }
+    if (!pending) continue;
+    char line[2048];
+    int o = snprintf(line, sizeof(line), "[rccl_ep] GIN stall on rank %d (node %d of %d), %d s without progress:",
+                     rank, D, SO, idle);
+    for (int d = 0; d < 2 && o < (int)sizeof(line); ++d) {
+      o += snprintf(line + o, sizeof(line) - o, " %s issued %llu wait_enter %llu credits %llu/%llu |",
+                    d ? "combine" : "dispatch", (unsigned long long)tok[d], (unsigned long long)now.wait_enter[d],
+                    (unsigned long long)now.ack_done[d], (unsigned long long)ack[d]);
+      for (int n = 0; n < SO && o < (int)sizeof(line); ++n) {
+        if (n == D) continue;
+        uint64_t m[5] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
+        for (int l = 0; l < L; ++l) {
+          const int sl = n * kGinMaxLanes + l;
+          m[0] = std::min(m[0], now.put_enter[d][sl]);
+          m[1] = std::min(m[1], now.put_credit[d][sl]);
+          m[2] = std::min(m[2], now.put_posted[d][sl]);
+          m[3] = std::min(m[3], now.put_done[d][sl]);
+          m[4] = std::min(m[4], now.wait_done[d][sl]);
+        }
+        o += snprintf(line + o, sizeof(line) - o, " n%d put %llu/%llu/%llu/%llu recv %llu |", n,
+                      (unsigned long long)m[0], (unsigned long long)m[1], (unsigned long long)m[2],
+                      (unsigned long long)m[3], (unsigned long long)m[4]);
+      }
+    }
+    fprintf(stderr, "%s (put: entered/credited/posted/flushed)\n", line);
+    reported = true;
+  }
+}
+
+// The rail over GIN (RCCL_EP_GIN, device/gin_rail.h): a device communicator on rail_comm with
+// GIN connections between the rail peers. Needs GIN on when the communicators were created
+// (NCCL_GIN_ENABLE=1, the default), symmetric windows and cuMem: NCCL_WIN_ENABLE=1 (RCCL also
+// takes NCCL_DEVR_INIT=1; RCCLX only WIN_ENABLE) and NCCL_CUMEM_ENABLE=1. Collective over
+// rail_comm.
+static int gin_rail_setup(EpHandle* h) {
+  ncclCommProperties_t p = NCCL_COMM_PROPERTIES_INITIALIZER;
+  if (ncclCommQueryProperties(h->rail_comm, &p) != ncclSuccess || !p.deviceApiSupport ||
+      p.railedGinType == NCCL_GIN_TYPE_NONE) {
+    fprintf(stderr,
+            "[rccl_ep] RCCL_EP_GIN: the rail has no GIN (device API %d, GIN type %d; the device "
+            "API needs NCCL_WIN_ENABLE=1 and NCCL_CUMEM_ENABLE=1)\n",
+            (int)p.deviceApiSupport, (int)p.railedGinType);
+    return -1;
+  }
+  // rocSHMEM GDA (NCCL_GIN_TYPE=5): GPU-initiated, no proxy thread. Its contexts share their
+  // connection's queue pairs and signals, so the per-lane, per-direction signal ids of
+  // RCCL_EP_GIN_SIGNAL=signal would alias (and they are RDMA atomics); only flags are supported.
+  // Every early return here depends only on the GIN type and the environment, which every rank
+  // shares, so all ranks take the same branch before the collective ncclDevCommCreate.
+  const bool gda = p.railedGinType == NCCL_GIN_TYPE_ROCSHMEM_GDA;
+#if !NCCL_GIN_ROCSHMEM_GDA_ENABLE
+  if (gda) {
+    fprintf(stderr, "[rccl_ep] RCCL_EP_GIN: the rail's GIN is rocSHMEM GDA, but librccl_ep.so was built without it\n");
+    return -1;
+  }
+#endif
+  const char* sm = getenv("RCCL_EP_GIN_SIGNAL");
+  h->gwflag = !(sm && strcmp(sm, "signal") == 0);
+  if (gda && !h->gwflag) {
+    fprintf(stderr, "[rccl_ep] RCCL_EP_GIN_SIGNAL=signal is not supported on GDA\n");
+    return -1;
+  }
+  // RCCL_EP_GIN_TIMEOUT_S (default 300, half torch's collective timeout so the report comes first;
+  // 0 = wait forever): how long a GIN wait may spin before it reports what it waited for and
+  // traps. wall_clock64 runs at 100 MHz.
+  const char* to = getenv("RCCL_EP_GIN_TIMEOUT_S");
+  h->gtimeout = (uint64_t)std::max(0, to ? atoi(to) : 300) * 100000000ull;
+  // One context per lane and direction: dispatch [0, L), combine [L, 2L). On GDA each context
+  // has its own queue pairs, on alternating UDMA engines.
+  const char* ln = getenv("RCCL_EP_GIN_LANES");
+  h->glanes = std::max(1, std::min(ln ? atoi(ln) : 4, kGinMaxLanes));
+  h->gstream = env_int("RCCL_EP_GIN_STREAM") == 1;
+  ncclDevCommRequirements req = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  req.ginConnectionType = NCCL_GIN_CONNECTION_RAIL;
+  req.ginContextCount = 2 * h->glanes;
+  req.ginSignalCount = gda ? 0 : kGinSignals;  // GDA runs flags only, which need no signals
+  NC(ncclDevCommCreate(h->rail_comm, &req, &h->gdc));
+  h->gdc_made = true;
+  // The kernels handle PROXY, and GDA when built for it; any other backend would run them as UB.
+  const int want = gda ? (int)NCCL_NET_DEVICE_GIN_ROCSHMEM_GDA : (int)NCCL_NET_DEVICE_GIN_PROXY;
+  bool ok = h->gdc.ginContextCount >= 2 * h->glanes && h->gdc.ginConnectionCount > 0;
+  for (int c = 0; c < h->gdc.ginConnectionCount; ++c)
+    ok = ok && (int)h->gdc.ginNetDeviceTypes[c] == want;
+  if (!ok) {
+    fprintf(stderr, "[rccl_ep] RCCL_EP_GIN: unsupported GIN device communicator (%d contexts, type %d)\n",
+            (int)h->gdc.ginContextCount, (int)h->gdc.ginNetDeviceTypes[0]);
+    return -1;
+  }
+  if (h->cfg.rank == 0)
+    fprintf(stderr, "[rccl_ep] GIN rail: %s, %d lane(s), %d connection(s)%s\n", gda ? "rocSHMEM GDA" : "proxy",
+            h->glanes, (int)h->gdc.ginConnectionCount, h->gstream ? ", streamed chunks" : "");
+  // The flag window (unless RCCL_EP_GIN_SIGNAL=signal), collective over rail_comm.
+  if (h->gwflag) {
+    const size_t fb = kGinFlagWords * sizeof(uint64_t);
+    NC(ncclMemAlloc(&h->gfbuf, fb));
+    HC(hipMemset(h->gfbuf, 0, fb));
+    HC(hipDeviceSynchronize());
+    NC(ncclCommWindowRegister(h->rail_comm, h->gfbuf, fb, &h->gfwin, NCCL_WIN_STRICT_ORDERING));
+    if (!h->gfwin) {
+      fprintf(stderr, "[rccl_ep] RCCL_EP_GIN: flag window registration failed\n");
+      return -1;
+    }
+  }
+  HC(hipHostMalloc((void**)&h->gprog, sizeof(GinProgress), hipHostMallocCoherent | hipHostMallocMapped));
+  memset(h->gprog, 0, sizeof(GinProgress));
+  const char* ws = getenv("RCCL_EP_GIN_WATCH_S");
+  h->gwatch_s = std::max(0, ws ? atoi(ws) : 60);
+  h->gwatch_stop = false;
+  if (h->gwatch_s > 0) h->gwatch = std::thread(gin_watch, h);
+  h->gin = true;
   return 0;
 }
 
@@ -1051,8 +1512,11 @@ int ep_configure_v2(void* handle, int num_experts, int num_topk, int grouped_onl
   // ranks write y and cw -- each its own slot(rank, t) in a local owner's window, while rows for a
   // remote owner go to the forwarder's staging -- and the reduce epilogue reads only those. So
   // y and cw keep this node's sources alone, (num_ranks - node_size) * T rows smaller.
+  // Such a window always gets one y row per slot: the hybrid combine is grouped only (see
+  // ep_combine_v4), and the y base moves down by node_base * T layout rows, which with
+  // num_topk rows per slot would not line up with the combine's slot rows on any node but 0.
   const bool y_local = h->hybrid && h->hyb_multi && env_int("RCCL_EP_HYB_Y_LOCAL") == 1;
-  h->lay = EpWindowLayout::make(h->cfg, sizeof(bf16_t), h->grouped_only ? 1 : 0,
+  h->lay = EpWindowLayout::make(h->cfg, sizeof(bf16_t), (h->grouped_only || y_local) ? 1 : 0,
                                 y_local ? h->node_size : 0, y_local ? h->node_base : 0);
   h->win_bytes = h->lay.total_bytes;
   if (h->hybrid && h->hyb_multi) {
@@ -1216,6 +1680,29 @@ int ep_plan(void* handle, uintptr_t topk_idx, int num_tokens,
   return 0;
 }
 
+// The copy epilogue of a pending dispatch, for the sources `sel` picks (epilogue_skips): 0 all,
+// 1 the other nodes', 2 this node's.
+static int dispatch_copy_epilogue(EpHandle* h, const decltype(EpHandle::pend_d)& t, int sel, hipStream_t s) {
+  const EpConfig& c = h->cfg;
+  // A launch for one side's sources gets their share of the whole budget: the other blocks exit.
+  const int active = sel == 0 ? c.num_ranks : sel == 2 ? h->node_size : c.num_ranks - h->node_size;
+  const int epi_cta = std::max(1, copy_epilogue_cta(t.cta, c.num_ranks) * c.num_ranks / std::max(1, active));
+  const int lo = h->node_base, hi = h->node_base + h->node_size;
+  if (t.use_fp8) {
+    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, h->self_view, h->d_recvoff, (fp8_t*)t.out_x, (float*)t.out_sf,
+                       (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
+                       (int32_t*)t.expert_counts, sel, lo, hi);
+  } else {
+    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
+                       c, h->self_view, t.psum_incl ? (const int32_t*)t.psum_incl : h->d_recvoff,
+                       (bf16_t*)t.out_x, (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
+                       (int32_t*)t.expert_counts, t.psum_incl ? 1 : 0, sel, lo, hi);
+  }
+  HC(hipGetLastError());
+  return 0;
+}
+
 // Second half of dispatch_enqueue, from h->pend_d: the remote leg, barrier B and the epilogue.
 // Runs right after the local push, or later from ep_dispatch_finish.
 static int dispatch_tail(EpHandle* h, hipStream_t s) {
@@ -1249,12 +1736,12 @@ static int dispatch_tail(EpHandle* h, hipStream_t s) {
   h->rdv_x = false;  // the scan and copy epilogue below read the dispatch region
   // A cached replay's offsets are its plan's: with psum_incl (the handle's inclusive
   // per-source prefix) there is nothing to scan.
-  if (!t.notified && !t.psum_incl) {
+  if (!t.notified && !t.psum_incl && !t.split_epi) {
     hipLaunchKernelGGL(k_ep_scan_counts, dim3(1), dim3(1), 0, s,
                        c, h->self_view, h->d_recvoff, h->d_total,
                        (int32_t*)t.expert_counts, c.experts_per_rank());
   }
-
+  if (t.split_epi) return dispatch_copy_epilogue(h, t, 1, s);
   const int epi_cta = copy_epilogue_cta(t.cta, c.num_ranks);
   if (t.payload_later) {
     const int32_t* offs = t.psum_incl ? (const int32_t*)t.psum_incl : h->d_recvoff;
@@ -1267,18 +1754,7 @@ static int dispatch_tail(EpHandle* h, hipStream_t s) {
     h->perm.inclusive = t.psum_incl ? 1 : 0;
     return 0;
   }
-  if (t.use_fp8) {
-    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
-                       c, h->self_view, h->d_recvoff, (fp8_t*)t.out_x, (float*)t.out_sf,
-                       (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
-                       (int32_t*)t.expert_counts);
-  } else {
-    hipLaunchKernelGGL(dispatch_copy_epilogue_impl, dim3(c.num_ranks, epi_cta), dim3(kEpWaves * kWarpSize), 0, s,
-                       c, h->self_view, t.psum_incl ? (const int32_t*)t.psum_incl : h->d_recvoff,
-                       (bf16_t*)t.out_x, (int32_t*)t.out_topk, (float*)t.out_tw, (int32_t*)t.out_src,
-                       (int32_t*)t.expert_counts, t.psum_incl ? 1 : 0);
-  }
-  return 0;
+  return dispatch_copy_epilogue(h, t, 0, s);
 }
 
 // Enqueues a whole dispatch: both barriers, the push, the receive scan and the copy
@@ -1371,7 +1847,9 @@ static int dispatch_enqueue(EpHandle* h,
   const int hyb_meta = use_fp8 ? 1 : with_meta;
   // ep_hcounts_post already queued this dispatch's pack and rail transfer.
   const bool posted = h->rail_posted.on;
-  h->rail_posted.on = false;
+  // ep_hcounts_post under RCCL_EP_GIN_STREAM also ran barrier A and posted the forwards.
+  const bool fwd_posted = posted && h->rail_posted.fwd;
+  h->rail_posted.on = h->rail_posted.fwd = false;
   if (posted && (!h->hybrid || use_fp8 || hyb_meta != 1 || x != h->rail_posted.x ||
                  num_tokens != h->rail_posted.num_tokens)) {
     fprintf(stderr, "[rccl_ep] dispatch: not the dispatch ep_hcounts_post posted the rail for\n");
@@ -1381,7 +1859,7 @@ static int dispatch_enqueue(EpHandle* h,
       hybrid_dispatch_begin(h, x, x_sf, topk_idx, topk_w, num_tokens, use_fp8, hyb_meta,
                             hyb_ctas(h, num_sms), s) != 0)
     return -1;
-  if (!notified) {
+  if (!notified && !fwd_posted) {
     // A streamed push writes every count itself, zero included.
     if (zero_counts && !streamed)
       HC(hipMemsetAsync((uint8_t*)h->win_buf + h->lay.off_counts, 0, c.num_ranks * sizeof(int32_t), s));
@@ -1405,6 +1883,16 @@ static int dispatch_enqueue(EpHandle* h,
     hipLaunchKernelGGL(k_hyb_local_sendc, dim3(1), dim3(kMaxWorldRanks), 0, s, c.num_ranks,
                        h->node_base, h->node_size, (const int32_t*)sendc, h->d_local_sendc);
     push_sendc = h->d_local_sendc;
+    if (h->gin && h->gstream && !fwd_posted) {
+      HC(hipEventRecord(h->ev_bar, s));
+      if (gin_dispatch_forwards(h, use_fp8, hyb_meta, hyb_ctas(h, num_sms), h->bound_fwd_meta, nullptr) != 0)
+        return -1;
+    }
+    // A GDA put rings its doorbell after a system-scope release, which must write back the L2
+    // lines the local push keeps dirtying: posting beside the push took ~40 us a chunk instead of
+    // ~20. So the push waits until every chunk is posted; it has slack, as the forwards and the
+    // rail are the longer path.
+    if (h->gin && h->gstream) HC(hipStreamWaitEvent(s, h->ev_post, 0));
   }
   // The fp8 copy epilogue takes exclusive offsets only, so an fp8 dispatch that does not stream scans.
   if (use_fp8 && !streamed) psum_incl = 0;
@@ -1454,6 +1942,22 @@ static int dispatch_enqueue(EpHandle* h,
   t.out_topk = out_topk;
   t.out_tw = out_tw;
   t.out_src = out_src;
+  // RCCL_EP_HYB_SPLIT_EPI=1: this node's sources' rows are complete once every local push is,
+  // so copy them out now, while the rail moves, and leave only the remote sources' rows for after
+  // barrier B. The remote sources' counts are the bound ones, so the scan can run now too.
+  static const bool split_epi_env = env_int("RCCL_EP_HYB_SPLIT_EPI") == 1;
+  t.split_epi = (split_epi_env && h->hybrid && run_epilogue && !payload_later && !notified) ? 1 : 0;
+  if (t.split_epi) {
+    hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
+    note_rdv(h);
+    hipLaunchKernelGGL(k_inter_set_counts, dim3(1), dim3(kMaxWorldRanks), 0, s, c.num_ranks, h->bound,
+                       (int32_t*)((uint8_t*)h->win_buf + h->lay.off_counts));
+    h->rdv_x = false;  // the scan and copy below read the dispatch region
+    if (!psum_incl)
+      hipLaunchKernelGGL(k_ep_scan_counts, dim3(1), dim3(1), 0, s, c, h->self_view, h->d_recvoff, h->d_total,
+                         (int32_t*)expert_counts, c.experts_per_rank());
+    if (dispatch_copy_epilogue(h, t, 2, s) != 0) return -1;
+  }
   t.on = true;
   return defer ? 0 : dispatch_tail(h, s);
 }
@@ -2052,7 +2556,7 @@ int ep_combine_v5(void* handle,
                      c, (const bf16_t*)y, (const float*)in_w, (const int32_t*)row_map,
                      (const int64_t*)expert_rows, (const float*)scales, fma_mode,
                      (const int32_t*)recv_topk, src, num_recv,
-                     grouped, h->self_view, views, 0, 0);
+                     grouped, h->self_view, views, 0, 0, 0, INT_MAX);
   // As in dispatch: the remote rows are in place before barrier B, on the same stream.
   if (h->inter && inter_combine(h, grouped, in_w != 0, cta, s) != 0) return -1;
   hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
@@ -2248,13 +2752,31 @@ int ep_hybrid_enable(void* handle, int multi) {
     HC(hipEventCreateWithFlags(&h->ev_a[k], hipEventDisableTiming));
     HC(hipEventCreateWithFlags(&h->ev_b[k], hipEventDisableTiming));
   }
+  HC(hipEventCreateWithFlags(&h->ev_bar, hipEventDisableTiming));
+  HC(hipEventCreateWithFlags(&h->ev_fwd, hipEventDisableTiming));
+  HC(hipEventCreateWithFlags(&h->ev_cnt, hipEventDisableTiming));
+  HC(hipEventCreateWithFlags(&h->ev_post, hipEventDisableTiming));
+  HC(hipEventCreateWithFlags(&h->ev_dflush, hipEventDisableTiming));
+  HC(hipEventCreateWithFlags(&h->ev_cflush, hipEventDisableTiming));
   const char* ch = getenv("RCCL_EP_HYB_CHUNKS");
   h->nchunks = (ch && atoi(ch) > 0) ? std::min(atoi(ch), (int)EpHandle::kMaxChunks) : 1;
   // Both ends of the rail derive the record stride from it, so every rank must set it alike.
   const char* cr = getenv("RCCL_EP_HYB_COMPACT_REC");
   h->hyb_compact = cr && cr[0] == '1';
+  // RCCL_EP_GIN: 0 (default) RCCL send/recv on the rail; 1 GIN when the rail has it, else
+  // send/recv; 2 GIN or fail. GIN support is decided at communicator init and agreed by every
+  // rank, so all ranks take the same branch.
+  const int gin_mode = env_int("RCCL_EP_GIN");
+  if (gin_mode > 0 && h->hyb.SO > 1 && gin_rail_setup(h) != 0) {
+    release_gin_rail(h);
+    if (gin_mode >= 2) return -1;
+    if (h->cfg.rank == 0) fprintf(stderr, "[rccl_ep] RCCL_EP_GIN=1: the rail falls back to RCCL send/recv\n");
+  }
   return 0;
 }
+
+// 1 when the hybrid rail runs over GIN (ep_hybrid_enable with RCCL_EP_GIN), else 0.
+int ep_rail_gin(void* handle) { return static_cast<EpHandle*>(handle)->gin ? 1 : 0; }
 
 // ep_hcounts' exchange buffers for W = R + SO + E ints per rank: [R * W gathered | W this rank's |
 // SU * W this node's, for the two-level gather]. Grown on demand; growing synchronizes.
@@ -2317,23 +2839,16 @@ int ep_hplan(void* handle, uintptr_t topk_idx, int num_tokens, uintptr_t out_slo
   return 0;
 }
 
-// Hybrid count exchange: all-gathers every rank's [sendc (R) | node counts (SO)] and writes
-// [sendc (R) | recvc (R) | records sent per node (SO) | records received per node (SO)] into
-// `out` on the host; the last are the rail peers' node counts for this node. Synchronizes.
-int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk_idx, int num_tokens,
-               int32_t* out, int32_t* out_expert, uintptr_t stream) {
-  auto* h = static_cast<EpHandle*>(handle);
-  REQUIRE_CONFIGURED(h, "ep_hcounts");
-  if (!h->hybrid) {
-    fprintf(stderr, "[rccl_ep] ep_hcounts needs a hybrid handle\n");
-    return -1;
-  }
+// ep_hcounts' device half: this rank's row, the all-gather, and the copy to the host (*W: the row
+// width). hcounts_finish waits for the copy and folds it.
+static int hcounts_enqueue(EpHandle* h, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk_idx, int num_tokens,
+                           hipStream_t s, int* Wout) {
   // With topk_idx, every rank also contributes its per-expert counts (k_expert_hist) and
   // out_expert gets this rank's per-local-expert receive counts, so the host can size the
   // dispatch here and the dispatch never waits.
-  const int R = h->cfg.num_ranks, SO = h->hyb.SO, me = h->cfg.rank;
+  const int R = h->cfg.num_ranks, SO = h->hyb.SO;
   const int E = topk_idx ? h->cfg.num_experts : 0, W = R + SO + E;
-  hipStream_t s = (hipStream_t)stream;
+  *Wout = W;
   // RCCL_EP_HPLAN_FUSED: ep_hplan already wrote this rank's row for these tokens.
   const bool row_ready = E > 0 && h->hplan_row_tokens == num_tokens;
   h->hplan_row_tokens = -1;
@@ -2363,6 +2878,11 @@ int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk
     NC(ncclAllGather(mine, h->d_xchg, W, ncclInt32, h->comm, s));
   }
   HC(hipMemcpyAsync(h->host_xchg, h->d_xchg, (size_t)R * W * sizeof(int32_t), hipMemcpyDeviceToHost, s));
+  return 0;
+}
+
+static int hcounts_finish(EpHandle* h, int W, int E, int32_t* out, int32_t* out_expert, hipStream_t s) {
+  const int R = h->cfg.num_ranks, SO = h->hyb.SO, me = h->cfg.rank;
   static const bool spin = env_int("RCCL_EP_HCOUNTS_SPIN") == 1;
   if (spin) {
     if (!h->ev_hc) HC(hipEventCreateWithFlags(&h->ev_hc, hipEventDisableTiming));
@@ -2392,6 +2912,23 @@ int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk
     }
   }
   return 0;
+}
+
+// Hybrid count exchange: all-gathers every rank's [sendc (R) | node counts (SO)] and writes
+// [sendc (R) | recvc (R) | records sent per node (SO) | records received per node (SO)] into
+// `out` on the host; the last are the rail peers' node counts for this node. Synchronizes.
+int ep_hcounts(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t topk_idx, int num_tokens,
+               int32_t* out, int32_t* out_expert, uintptr_t stream) {
+  auto* h = static_cast<EpHandle*>(handle);
+  REQUIRE_CONFIGURED(h, "ep_hcounts");
+  if (!h->hybrid) {
+    fprintf(stderr, "[rccl_ep] ep_hcounts needs a hybrid handle\n");
+    return -1;
+  }
+  hipStream_t s = (hipStream_t)stream;
+  int W = 0;
+  if (hcounts_enqueue(h, sendc, node_cnt, topk_idx, num_tokens, s, &W) != 0) return -1;
+  return hcounts_finish(h, W, topk_idx ? h->cfg.num_experts : 0, out, out_expert, s);
 }
 
 // ep_inter_bind plus the hybrid state: per-node record counts (ep_hcounts), slot_of [R,
@@ -2432,6 +2969,10 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
                     uintptr_t x, uintptr_t topk_w, int num_sms, uintptr_t stream) {
   auto* h = static_cast<EpHandle*>(handle);
   REQUIRE_CONFIGURED(h, "ep_hcounts_post");
+  if (!h->hybrid) {
+    fprintf(stderr, "[rccl_ep] ep_hcounts_post needs a hybrid handle\n");
+    return -1;
+  }
   // dispatch_enqueue's guards, before the rail overwrites so_send and posts into so_recv.
   if (h->pend.on || h->pend_d.on || h->perm.on || h->rail_posted.on) {
     fprintf(stderr, "[rccl_ep] ep_hcounts_post: a deferred combine, dispatch or permute is still pending\n");
@@ -2450,17 +2991,46 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
   // windows can differ in T and a peer's rail region holds T records.
   static const int prefix_env = env_int("RCCL_EP_HYB_PREFIX");
   const int prefix = std::min(prefix_env, (int)T);
-  const bool pre = prefix > 0 && h->nchunks == 1 && env_int("RCCL_EP_HCOUNTS_2LEVEL") != 1;
+  // A GIN rail moves so_send with one-sided puts under its own credits (device/gin_rail.h); the
+  // prefix's send/recv round would write so_recv outside them, so it is send/recv-only.
+  const bool pre = !h->gin && prefix > 0 && h->nchunks == 1 && env_int("RCCL_EP_HCOUNTS_2LEVEL") != 1;
+  // RCCL_EP_GIN_STREAM: the GIN rail needs no counts from the host at all -- each node's record
+  // count is the node plan's node_cnt on the device, and arrivals are flags -- so the whole
+  // transfer goes out before the count exchange, and the host sync overlaps it.
+  const bool gin_early = h->gin && h->gstream;
   HybInfo hi = h->hyb;
   hi.nchunks = 1;
   hi.chunk = 0;
   hyb_call_layout(h, hi, 0, 1);
   const size_t rb = hi.rec_bytes;
+  if (gin_early) {
+    hi.nchunks = h->nchunks;
+    hi.taper = 1;
+    ++h->gseq_d;
+    HC(hipStreamWaitEvent(s, h->ev_dflush, 0));  // the previous dispatch's flush, before so_send is rewritten
+    for (int part = 0; part < 2 && part < hi.nchunks; ++part) {  // chunk 0 first, as hybrid_dispatch_begin
+      hi.chunk = part;
+      const int span = part == 0 ? 1 : hi.nchunks - 1;
+      hipLaunchKernelGGL(k_hyb_pack_dev, dim3(hi.SO, hyb_ctas(h, num_sms)), dim3(kEpWaves * kWarpSize), 0, s,
+                         c, hi, (const void*)x, (const int32_t*)topk_idx, (const float*)topk_w, num_tokens,
+                         (const int32_t*)node_list, (const int32_t*)slot_of, (const int32_t*)node_cnt,
+                         h->so_send, span);
+      HC(hipEventRecord(h->ev_a[part], s));
+      HC(hipStreamWaitEvent(h->side, h->ev_a[part], 0));
+      if (gin_dispatch_puts(h, hi, (const int32_t*)node_cnt, part, span) != 0) return -1;
+    }
+    // Barrier A now too, as dispatch_enqueue would run it (counts zeroed first), so the forwards
+    // need not wait for the host either.
+    HC(hipMemsetAsync((uint8_t*)h->win_buf + h->lay.off_counts, 0, c.num_ranks * sizeof(int32_t), s));
+    hipLaunchKernelGGL(k_ep_lsa_barrier, dim3(kEpBarrierCtas), dim3(kWarpSize), 0, s, h->devComm);
+    note_rdv(h);
+    HC(hipEventRecord(h->ev_bar, s));
+  }
   if (pre) {
     hipLaunchKernelGGL(k_hyb_pack_dev, dim3(hi.SO, hyb_ctas(h, num_sms)), dim3(kEpWaves * kWarpSize), 0, s,
                        c, hi, (const void*)x, (const int32_t*)topk_idx, (const float*)topk_w, num_tokens,
                        (const int32_t*)node_list, (const int32_t*)slot_of, (const int32_t*)node_cnt,
-                       h->so_send);
+                       h->so_send, 1);
     HC(hipEventRecord(h->ev_a[0], s));
     HC(hipStreamWaitEvent(h->side, h->ev_a[0], 0));
     NC(ncclGroupStart());
@@ -2473,8 +3043,19 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
     }
     NCG_END(gr);
   }
-  if (ep_hcounts(handle, sendc, node_cnt, topk_idx, num_tokens, out, out_expert, stream) != 0)
-    return -1;
+  int W = 0;
+  if (hcounts_enqueue(h, sendc, node_cnt, topk_idx, num_tokens, s, &W) != 0) return -1;
+  if (gin_early) {
+    // Each node's record count is in the gathered matrix once the all-gather is done: forward
+    // from it on the side stream now, while the host waits for its own copy.
+    if (!h->d_nrecv) HC(hipMalloc((void**)&h->d_nrecv, kMaxNodes * sizeof(int32_t)));
+    hipLaunchKernelGGL(k_hyb_nrecv, dim3(1), dim3(kMaxNodes), 0, s, h->d_xchg, W, c.num_ranks, h->hyb.SU,
+                       h->hyb.SO, h->hyb.u, h->hyb.D, h->d_nrecv);
+    HC(hipEventRecord(h->ev_cnt, s));
+    HC(hipStreamWaitEvent(h->side, h->ev_cnt, 0));
+    if (gin_dispatch_forwards(h, 0, 1, hyb_ctas(h, num_sms), (int32_t*)fwd_meta, h->d_nrecv) != 0) return -1;
+  }
+  if (hcounts_finish(h, W, topk_idx ? c.num_experts : 0, out, out_expert, s) != 0) return -1;
   const int R = c.num_ranks, SO = h->hyb.SO;
   if (ep_hbind(handle, out, out + R, out + 2 * R, out + 2 * R + SO, send_list, slot_of, node_list,
                node_pos, fwd_meta, num_tokens) != 0)
@@ -2496,10 +3077,12 @@ int ep_hcounts_post(void* handle, uintptr_t sendc, uintptr_t node_cnt, uintptr_t
     }
     NCG_END(gr);
     HC(hipEventRecord(h->ev_b[0], h->side));
-  } else if (hybrid_dispatch_begin(h, x, 0, topk_idx, topk_w, num_tokens, 0, 1, hyb_ctas(h, num_sms), s) != 0) {
+  } else if (!gin_early &&
+             hybrid_dispatch_begin(h, x, 0, topk_idx, topk_w, num_tokens, 0, 1, hyb_ctas(h, num_sms), s) != 0) {
     return -1;
   }
   h->rail_posted.on = true;
+  h->rail_posted.fwd = gin_early;
   h->rail_posted.x = x;
   h->rail_posted.num_tokens = num_tokens;
   return 0;

@@ -418,6 +418,13 @@ ncclResult_t IbCastRmaIbProxyCreateContext(void* collComm, ncclRmaConfig_t* conf
     NCCLCHECKGOTO(ncclIbMalloc((void**)&gc->fullSendComm, sizeof(void*) * nranks), ret, end);
     NCCLCHECKGOTO(ncclIbMalloc((void**)&gc->fullRecvComm, sizeof(void*) * nranks), ret, end);
     gc->rank = cComm->rank;
+    // [RCCL] On AINIC a QP's channel id picks its UDMA engine set (connect.cc): the first QP of
+    // each (NIC, channel id) takes the set after the last one handed out, so new ids alternate.
+    // Without an id every context's QPs got channel 0 and all of GIN shared one set: ~30 GB/s per
+    // NIC, against 40-45 GB/s for RCCL send/recv over 8 channels. Ids from the top of the range,
+    // which the NET transport's channels never reach, make consecutive contexts alternate.
+    ncclNet_ctxt_t chCtxt = {};
+    chCtxt.chId = (MAXCHANNELS - 1) - (c % (MAXCHANNELS / 2));
 
     for (int i = 0; i < nranks; i += config->rankStride) {
       int connectPeer = (cComm->rank + i) % nranks;
@@ -425,11 +432,12 @@ ncclResult_t IbCastRmaIbProxyCreateContext(void* collComm, ncclRmaConfig_t* conf
       do {
         if (gc->fullSendComm[connectPeer] == NULL)
           NCCLCHECKGOTO(IbCastConnectImpl(cComm->ctx, cComm->dev, handles + NCCL_NET_HANDLE_MAXSIZE * connectPeer,
-                                          &gc->fullSendComm[connectPeer], NULL,
+                                          &gc->fullSendComm[connectPeer], (ncclNetDeviceHandle_t**)&chCtxt,
                                           ncclParamCastGinIbTc() != -1 ? ncclParamCastGinIbTc() : ncclParamIbCastTc()),
                         ret, end);
         if (gc->fullRecvComm[acceptPeer] == NULL)
-          NCCLCHECKGOTO(netIbCast.accept(lComm, &gc->fullRecvComm[acceptPeer], NULL), ret, end);
+          NCCLCHECKGOTO(netIbCast.accept(lComm, &gc->fullRecvComm[acceptPeer], (ncclNetDeviceHandle_t**)&chCtxt),
+                        ret, end);
       } while ((gc->fullSendComm[connectPeer] == NULL) || (gc->fullRecvComm[acceptPeer] == NULL));
       NCCLCHECKGOTO(IbCastGinIbP2PBarrier(cComm), ret, end);
     }
